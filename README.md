@@ -46,7 +46,7 @@ npm install
 ```bash
 # Terminal 1 — API (puerto 8000)
 cd web/api
-uvicorn app:app --reload
+python -m uvicorn app:app --reload
 
 # Terminal 2 — Frontend (puerto 4321)
 cd web/frontend
@@ -64,7 +64,7 @@ npm run build
 
 # Arrancar API
 cd web/api
-uvicorn app:app --host 0.0.0.0 --port 8000
+python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 # Arrancar frontend (Node standalone)
 cd web/frontend
