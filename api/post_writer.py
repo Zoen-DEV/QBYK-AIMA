@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 
 def _system_prompt() -> str:
@@ -136,6 +137,44 @@ def _fix_control_chars(s: str) -> str:
     return ''.join(out)
 
 
+def _extract_texts_fallback(raw: str) -> dict:
+    """Last-resort extraction for malformed JSON.
+
+    Handles unescaped double quotes inside string values by using lookahead
+    to distinguish value-terminating quotes from embedded ones.
+    """
+    result: dict = {"linkedin_text": "", "instagram_text": ""}
+    for key in ("linkedin_text", "instagram_text"):
+        m = re.search(rf'"{key}"\s*:\s*"', raw)
+        if not m:
+            continue
+        chars: list[str] = []
+        i = m.end()
+        while i < len(raw):
+            c = raw[i]
+            if c == "\\" and i + 1 < len(raw):
+                chars.append(c)
+                chars.append(raw[i + 1])
+                i += 2
+            elif c == '"':
+                # Closing quote if the next non-space char is , } or end-of-string
+                lookahead = raw[i + 1 : i + 10].lstrip()
+                if not lookahead or lookahead[0] in (",", "}"):
+                    break
+                # Embedded unescaped quote — escape it
+                chars.append('\\"')
+                i += 1
+            else:
+                chars.append(c)
+                i += 1
+        raw_val = "".join(chars)
+        try:
+            result[key] = json.loads('"' + raw_val + '"')
+        except Exception:
+            result[key] = raw_val.replace('\\"', '"')
+    return result
+
+
 def _parse_raw(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -143,7 +182,15 @@ def _parse_raw(raw: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        pass
+    try:
         return json.loads(_fix_control_chars(raw))
+    except json.JSONDecodeError:
+        pass
+    result = _extract_texts_fallback(raw)
+    if result.get("linkedin_text") or result.get("instagram_text"):
+        return result
+    raise json.JSONDecodeError("Could not parse or repair response JSON", raw, 0)
 
 
 async def _write_with_anthropic(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> dict:
@@ -155,7 +202,7 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
         chunks = []
         with client.messages.stream(
             model="claude-sonnet-4-6",
-            max_tokens=2048,
+            max_tokens=4096,
             system=[{
                 "type": "text",
                 "text": _system_prompt(),
@@ -185,7 +232,7 @@ async def _write_with_groq(content: dict, params: dict, clean_url: str, queue: a
         chunks = []
         stream = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            max_tokens=2048,
+            max_tokens=4096,
             messages=[
                 {"role": "system", "content": _system_prompt()},
                 {"role": "user", "content": _user_message(content, params, clean_url)},

@@ -76,8 +76,12 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 ## Flujo de la aplicación
 
 1. El usuario pega una URL de YouTube y configura tono, objetivo, formato e idioma.
-2. La API arranca un job asíncrono: extrae el video, detecta el idioma, escribe los posts con el LLM configurado, genera imágenes con Pollinations y aplica overlays de texto con Pillow.
-3. El frontend sigue el progreso por SSE (`/jobs/:id/stream`).
+2. La API arranca un job asíncrono con las siguientes fases:
+   - **Extracción**: metadata + transcript con `yt-dlp` y `youtube-transcript-api`.
+   - **Cuentas**: verifica los IDs de LinkedIn e Instagram desde `.env` o los consulta en Blotato.
+   - **Escritura**: Claude (Anthropic) o Llama (Groq) redactan los posts en JSON; parser robusto con fallback para respuestas malformadas.
+   - **Imágenes**: genera una imagen base compartida con Pollinations (`seed=42`), aplica overlays de texto con Pillow (LinkedIn 4:5, Instagram single o carrusel) y sube cada imagen a Blotato. Reintentos automáticos con backoff si Pollinations tarda. El frontend muestra progreso y thumbnail por imagen a medida que se completan.
+3. El frontend sigue el progreso en tiempo real por SSE (`/jobs/:id/stream`).
 4. En la pantalla de revisión el usuario puede editar los textos y aprobar.
 5. Al publicar, la API llama a Blotato para enviar los posts a LinkedIn e Instagram.
 
