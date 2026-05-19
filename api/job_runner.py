@@ -17,6 +17,16 @@ except ImportError:
 from post_writer import write_posts
 
 _loop_executor = None
+_OUTPUTS_DIR = Path(__file__).parent / "outputs"
+
+
+def _save_image(job_id: str, key: str, png: bytes) -> None:
+    try:
+        out = _OUTPUTS_DIR / job_id
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{key}.png").write_bytes(png)
+    except Exception as e:
+        print(f"   [aviso] No se pudo guardar imagen en disco ({key}): {e}")
 
 
 async def _run(fn, *args, **kwargs):
@@ -189,6 +199,7 @@ async def run_pipeline(job: dict):
                     try:
                         png = await _run(ov.render_linkedin_hook, base_url, ig_hook, lang=lang)
                         image_bytes["li-hook"] = png
+                        _save_image(job["id"], "li-hook", png)
                         await _push(q, {"step": "images", "status": "done", "subkey": "li-hook"})
                     except Exception as e:
                         await _push(q, {"step": "images", "status": "warn", "subkey": "li-hook", "msg": f"Overlay falló: {e}"})
@@ -207,6 +218,7 @@ async def run_pipeline(job: dict):
                         try:
                             png = await _run(ov.render_single, base_url, ig_hook, lang=lang)
                             image_bytes["ig-single"] = png
+                            _save_image(job["id"], "ig-single", png)
                             await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
                         except Exception as e:
                             await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": f"Overlay falló: {e}"})
@@ -222,6 +234,7 @@ async def run_pipeline(job: dict):
                         try:
                             png = await _run(ov.render_hook, base_url, ig_hook, lang=lang)
                             image_bytes["ig-0"] = png
+                            _save_image(job["id"], "ig-0", png)
                             await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
                         except Exception as e:
                             await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": f"Overlay falló: {e}"})
@@ -244,6 +257,7 @@ async def run_pipeline(job: dict):
                         if _HAS_OVERLAY:
                             png = await _run(render_fn, extra_urls[i])
                             image_bytes[fname] = png
+                            _save_image(job["id"], fname, png)
                         await _push(q, {"step": "images", "status": "done", "subkey": fname})
                     except Exception as e:
                         await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": str(e)})

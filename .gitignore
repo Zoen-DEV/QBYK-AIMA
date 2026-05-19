@@ -23,6 +23,9 @@ npm-debug.log*
 # Astro build output
 frontend/dist/
 
+# Generated images
+api/outputs/
+
 # OS
 .DS_Store
 Thumbs.db
