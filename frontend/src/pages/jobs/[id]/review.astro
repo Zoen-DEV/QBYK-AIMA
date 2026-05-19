@@ -1,0 +1,45 @@
+---
+import Base from "../../../layouts/Base.astro";
+import ReviewCards from "../../../components/ReviewCards";
+
+const { id } = Astro.params;
+
+const apiUrl = import.meta.env.API_URL || "http://127.0.0.1:8000";
+const res = await fetch(`${apiUrl}/jobs/${id}`);
+if (!res.ok) return Astro.redirect("/");
+const job = await res.json();
+
+if (job.status === "error") {
+  return Astro.redirect("/");
+}
+---
+
+<Base title="Revisar contenido">
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-white mb-1">Revisar y publicar</h1>
+      <p class="text-gray-400 text-sm truncate max-w-md">{job.content?.title || "Video de YouTube"}</p>
+    </div>
+    <a href="/" class="text-sm text-gray-500 hover:text-gray-300 transition">← Nueva generación</a>
+  </div>
+
+  {job.params?.dry_run && (
+    <div class="mb-6 bg-amber-900/30 border border-amber-700/50 rounded-xl px-4 py-3 text-amber-300 text-sm font-medium flex items-center gap-2">
+      <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      Dry-run activado — no se publicará nada
+    </div>
+  )}
+
+  <ReviewCards
+    client:load
+    jobId={id}
+    apiUrl="/api"
+    initialPosts={job.posts}
+    images={job.images}
+    params={job.params}
+    liMediaUrls={job.li_media_urls}
+    igMediaUrls={job.ig_media_urls}
+  />
+</Base>

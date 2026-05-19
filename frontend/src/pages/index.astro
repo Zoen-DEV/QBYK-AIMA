@@ -1,0 +1,190 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Nuevo post">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-8">
+      <h1 class="text-3xl font-bold text-white mb-2">Nuevo post</h1>
+      <p class="text-gray-400">Pega el link de un video de YouTube y genera posts listos para publicar en LinkedIn e Instagram.</p>
+    </div>
+
+    <form method="POST" action="/api/jobs" id="job-form" class="space-y-6">
+      <!-- YouTube URL -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+        <label class="block">
+          <span class="text-sm font-medium text-gray-300 mb-2 block">URL de YouTube <span class="text-red-400">*</span></span>
+          <input
+            type="url"
+            name="youtube_url"
+            required
+            placeholder="https://www.youtube.com/watch?v=..."
+            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition"
+          />
+        </label>
+      </div>
+
+      <!-- Plataformas -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Configuración</h2>
+
+        <div class="grid grid-cols-2 gap-4">
+          <!-- Tono -->
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Tono (ambas redes)</span>
+            <select name="tono" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Auto</option>
+              <option value="educativo">Educativo / insights</option>
+              <option value="inspiracional">Inspiracional</option>
+              <option value="personal">Personal / storytelling</option>
+            </select>
+          </label>
+
+          <!-- Objetivo -->
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Objetivo (ambas redes)</span>
+            <select name="objetivo" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Auto</option>
+              <option value="engagement">Engagement (comentarios)</option>
+              <option value="awareness">Awareness (alcance)</option>
+              <option value="trafico">Tráfico (al video)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <!-- Formato Instagram -->
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Formato Instagram</span>
+            <select name="formato_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="imagen-unica">Imagen única</option>
+              <option value="carrusel">Carrusel (3 slides)</option>
+            </select>
+          </label>
+
+          <!-- Idioma -->
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Idioma</span>
+            <select name="idioma" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="auto">Auto-detectar</option>
+              <option value="es">Español</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Opciones avanzadas -->
+        <details class="group">
+          <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition list-none flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+            Opciones avanzadas
+          </summary>
+          <div class="mt-4 space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Tono LinkedIn (override)</span>
+                <select name="tono_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="educativo">Educativo</option>
+                  <option value="inspiracional">Inspiracional</option>
+                  <option value="personal">Personal</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Tono Instagram (override)</span>
+                <select name="tono_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="educativo">Educativo</option>
+                  <option value="inspiracional">Inspiracional</option>
+                  <option value="personal">Personal</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Objetivo LinkedIn (override)</span>
+                <select name="objetivo_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="engagement">Engagement</option>
+                  <option value="awareness">Awareness</option>
+                  <option value="trafico">Tráfico</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Objetivo Instagram (override)</span>
+                <select name="objetivo_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="engagement">Engagement</option>
+                  <option value="awareness">Awareness</option>
+                  <option value="trafico">Tráfico</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Publicar solo en</span>
+                <select name="solo" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">Ambas plataformas</option>
+                  <option value="linkedin">Solo LinkedIn</option>
+                  <option value="instagram">Solo Instagram</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Programar publicación</span>
+                <input
+                  type="datetime-local"
+                  name="publicar"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </label>
+            </div>
+
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" name="dry_run" value="true" class="w-4 h-4 rounded bg-gray-800 border-gray-600 text-brand-500 focus:ring-brand-500" />
+              <span class="text-sm text-gray-400">Dry-run (generar todo pero no publicar)</span>
+            </label>
+          </div>
+        </details>
+      </div>
+
+      <!-- Submit -->
+      <button
+        type="submit"
+        id="submit-btn"
+        class="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3.5 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        Generar posts
+      </button>
+    </form>
+  </div>
+</Base>
+
+<script>
+  const form = document.getElementById("job-form") as HTMLFormElement;
+  const btn = document.getElementById("submit-btn") as HTMLButtonElement;
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Procesando...`;
+
+    const data = new FormData(form);
+    // Convert checkbox: if not checked, don't send; if checked, send as boolean
+    if (!data.get("dry_run")) data.delete("dry_run");
+
+    const res = await fetch("/api/jobs", { method: "POST", body: data });
+    if (res.ok) {
+      const { job_id } = await res.json();
+      window.location.href = `/jobs/${job_id}`;
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail || JSON.stringify(err)}`);
+      btn.disabled = false;
+      btn.innerHTML = "Generar posts";
+    }
+  });
+</script>

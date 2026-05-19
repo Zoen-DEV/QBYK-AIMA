@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+anthropic
+groq
+yt-dlp
+youtube-transcript-api
+Pillow
+python-dotenv

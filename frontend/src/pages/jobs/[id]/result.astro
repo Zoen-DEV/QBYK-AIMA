@@ -1,0 +1,113 @@
+---
+import Base from "../../../layouts/Base.astro";
+const { id } = Astro.params;
+
+const apiUrl = import.meta.env.API_URL || "http://127.0.0.1:8000";
+const res = await fetch(`${apiUrl}/jobs/${id}`);
+if (!res.ok) return Astro.redirect("/");
+const job = await res.json();
+const result = job.result || {};
+const dry_run = result.dry_run || job.params?.dry_run;
+
+function statusColor(s: string | undefined) {
+  if (!s) return "text-gray-400";
+  if (s === "published") return "text-green-400";
+  if (s === "scheduled") return "text-blue-400";
+  if (s === "dry-run") return "text-amber-400";
+  if (s === "error" || s?.includes("error")) return "text-red-400";
+  return "text-gray-300";
+}
+---
+
+<Base title="Resultado">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-8">
+      {dry_run ? (
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-10 h-10 rounded-full bg-amber-900/40 flex items-center justify-center">
+            <svg class="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+          </div>
+          <h1 class="text-2xl font-bold text-white">Dry-run completado</h1>
+        </div>
+      ) : (
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-10 h-10 rounded-full bg-green-900/40 flex items-center justify-center">
+            <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h1 class="text-2xl font-bold text-white">Publicado</h1>
+        </div>
+      )}
+      <p class="text-gray-400 text-sm">{job.content?.title || "Video de YouTube"}</p>
+    </div>
+
+    <div class="space-y-4">
+      {result.linkedin && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-5">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+            </svg>
+            <span class="font-semibold text-white">LinkedIn</span>
+          </div>
+          <div class="space-y-2 text-sm">
+            <div class="flex gap-2">
+              <span class="text-gray-500 w-16 flex-shrink-0">Status</span>
+              <span class={statusColor(result.linkedin.status)}>{result.linkedin.status || "—"}</span>
+            </div>
+            {result.linkedin.url && (
+              <div class="flex gap-2">
+                <span class="text-gray-500 w-16 flex-shrink-0">URL</span>
+                <a href={result.linkedin.url} target="_blank" class="text-brand-500 hover:underline truncate">{result.linkedin.url}</a>
+              </div>
+            )}
+            {result.linkedin.error && (
+              <div class="flex gap-2">
+                <span class="text-gray-500 w-16 flex-shrink-0">Error</span>
+                <span class="text-red-400">{result.linkedin.error}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {result.instagram && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-5">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-5 h-5 text-pink-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/>
+            </svg>
+            <span class="font-semibold text-white">Instagram</span>
+          </div>
+          <div class="space-y-2 text-sm">
+            <div class="flex gap-2">
+              <span class="text-gray-500 w-16 flex-shrink-0">Status</span>
+              <span class={statusColor(result.instagram.status)}>{result.instagram.status || "—"}</span>
+            </div>
+            {result.instagram.url && (
+              <div class="flex gap-2">
+                <span class="text-gray-500 w-16 flex-shrink-0">URL</span>
+                <a href={result.instagram.url} target="_blank" class="text-brand-500 hover:underline truncate">{result.instagram.url}</a>
+              </div>
+            )}
+            {result.instagram.error && (
+              <div class="flex gap-2">
+                <span class="text-gray-500 w-16 flex-shrink-0">Error</span>
+                <span class="text-red-400">{result.instagram.error}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+
+    <div class="mt-8 flex gap-3">
+      <a href="/" class="flex-1 text-center bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+        Nuevo post
+      </a>
+    </div>
+  </div>
+</Base>
