@@ -14,7 +14,7 @@ web/
 
 - Python 3.11+
 - Node.js 18+
-- Credenciales en `../.env` (ver [`.env.example`](../.env.example))
+- Credenciales en `.env` en la raíz del repo (ver [`.env.example`](.env.example))
 
 ## Variables de entorno
 
