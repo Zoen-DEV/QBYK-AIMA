@@ -18,7 +18,7 @@ web/
 
 ## Variables de entorno
 
-El archivo `.env` debe estar en la raíz del workspace (`AIMA/`). La API lo carga desde `../../.env` relativo a `web/api/`.
+El archivo `.env` debe estar en la raíz del repositorio (`web/`). La API lo carga desde `../` relativo a `web/api/`.
 
 | Variable | Requerida | Descripción |
 |---|---|---|

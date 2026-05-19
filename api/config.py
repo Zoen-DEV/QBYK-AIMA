@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env from the AIMA workspace (parent of web/)
-_env_path = Path(__file__).parent.parent.parent / ".env"
+# Load .env from the web/ root (parent of api/)
+_env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(_env_path)
 
 
