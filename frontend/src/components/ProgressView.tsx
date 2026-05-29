@@ -166,6 +166,19 @@ export default function ProgressView({ jobId, apiUrl }: { jobId: string; apiUrl:
         return;
       }
 
+      if (step === "video") {
+        // Video jobs reuse the 4th row: turn the "images" (or prior "video") step
+        // into a "Generar video" step and update its status.
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.key === "images" || s.key === "video"
+              ? { key: "video", label: "Generar video con Higgsfield", status: status as StepStatus, msg }
+              : s
+          )
+        );
+        return;
+      }
+
       setSteps((prev) =>
         prev.map((s) => {
           if (s.key !== step) return s;

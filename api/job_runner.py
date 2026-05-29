@@ -6,7 +6,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 import blotato_client as bc
-import pollinations_client as pc
+import image_provider as improv
+import higgsfield_client as hf
 
 try:
     import image_overlay as ov
@@ -125,11 +126,74 @@ async def run_pipeline(job: dict):
         })
 
         # ── Step 4/4.5: Write + humanize posts ───────────────────────────
-        await _push(q, {"step": "writing", "status": "running", "msg": "Escribiendo posts con Claude..."})
+        if cfg.llm_provider == "perplexity":
+            writer_label = params.get("modelo_perplexity") or "sonar-pro"
+        else:
+            writer_label = "Claude"
+        await _push(q, {"step": "writing", "status": "running", "msg": f"Escribiendo posts con {writer_label}..."})
 
         posts = await write_posts(content, params, clean_url, q, cfg)
         job["posts"] = posts
         await _push(q, {"step": "writing", "status": "done", "msg": "Posts escritos y humanizados"})
+
+        # ── Media decision: video (text-to-video) OR images ─────────────────
+        tipo_medio = params.get("tipo_medio", "imagen")
+        want_video = tipo_medio == "video"
+        if want_video and not cfg.video_available:
+            want_video = False
+            await _push(q, {"step": "video", "status": "warn",
+                            "msg": "Video solicitado pero Higgsfield no está configurado — se generan imágenes."})
+
+        if want_video:
+            # Single clean text-to-video clip (no text overlay) shared by both platforms.
+            await _push(q, {"step": "video", "status": "running", "msg": "Generando video con Higgsfield..."})
+            topic = content.get("title", "professional topic")
+            video_prompt = (
+                f"Cinematic editorial video about: {topic}. "
+                "Smooth subtle camera motion, soft natural lighting, muted professional palette, "
+                "elegant minimal scene. No text, no captions, no typography, no logos, no watermarks."
+            )
+            video_url = ""
+            play_url = ""
+            try:
+                video_url = await _run(
+                    hf.generate_video, video_prompt,
+                    api_key=cfg.higgsfield_api_key, api_secret=cfg.higgsfield_api_secret,
+                    aspect_ratio=cfg.higgsfield_video_aspect,
+                    duration=(cfg.higgsfield_video_duration or None),
+                    model=cfg.higgsfield_video_model,
+                )
+                # Re-host on Blotato so the post is decoupled from Higgsfield's CDN.
+                # If that fails, fall back to the raw provider URL.
+                try:
+                    hosted = await _run(bc.upload_media_from_url, video_url, api_key=cfg.blotato_api_key)
+                    play_url = hosted or video_url
+                except Exception as e:
+                    play_url = video_url
+                    await _push(q, {"step": "video", "status": "warn",
+                                    "msg": f"No se pudo re-hospedar el video en Blotato: {e}. Se usa la URL del proveedor."})
+            except Exception as e:
+                job["video"]["notice"] = f"No se pudo generar el video con Higgsfield: {e}"
+                await _push(q, {"step": "video", "status": "warn", "msg": job["video"]["notice"]})
+
+            job["video"]["provider"] = "higgsfield"
+            if play_url:
+                job["video"]["url"] = play_url
+                job["_li_media_urls"] = [play_url] if do_linkedin else []
+                job["_ig_media_urls"] = [play_url] if do_instagram else []
+                job["images"]["blotato_urls"] = {
+                    "linkedin": play_url if do_linkedin else "",
+                    "instagram": [play_url] if do_instagram else [],
+                }
+                await _push(q, {"step": "video", "status": "done", "msg": "Video listo"})
+            else:
+                # No media — the user can still publish text-only, or retry.
+                job["_li_media_urls"] = []
+                job["_ig_media_urls"] = []
+
+            job["status"] = "review"
+            await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
+            return
 
         # ── Steps 5-7: Images (generate + overlay + upload) ──────────────────
 
@@ -142,13 +206,22 @@ async def run_pipeline(job: dict):
             else:
                 expected_subkeys.append("ig-single")
 
+        provider = improv.make_provider(
+            hf_key=cfg.higgsfield_api_key,
+            hf_secret=cfg.higgsfield_api_secret,
+            hf_model=cfg.higgsfield_model,
+            hf_resolution=cfg.higgsfield_resolution,
+        )
+
         await _push(q, {"step": "images", "status": "init", "subkeys": expected_subkeys})
-        await _push(q, {"step": "images", "status": "running", "msg": "Generando imágenes con Pollinations..."})
+        await _push(q, {"step": "images", "status": "running", "msg": f"Generando imágenes con {provider.label}..."})
 
         # image_bytes is mutable — /image/{key} can serve mid-pipeline as soon as a key is set
         image_bytes: dict[str, bytes] = job["images"]["bytes"]
-        # raw_urls: Pollinations URL per subkey, used as upload fallback when overlay fails
+        # raw_urls: provider image URL per subkey, used as upload fallback when overlay/upload fails
         raw_urls: dict[str, str] = {}
+        # image_warnings: reasons Higgsfield fell back to Pollinations (empty when not applicable)
+        image_warnings: list[str] = []
 
         # ── 5a: Base image (shared by LinkedIn, IG single, and carousel slide 0) ──
         base_url: str | None = None
@@ -161,24 +234,25 @@ async def run_pipeline(job: dict):
                     "composition with negative space at the bottom center for overlay text. "
                     "No text, no typography, no logos, no watermarks."
                 )
-                urls = await _run(pc.generate_image, base_prompt, aspect_ratio="square_1_1", seed=42)
-                base_url = urls[0]
+                base_url = await _run(provider.generate_base, base_prompt)
             except Exception as e:
                 await _push(q, {"step": "images", "status": "warn", "msg": f"Error generando imagen base: {e}"})
+            image_warnings.extend(provider.pop_warnings())
 
         # ── 5b: Pre-warm carousel extra slides immediately in background ──────────
-        # Pollinations starts generating slides 1 & 2 while LinkedIn/IG-0 overlays run.
+        # The provider starts generating slides 1 & 2 while LinkedIn/IG-0 overlays run.
         extra_prompts: list[str] = []
-        extra_urls: list[str] = []
+        extra_handles: list = []
         if do_instagram and formato_ig == "carrusel" and base_url:
             topic = content.get("title", "engaging topic")
             extra_prompts = [
                 f"Conceptual editorial visual about: {topic}. Lateral composition or texture. Same color palette as the main image. No text, no typography, no logos, no watermarks.",
                 f"Minimal closing visual about: {topic}. Simple centered composition, low saturation. Same style as the main image. No text, no typography, no logos, no watermarks.",
             ]
-            extra_urls = pc.prewarm_carousel_extra_slides(extra_prompts)
-            raw_urls["ig-1"] = extra_urls[0]
-            raw_urls["ig-2"] = extra_urls[1]
+            # Start generating slides 1 & 2 now (Higgsfield submits the jobs; Pollinations
+            # fires background triggers) so they render while LinkedIn/IG-0 overlays run.
+            # raw_urls for these slides are filled in at resolve time, once we have a real URL.
+            extra_handles = await _run(provider.prewarm_extras, extra_prompts)
 
         if not _HAS_OVERLAY:
             await _push(q, {"step": "images", "status": "warn", "msg": "Pillow no instalado — usando imágenes sin overlay"})
@@ -249,13 +323,15 @@ async def run_pipeline(job: dict):
                     ("ig-2", lambda u: ov.render_credits(u, channel, title_str, lang=lang)),
                 ]
                 for i, (fname, render_fn) in enumerate(extra_slide_defs):
-                    if i >= len(extra_urls):
+                    if i >= len(extra_handles):
                         await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": "Sin imagen base"})
                         continue
                     try:
-                        await _run(pc.fetch_url, extra_urls[i])
+                        slide_url = await _run(provider.resolve, extra_handles[i])
+                        image_warnings.extend(provider.pop_warnings())
+                        raw_urls[fname] = slide_url
                         if _HAS_OVERLAY:
-                            png = await _run(render_fn, extra_urls[i])
+                            png = await _run(render_fn, slide_url)
                             image_bytes[fname] = png
                             _save_image(job["id"], fname, png)
                         await _push(q, {"step": "images", "status": "done", "subkey": fname})
@@ -316,7 +392,19 @@ async def run_pipeline(job: dict):
         job["_li_media_urls"] = li_media_urls
         job["_ig_media_urls"] = ig_media_urls
 
-        await _push(q, {"step": "images", "status": "done", "msg": "Imágenes listas"})
+        # If Higgsfield fell back to Pollinations on any image, surface why — live in the
+        # progress step and durably (stored on the job → shown on the review screen).
+        job["images"]["provider"] = provider.name
+        if image_warnings:
+            reasons = list(dict.fromkeys(image_warnings))  # dedupe, preserve order
+            notice = (
+                f"Higgsfield no disponible ({'; '.join(reasons)}) — "
+                f"{len(image_warnings)} imagen(es) generada(s) con Pollinations."
+            )
+            job["images"]["notice"] = notice
+            await _push(q, {"step": "images", "status": "warn", "msg": notice})
+        else:
+            await _push(q, {"step": "images", "status": "done", "msg": "Imágenes listas"})
 
         # ── Done ─────────────────────────────────────────────────────────
         job["status"] = "review"

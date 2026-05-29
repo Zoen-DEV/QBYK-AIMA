@@ -55,7 +55,6 @@ def load_config() -> dict:
         "api_key": key,
         "linkedin_account_id": env.get("BLOTATO_LINKEDIN_ACCOUNT_ID", ""),
         "instagram_account_id": env.get("BLOTATO_INSTAGRAM_ACCOUNT_ID", ""),
-        "freepik_api_key": env.get("FREEPIK_API_KEY", ""),
     }
 
 
@@ -115,8 +114,8 @@ def _poll(
 def upload_media_from_url(public_url: str, *, api_key: str) -> str:
     """
     Re-host a publicly accessible media URL on Blotato.
-    Useful for taking a Freepik-hosted URL and getting a Blotato-hosted one
-    so the post is decoupled from Freepik's CDN lifetime.
+    Useful for taking a Pollinations-hosted URL and getting a Blotato-hosted one
+    so the post is decoupled from Pollinations' CDN lifetime.
     Returns the new Blotato-hosted URL.
     """
     resp = _request("POST", "/media", {"url": public_url}, api_key=api_key)

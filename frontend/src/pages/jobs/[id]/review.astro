@@ -33,12 +33,31 @@ if (job.status === "error") {
     </div>
   )}
 
+  {job.video?.notice && (
+    <div class="mb-6 bg-amber-900/30 border border-amber-700/50 rounded-xl px-4 py-3 text-amber-300 text-sm flex items-start gap-2">
+      <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      {job.video.notice}
+    </div>
+  )}
+
+  {job.images?.notice && (
+    <div class="mb-6 bg-amber-900/30 border border-amber-700/50 rounded-xl px-4 py-3 text-amber-300 text-sm flex items-start gap-2">
+      <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      {job.images.notice}
+    </div>
+  )}
+
   <ReviewCards
     client:load
     jobId={id}
     apiUrl="/api"
     initialPosts={job.posts}
     images={job.images}
+    video={job.video}
     params={job.params}
     liMediaUrls={job.li_media_urls}
     igMediaUrls={job.ig_media_urls}

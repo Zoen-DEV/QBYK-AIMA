@@ -1,6 +1,22 @@
 import asyncio
 import json
 import re
+import urllib.request
+import urllib.error
+
+PERPLEXITY_MODEL = "sonar-pro"
+PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
+PERPLEXITY_MODELS = {"sonar", "sonar-pro"}
+
+# Perplexity's sonar models are search-augmented by default. For this task we only
+# want it to rewrite the supplied transcript, never pull in external/online facts
+# (rule #3: no fabricar datos). This directive + low search context keeps it grounded.
+_PERPLEXITY_GROUNDING = (
+    "CRITICAL: Do NOT use web search results or any external/online knowledge. "
+    "Base the posts EXCLUSIVELY on the transcript, title, and description provided "
+    "in the user message. Do not add facts, figures, names, or events that are not "
+    "present in that material, and do not include citation markers like [1]."
+)
 
 
 def _system_prompt() -> str:
@@ -223,39 +239,76 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
     return _parse_raw(raw)
 
 
-async def _write_with_groq(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> dict:
-    from groq import Groq
-    client = Groq(api_key=api_key)
+async def _write_with_perplexity(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> dict:
+    """Perplexity exposes an OpenAI-compatible streaming chat endpoint. We hit it
+    with urllib (no SDK) and parse the SSE `data: {...}` lines ourselves."""
     loop = asyncio.get_event_loop()
 
+    model = params.get("modelo_perplexity") or PERPLEXITY_MODEL
+    if model not in PERPLEXITY_MODELS:
+        model = PERPLEXITY_MODEL
+
     def _stream():
-        chunks = []
-        stream = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            max_tokens=4096,
-            messages=[
+        body = json.dumps({
+            "model": model,
+            "max_tokens": 4096,
+            "stream": True,
+            # Keep the model grounded in the transcript instead of leaning on web search.
+            "web_search_options": {"search_context_size": "low"},
+            "messages": [
                 {"role": "system", "content": _system_prompt()},
+                {"role": "system", "content": _PERPLEXITY_GROUNDING},
                 {"role": "user", "content": _user_message(content, params, clean_url)},
             ],
-            stream=True,
+        }).encode()
+        req = urllib.request.Request(
+            PERPLEXITY_URL,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
         )
-        for chunk in stream:
-            text = chunk.choices[0].delta.content or ""
-            if text:
-                chunks.append(text)
-                loop.call_soon_threadsafe(
-                    lambda t=text: asyncio.ensure_future(
-                        queue.put({"step": "writing", "status": "chunk", "text": t})
-                    )
-                )
+        chunks = []
+        try:
+            with urllib.request.urlopen(req) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = (obj.get("choices") or [{}])[0].get("delta", {})
+                    text = delta.get("content") or ""
+                    if text:
+                        chunks.append(text)
+                        loop.call_soon_threadsafe(
+                            lambda t=text: asyncio.ensure_future(
+                                queue.put({"step": "writing", "status": "chunk", "text": t})
+                            )
+                        )
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Perplexity API error {e.code}: {e.read().decode()}")
         return "".join(chunks)
 
     raw = await loop.run_in_executor(None, _stream)
-    return _parse_raw(raw)
+    posts = _parse_raw(raw)
+    # Safety net: sonar models sometimes append citation markers like [1] despite instructions.
+    for key in ("linkedin_text", "instagram_text"):
+        if posts.get(key):
+            posts[key] = re.sub(r"\s*\[\d+\]", "", posts[key]).strip()
+    return posts
 
 
 async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, cfg) -> dict:
     provider = cfg.llm_provider  # raises if neither key is set
-    if provider == "groq":
-        return await _write_with_groq(content, params, clean_url, queue, cfg.groq_api_key)
+    if provider == "perplexity":
+        return await _write_with_perplexity(content, params, clean_url, queue, cfg.perplexity_api_key)
     return await _write_with_anthropic(content, params, clean_url, queue, cfg.anthropic_api_key)

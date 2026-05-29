@@ -52,9 +52,21 @@ import Base from "../layouts/Base.astro";
           </label>
         </div>
 
+        <!-- Tipo de medio -->
+        <label class="block">
+          <span class="text-xs text-gray-400 mb-1 block">Tipo de medio</span>
+          <select name="tipo_medio" id="tipo-medio" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="imagen">Imagen (LinkedIn + Instagram)</option>
+            <option value="video">Video (text-to-video con Higgsfield)</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">
+            <strong class="text-gray-400">Video</strong> genera un clip con Higgsfield (text-to-video, sin texto sobreimpreso) y lo publica en ambas redes. Requiere credenciales de Higgsfield; si no están, se generan imágenes. El video tarda varios minutos.
+          </span>
+        </label>
+
         <div class="grid grid-cols-2 gap-4">
           <!-- Formato Instagram -->
-          <label class="block">
+          <label class="block" id="formato-ig-wrap">
             <span class="text-xs text-gray-400 mb-1 block">Formato Instagram</span>
             <select name="formato_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
               <option value="imagen-unica">Imagen única</option>
@@ -72,6 +84,18 @@ import Base from "../layouts/Base.astro";
             </select>
           </label>
         </div>
+
+        <!-- Modelo de redacción (Perplexity) -->
+        <label class="block">
+          <span class="text-xs text-gray-400 mb-1 block">Modelo de redacción (Perplexity)</span>
+          <select name="modelo_perplexity" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="sonar-pro">Sonar Pro — más profundo y mejor calidad (algo más lento y caro)</option>
+            <option value="sonar">Sonar — más rápido y económico, calidad estándar</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">
+            <strong class="text-gray-400">Sonar Pro</strong> razona más y suele dar textos más ricos; <strong class="text-gray-400">Sonar</strong> es más veloz y barato para posts simples. Solo aplica si el motor de escritura es Perplexity (si hay clave de Anthropic, se usa Claude e ignora esto).
+          </span>
+        </label>
 
         <!-- Opciones avanzadas -->
         <details class="group">
@@ -166,6 +190,17 @@ import Base from "../layouts/Base.astro";
 <script>
   const form = document.getElementById("job-form") as HTMLFormElement;
   const btn = document.getElementById("submit-btn") as HTMLButtonElement;
+
+  // Instagram carousel/single format doesn't apply when generating video.
+  const tipoMedio = document.getElementById("tipo-medio") as HTMLSelectElement;
+  const formatoWrap = document.getElementById("formato-ig-wrap") as HTMLElement;
+  const syncFormatoState = () => {
+    const isVideo = tipoMedio.value === "video";
+    formatoWrap.classList.toggle("opacity-40", isVideo);
+    formatoWrap.classList.toggle("pointer-events-none", isVideo);
+  };
+  tipoMedio.addEventListener("change", syncFormatoState);
+  syncFormatoState();
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();

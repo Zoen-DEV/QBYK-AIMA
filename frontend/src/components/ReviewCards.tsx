@@ -12,6 +12,7 @@ interface Props {
     ig_slides: string[];
     blotato_urls: { linkedin: string; instagram: string[] };
   };
+  video?: { url?: string; provider?: string; notice?: string };
   params: Record<string, string | boolean>;
   liMediaUrls: string[];
   igMediaUrls: string[];
@@ -52,6 +53,7 @@ function PostCard({
   saving,
   imageUrl,
   extraImageUrls,
+  videoUrl,
   wordRange,
 }: {
   platform: string;
@@ -62,6 +64,7 @@ function PostCard({
   saving: boolean;
   imageUrl?: string;
   extraImageUrls?: string[];
+  videoUrl?: string;
   wordRange: [number, number];
 }) {
   const [editing, setEditing] = useState(false);
@@ -76,8 +79,20 @@ function PostCard({
         <span className="font-semibold text-white">{platform}</span>
       </div>
 
+      {/* Video (takes precedence over image when present) */}
+      {videoUrl && (
+        <div className="bg-gray-950">
+          <video
+            src={videoUrl}
+            controls
+            playsInline
+            className="w-full max-h-80 bg-black"
+          />
+        </div>
+      )}
+
       {/* Image */}
-      {allImages.length > 0 && (
+      {!videoUrl && allImages.length > 0 && (
         <div className="relative bg-gray-950">
           <img
             src={allImages[slideIdx]}
@@ -154,10 +169,12 @@ export default function ReviewCards({
   apiUrl,
   initialPosts,
   images,
+  video,
   params,
   liMediaUrls,
   igMediaUrls,
 }: Props) {
+  const videoUrl = video?.url || "";
   const [liText, setLiText] = useState(initialPosts.linkedin_text || "");
   const [igText, setIgText] = useState(initialPosts.instagram_text || "");
   const [saving, setSaving] = useState(false);
@@ -193,7 +210,8 @@ export default function ReviewCards({
             onTextChange={setLiText}
             onSave={() => savePost("linkedin_text", liText)}
             saving={saving}
-            imageUrl={liImageUrl}
+            imageUrl={videoUrl ? undefined : liImageUrl}
+            videoUrl={videoUrl || undefined}
             wordRange={[150, 300]}
           />
         )}
@@ -205,8 +223,9 @@ export default function ReviewCards({
             onTextChange={setIgText}
             onSave={() => savePost("instagram_text", igText)}
             saving={saving}
-            imageUrl={isCarousel ? undefined : igSingleUrl}
-            extraImageUrls={isCarousel ? igSlideUrls : undefined}
+            imageUrl={videoUrl ? undefined : (isCarousel ? undefined : igSingleUrl)}
+            extraImageUrls={videoUrl ? undefined : (isCarousel ? igSlideUrls : undefined)}
+            videoUrl={videoUrl || undefined}
             wordRange={[80, 150]}
           />
         )}
