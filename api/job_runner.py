@@ -269,6 +269,8 @@ async def run_pipeline(job: dict):
         raw_urls: dict[str, str] = {}
         # image_warnings: reasons Higgsfield fell back to local templates (empty when not applicable)
         image_warnings: list[str] = []
+        # overlay_text_warnings: reasons the overlay copy fell back to heuristics (missing image_text)
+        overlay_text_warnings: list[str] = []
 
         # ── 5a: Base image (shared by LinkedIn, IG single, and carousel slide 0) ──
         base_url: str | None = None
@@ -311,16 +313,45 @@ async def run_pipeline(job: dict):
         if not _HAS_OVERLAY:
             await _push(q, {"step": "images", "status": "warn", "msg": "Pillow no instalado — usando imágenes sin overlay"})
 
-        # Overlay helpers (computed once, used across all subkeys)
-        li_hook = _extract_hook(posts.get("linkedin_text", ""), max_words=12)
-        ig_hook = _extract_hook(posts.get("instagram_text", ""), max_words=10)
+        # Overlay copy — prefer the LLM's dedicated image_text block (a finished
+        # cover phrase + one closed idea per slide); degrade to the old heuristics
+        # (kept as a safety net) when it's missing/short, and warn visibly.
         channel = content.get("channel", "")
         title_str = content.get("title", "")
         # Number of info (argument) slides between the hook and the credits slide.
         n_info = (n_slides - 2) if (do_instagram and formato_ig == "carrusel") else 1
-        # Grab up to 3 body lines per info slide so each slide gets distinct content.
-        body_lines = _extract_body_lines(posts.get("instagram_text", ""), max_lines=3 * max(1, n_info)) if do_instagram else []
-        heading = _extract_heading(title_str) if do_instagram else ""
+
+        image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
+        llm_hook = (image_text or {}).get("hook", "").strip()
+        llm_slides = [s for s in (image_text or {}).get("slides", []) if s.strip()]
+
+        # Hook: image_text.hook for both networks; fall back to the first caption line.
+        if llm_hook:
+            li_hook = llm_hook
+            ig_hook = llm_hook
+        else:
+            li_hook = _extract_hook(posts.get("linkedin_text", ""), max_words=12)
+            ig_hook = _extract_hook(posts.get("instagram_text", ""), max_words=10)
+            if do_linkedin or do_instagram:
+                overlay_text_warnings.append("sin texto de portada del modelo")
+
+        # Info slides: exactly one closed idea per slide. Use image_text.slides; if
+        # short, pad from the heuristic body lines (NOT a generic "watch the video").
+        carousel = do_instagram and formato_ig == "carrusel"
+        slide_texts: list[str] = []
+        if carousel:
+            heur_lines = _extract_body_lines(posts.get("instagram_text", ""), max_lines=n_info)
+            for i in range(n_info):
+                if i < len(llm_slides):
+                    slide_texts.append(llm_slides[i])
+                elif i < len(heur_lines):
+                    slide_texts.append(heur_lines[i])
+                else:
+                    slide_texts.append("")  # renderer pads with empty (no filler phrase)
+            if len(llm_slides) < n_info:
+                overlay_text_warnings.append(
+                    f"el modelo dio {len(llm_slides)} de {n_info} frases para el carrusel"
+                )
 
         # ── 5c: LinkedIn overlay (uses base_url — emits done immediately) ────────
         if do_linkedin:
@@ -328,7 +359,7 @@ async def run_pipeline(job: dict):
                 raw_urls["li-hook"] = base_url
                 if _HAS_OVERLAY:
                     try:
-                        png = await _run(ov.render_linkedin_hook, base_url, ig_hook, lang=lang)
+                        png = await _run(ov.render_linkedin_hook, base_url, li_hook, lang=lang, tone=tono_li)
                         image_bytes["li-hook"] = png
                         _save_image(job["id"], "li-hook", png)
                         await _push(q, {"step": "images", "status": "done", "subkey": "li-hook"})
@@ -347,7 +378,7 @@ async def run_pipeline(job: dict):
                     raw_urls["ig-single"] = base_url
                     if _HAS_OVERLAY:
                         try:
-                            png = await _run(ov.render_single, base_url, ig_hook, lang=lang)
+                            png = await _run(ov.render_single, base_url, ig_hook, lang=lang, tone=tono_ig)
                             image_bytes["ig-single"] = png
                             _save_image(job["id"], "ig-single", png)
                             await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
@@ -363,7 +394,7 @@ async def run_pipeline(job: dict):
                     raw_urls["ig-0"] = base_url
                     if _HAS_OVERLAY:
                         try:
-                            png = await _run(ov.render_hook, base_url, ig_hook, lang=lang)
+                            png = await _run(ov.render_hook, base_url, ig_hook, lang=lang, tone=tono_ig)
                             image_bytes["ig-0"] = png
                             _save_image(job["id"], "ig-0", png)
                             await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
@@ -375,20 +406,18 @@ async def run_pipeline(job: dict):
                     await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": "Sin imagen base"})
 
                 # Carousel slides 1..n-1: (n_info) info slides + 1 credits slide.
-                # Each info slide gets its own chunk of up to 3 body lines.
+                # ONE closed idea per info slide (from image_text.slides, padded
+                # from heuristics — never a generic "watch the video" filler).
                 extra_slide_defs = []
                 for s in range(n_info):
-                    chunk = body_lines[s * 3:(s + 1) * 3]
-                    if not chunk:
-                        chunk = ["Mira el video completo para más detalles." if lang == "es"
-                                 else "Watch the full video for more."]
-                    # Bind chunk via default arg so each lambda captures its own slice.
+                    idea = slide_texts[s] if s < len(slide_texts) else ""
+                    # Bind idea via default arg so each lambda captures its own text.
                     extra_slide_defs.append((
                         f"ig-{s + 1}",
-                        lambda u, c=chunk: ov.render_info(u, c, heading=heading, lang=lang),
+                        lambda u, t=idea: ov.render_info(u, t, lang=lang, tone=tono_ig),
                     ))
                 extra_slide_defs.append(
-                    (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang))
+                    (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang, tone=tono_ig))
                 )
                 for i, (fname, render_fn) in enumerate(extra_slide_defs):
                     if i >= len(extra_handles):
@@ -458,27 +487,37 @@ async def run_pipeline(job: dict):
         job["_li_media_urls"] = li_media_urls
         job["_ig_media_urls"] = ig_media_urls
 
-        # If Higgsfield fell back to local templates on any image, surface why — live in
-        # the progress step and durably (stored on the job → shown on the review screen).
+        # Surface warnings — live in the progress step and durably (stored on the
+        # job → shown on the review screen). Two independent kinds can co-occur:
+        # (a) Higgsfield fell back to local templates; (b) the overlay copy fell back
+        # to heuristics because the LLM's image_text was missing/short. Accumulate both.
         # Count what actually got produced (overlaid bytes) — a local template that never
         # got an overlay rendered onto it isn't publishable to Blotato on its own.
         job["images"]["provider"] = provider.name
         produced = len({k for k in image_bytes} | {k for k in raw_urls})
+        notices: list[str] = []
         if produced == 0:
-            notice = (
+            notices.append(
                 "No se pudo generar ninguna imagen — Higgsfield no respondió y no se "
                 "pudo aplicar la plantilla de respaldo. Revisa los créditos de Higgsfield "
                 "y que las plantillas estén en api/assets/templates/. "
                 "Puedes publicar sin imagen o reintentar."
             )
-            job["images"]["notice"] = notice
-            await _push(q, {"step": "images", "status": "warn", "msg": notice})
         elif image_warnings:
             reasons = list(dict.fromkeys(image_warnings))  # dedupe, preserve order
-            notice = (
+            notices.append(
                 f"Higgsfield no disponible ({'; '.join(reasons)}) — "
                 f"{produced} imagen(es) generada(s) con plantillas de respaldo."
             )
+        if overlay_text_warnings:
+            reasons = list(dict.fromkeys(overlay_text_warnings))  # dedupe, preserve order
+            notices.append(
+                f"El texto sobre las imágenes usó el método de respaldo ({'; '.join(reasons)}) — "
+                "revisa que el copy de los visuales se lea bien."
+            )
+
+        if notices:
+            notice = " ".join(notices)
             job["images"]["notice"] = notice
             await _push(q, {"step": "images", "status": "warn", "msg": notice})
         else:
@@ -505,12 +544,12 @@ def _extract_hook(text: str, max_words: int = 12) -> str:
 
 
 def _extract_body_lines(text: str, max_lines: int = 3) -> list[str]:
+    """Heuristic fallback for info-slide copy: real caption lines, one idea each.
+
+    Returns up to `max_lines` lines (possibly fewer / empty). No generic filler —
+    the renderer pads missing slides with empty text instead of a canned phrase.
+    """
     lines = [l.strip().lstrip("•→-* ") for l in text.split("\n") if l.strip() and not l.strip().startswith("#")]
     # Skip the first line (hook) and grab up to max_lines body lines
     body = [l for l in lines[1:] if not l.startswith("▶") and not l.startswith("#") and len(l) > 10]
-    return body[:max_lines] or ["Mira el video completo para más detalles."]
-
-
-def _extract_heading(title: str) -> str:
-    words = title.upper().split()
-    return " ".join(words[:5]) if len(words) > 5 else title.upper()
+    return body[:max_lines]
