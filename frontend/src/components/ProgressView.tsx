@@ -32,6 +32,9 @@ const SUBKEY_LABELS: Record<string, string> = {
   "ig-0": "Instagram · Slide 1",
   "ig-1": "Instagram · Slide 2",
   "ig-2": "Instagram · Slide 3",
+  "ig-3": "Instagram · Slide 4",
+  "ig-4": "Instagram · Slide 5",
+  "ig-5": "Instagram · Slide 6",
 };
 
 function StatusIcon({ status, size = "md" }: { status: StepStatus; size?: "sm" | "md" }) {

@@ -68,22 +68,57 @@ import Base from "../layouts/Base.astro";
           <!-- Formato Instagram -->
           <label class="block" id="formato-ig-wrap">
             <span class="text-xs text-gray-400 mb-1 block">Formato Instagram</span>
-            <select name="formato_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <select name="formato_instagram" id="formato-instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
               <option value="imagen-unica">Imagen única</option>
-              <option value="carrusel">Carrusel (3 slides)</option>
+              <option value="carrusel">Carrusel</option>
             </select>
           </label>
 
-          <!-- Idioma -->
-          <label class="block">
-            <span class="text-xs text-gray-400 mb-1 block">Idioma</span>
-            <select name="idioma" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-              <option value="auto">Auto-detectar</option>
-              <option value="es">Español</option>
-              <option value="en">English</option>
+          <!-- Cantidad de slides del carrusel -->
+          <label class="block" id="carrusel-slides-wrap">
+            <span class="text-xs text-gray-400 mb-1 block">Slides del carrusel</span>
+            <select name="carrusel_slides" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="3">3 slides</option>
+              <option value="4">4 slides</option>
+              <option value="5">5 slides</option>
+              <option value="6">6 slides</option>
             </select>
           </label>
         </div>
+
+        <!-- Cuentas de Blotato -->
+        <div class="grid grid-cols-2 gap-4" id="accounts-wrap">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de LinkedIn</span>
+            <select name="linkedin_account_id" id="linkedin-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Instagram</span>
+            <select name="instagram_account_id" id="instagram-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Página de LinkedIn (aparece solo si la cuenta seleccionada tiene páginas) -->
+        <label class="block hidden" id="linkedin-page-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Publicar en LinkedIn como</span>
+          <select name="linkedin_page_id" id="linkedin-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Perfil personal</option>
+          </select>
+        </label>
+
+        <!-- Idioma -->
+        <label class="block">
+          <span class="text-xs text-gray-400 mb-1 block">Idioma</span>
+          <select name="idioma" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="auto">Auto-detectar</option>
+            <option value="es">Español</option>
+            <option value="en">English</option>
+          </select>
+        </label>
 
         <!-- Modelo de redacción (Perplexity) -->
         <label class="block">
@@ -194,13 +229,89 @@ import Base from "../layouts/Base.astro";
   // Instagram carousel/single format doesn't apply when generating video.
   const tipoMedio = document.getElementById("tipo-medio") as HTMLSelectElement;
   const formatoWrap = document.getElementById("formato-ig-wrap") as HTMLElement;
+  const formatoIg = document.getElementById("formato-instagram") as HTMLSelectElement;
+  const slidesWrap = document.getElementById("carrusel-slides-wrap") as HTMLElement;
+
+  // Carousel slide count only matters for carousel format (and not for video).
+  const syncSlidesState = () => {
+    const show = tipoMedio.value !== "video" && formatoIg.value === "carrusel";
+    slidesWrap.classList.toggle("opacity-40", !show);
+    slidesWrap.classList.toggle("pointer-events-none", !show);
+  };
+
   const syncFormatoState = () => {
     const isVideo = tipoMedio.value === "video";
     formatoWrap.classList.toggle("opacity-40", isVideo);
     formatoWrap.classList.toggle("pointer-events-none", isVideo);
+    syncSlidesState();
   };
   tipoMedio.addEventListener("change", syncFormatoState);
+  formatoIg.addEventListener("change", syncSlidesState);
   syncFormatoState();
+
+  // Load connected Blotato accounts into the selectors.
+  type LiPage = { id: string; name: string };
+  type Account = { id: string; label: string; pages?: LiPage[] };
+
+  const liAccount = document.getElementById("linkedin-account") as HTMLSelectElement;
+  const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+  const liPage = document.getElementById("linkedin-page") as HTMLSelectElement;
+  const liPageWrap = document.getElementById("linkedin-page-wrap") as HTMLLabelElement;
+
+  // LinkedIn accounts kept around so we can look up each account's pages on change.
+  let liAccounts: Account[] = [];
+
+  function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
+    sel.innerHTML = "";
+    if (!accounts || accounts.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = errorMsg ? `Sin cuentas (${errorMsg})` : "No hay cuentas conectadas";
+      sel.appendChild(opt);
+      return;
+    }
+    for (const a of accounts) {
+      const opt = document.createElement("option");
+      opt.value = a.id;
+      opt.textContent = a.label;
+      sel.appendChild(opt);
+    }
+  }
+
+  // Populate the page selector for the currently selected LinkedIn account.
+  function updateLinkedinPages() {
+    const acc = liAccounts.find((a) => a.id === liAccount.value);
+    const pages = acc?.pages ?? [];
+    liPage.innerHTML = "";
+    const personal = document.createElement("option");
+    personal.value = "";
+    personal.textContent = "Perfil personal";
+    liPage.appendChild(personal);
+    for (const p of pages) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name || `Página ${p.id}`;
+      liPage.appendChild(opt);
+    }
+    liPageWrap.classList.toggle("hidden", pages.length === 0);
+  }
+
+  liAccount.addEventListener("change", updateLinkedinPages);
+
+  (async () => {
+    try {
+      const res = await fetch("/api/accounts");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      liAccounts = data.linkedin ?? [];
+      fillSelect(liAccount, liAccounts, data.linkedin_error);
+      fillSelect(igAccount, data.instagram, data.instagram_error);
+      updateLinkedinPages();
+    } catch (e) {
+      fillSelect(liAccount, [], String(e));
+      fillSelect(igAccount, [], String(e));
+    }
+  })();
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();

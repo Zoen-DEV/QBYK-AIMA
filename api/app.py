@@ -28,6 +28,64 @@ def health():
     return {"status": "ok"}
 
 
+def _account_label(acc: dict) -> str:
+    """Best-effort human label for a Blotato account (shape varies).
+
+    Live Blotato shapes: LinkedIn fills `fullname` (e.g. "Juan Jose Cano"),
+    Instagram fills `username` (e.g. "qbyk_aima"). Keep both, plus other
+    variants seen across platforms, before falling back to the bare id.
+    """
+    for k in ("displayName", "fullname", "name", "username", "handle", "title", "email"):
+        v = acc.get(k)
+        if v:
+            return str(v)
+    return f"Cuenta {acc.get('id', '')}"
+
+
+@app.get("/accounts")
+def list_accounts():
+    """List the user's connected Blotato accounts per platform for the UI selectors.
+
+    Falls back to the .env account IDs (as a synthetic single-item list) when the
+    Blotato listing call fails, so the form can still offer the configured account.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+    import blotato_client as bc
+
+    try:
+        cfg = load_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    out: dict[str, list[dict]] = {}
+    env_fallback = {"linkedin": cfg.linkedin_account_id, "instagram": cfg.instagram_account_id}
+    for platform in ("linkedin", "instagram"):
+        try:
+            accounts = bc.get_accounts(platform, api_key=cfg.blotato_api_key)
+            out[platform] = [{"id": str(a.get("id", "")), "label": _account_label(a)} for a in accounts if a.get("id")]
+        except Exception as e:
+            out[platform] = []
+            out[f"{platform}_error"] = str(e)
+        # Ensure the .env-configured account is selectable even if listing failed/omitted it.
+        env_id = env_fallback[platform]
+        if env_id and not any(a["id"] == env_id for a in out[platform]):
+            out[platform].insert(0, {"id": env_id, "label": f"Configurada en .env ({env_id})"})
+
+    # Attach the LinkedIn Company Pages each account can post to (the form offers them
+    # as a second selector). Failures per account are non-fatal — the account stays
+    # selectable for the personal profile.
+    for acc in out.get("linkedin", []):
+        try:
+            subs = bc.get_subaccounts(acc["id"], api_key=cfg.blotato_api_key)
+            acc["pages"] = [{"id": str(p.get("id", "")), "name": str(p.get("name", ""))} for p in subs if p.get("id")]
+        except Exception:
+            acc["pages"] = []
+
+    return out
+
+
 @app.post("/jobs")
 async def create_job(
     youtube_url: Annotated[str, Form()],
@@ -38,9 +96,13 @@ async def create_job(
     objetivo_linkedin: Annotated[str, Form()] = "",
     objetivo_instagram: Annotated[str, Form()] = "",
     formato_instagram: Annotated[str, Form()] = "imagen-unica",
+    carrusel_slides: Annotated[int, Form()] = 3,
     tipo_medio: Annotated[str, Form()] = "imagen",
     idioma: Annotated[str, Form()] = "auto",
     modelo_perplexity: Annotated[str, Form()] = "sonar-pro",
+    linkedin_account_id: Annotated[str, Form()] = "",
+    linkedin_page_id: Annotated[str, Form()] = "",
+    instagram_account_id: Annotated[str, Form()] = "",
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     publicar: Annotated[str, Form()] = "",
@@ -63,9 +125,13 @@ async def create_job(
             "objetivo_linkedin": objetivo_linkedin,
             "objetivo_instagram": objetivo_instagram,
             "formato_instagram": formato_instagram,
+            "carrusel_slides": max(3, min(6, carrusel_slides)),
             "tipo_medio": tipo_medio,
             "idioma": idioma,
             "modelo_perplexity": modelo_perplexity,
+            "linkedin_account_id": linkedin_account_id.strip(),
+            "linkedin_page_id": linkedin_page_id.strip(),
+            "instagram_account_id": instagram_account_id.strip(),
             "solo": solo,
             "dry_run": dry_run,
             "publicar": publicar,
@@ -129,7 +195,7 @@ def get_job(job_id: str):
             "has_li_hook": "li-hook" in job["images"]["bytes"],
             "has_ig_single": "ig-single" in job["images"]["bytes"],
             "has_ig_carousel": any(k.startswith("ig-") and k != "ig-single" for k in job["images"]["bytes"]),
-            "ig_slides": [k for k in ["ig-0", "ig-1", "ig-2"] if k in job["images"]["bytes"]],
+            "ig_slides": [k for k in (f"ig-{i}" for i in range(6)) if k in job["images"]["bytes"]],
             "provider": job["images"].get("provider", ""),
             "notice": job["images"].get("notice", ""),
         },
@@ -166,6 +232,28 @@ def serve_image(job_id: str, key: str):
     if not img_bytes:
         raise HTTPException(status_code=404)
     return Response(content=img_bytes, media_type="image/png")
+
+
+def _post_url(status: dict) -> str | None:
+    """Extract the published-post permalink from a Blotato post-status response.
+
+    Blotato exposes the link as `publicUrl` on a published post (per the API
+    reference). Some shapes nest the state under `state` and/or use `postUrl`;
+    we check the known variants so the "Ver publicación" link is robust.
+    """
+    if not isinstance(status, dict):
+        return None
+    for key in ("publicUrl", "postUrl", "url"):
+        val = status.get(key)
+        if val:
+            return val
+    state = status.get("state")
+    if isinstance(state, dict):
+        for key in ("publicUrl", "postUrl", "url"):
+            val = state.get(key)
+            if val:
+                return val
+    return None
 
 
 @app.post("/jobs/{job_id}/publish")
@@ -205,9 +293,10 @@ async def publish_job(
     if not dry_run and solo != "instagram" and accounts.get("linkedin_id") and li_text:
         try:
             resp = await _run(bc.publish_post, accounts["linkedin_id"], "linkedin", li_text, li_media,
-                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at)
+                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
+                              page_id=accounts.get("linkedin_page_id") or None)
             status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
-            result["linkedin"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": status.get("postUrl")}
+            result["linkedin"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
         except Exception as e:
             result["linkedin"] = {"error": str(e)}
 
@@ -216,7 +305,7 @@ async def publish_job(
             resp = await _run(bc.publish_post, accounts["instagram_id"], "instagram", ig_text, ig_media,
                               api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True)
             status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
-            result["instagram"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": status.get("postUrl")}
+            result["instagram"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
         except Exception as e:
             result["instagram"] = {"error": str(e)}
 

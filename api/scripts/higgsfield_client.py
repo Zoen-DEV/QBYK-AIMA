@@ -19,9 +19,8 @@ Soul accepts aspect_ratio in {16:9, 3:2, 4:3, 1:1, 3:4, 2:3, 9:16} and
 resolution in {480p, 720p, 1080p}. We always request "1:1"/"1080p" for the
 shared square base; LinkedIn's 4:5 crop is handled later by image_overlay.
 
-Unlike Pollinations, Higgsfield returns a hosted image URL only once the job
-completes, so callers must submit() then poll() (or use generate_image() which
-does both and blocks).
+Higgsfield returns a hosted image URL only once the job completes, so callers
+must submit() then poll() (or use generate_image() which does both and blocks).
 """
 
 import json
@@ -168,8 +167,8 @@ def generate_image(
 ) -> list[str]:
     """Submit and block until the image is ready. Returns [url].
 
-    Mirrors pollinations_client.generate_image's return shape so callers can
-    treat both providers uniformly.
+    Returns a single-element list so callers can treat the source uniformly
+    alongside the template fallback (which returns a local path).
     """
     print(f"   [...] Generando imagen con Higgsfield Soul ({aspect_ratio}, {resolution})...")
     handle = submit_image(prompt, api_key=api_key, api_secret=api_secret,

@@ -91,22 +91,72 @@ function PostCard({
         </div>
       )}
 
-      {/* Image */}
+      {/* Image / carousel */}
       {!videoUrl && allImages.length > 0 && (
-        <div className="relative bg-gray-950">
-          <img
-            src={allImages[slideIdx]}
-            alt={`Visual ${platform}`}
-            className="w-full object-cover max-h-64"
-          />
+        <div className="bg-gray-950">
+          <div className="relative">
+            <img
+              src={allImages[slideIdx]}
+              alt={`Visual ${platform} ${slideIdx + 1}`}
+              className="w-full object-cover max-h-80"
+            />
+            {allImages.length > 1 && (
+              <>
+                {/* Slide counter */}
+                <div className="absolute top-2 right-2 bg-black/60 text-white text-xs font-medium px-2 py-1 rounded-full">
+                  {slideIdx + 1} / {allImages.length}
+                </div>
+                {/* Prev / next arrows */}
+                <button
+                  type="button"
+                  aria-label="Anterior"
+                  onClick={() => setSlideIdx((i) => (i - 1 + allImages.length) % allImages.length)}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Siguiente"
+                  onClick={() => setSlideIdx((i) => (i + 1) % allImages.length)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                {/* Dots */}
+                <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5">
+                  {allImages.map((_, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      aria-label={`Slide ${i + 1}`}
+                      onClick={() => setSlideIdx(i)}
+                      className={`w-2 h-2 rounded-full transition ${i === slideIdx ? "bg-white" : "bg-white/40"}`}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Thumbnail strip — all slides visible at a glance */}
           {allImages.length > 1 && (
-            <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5">
-              {allImages.map((_, i) => (
+            <div className="flex gap-2 overflow-x-auto p-3 border-t border-gray-800">
+              {allImages.map((url, i) => (
                 <button
                   key={i}
+                  type="button"
                   onClick={() => setSlideIdx(i)}
-                  className={`w-2 h-2 rounded-full transition ${i === slideIdx ? "bg-white" : "bg-white/40"}`}
-                />
+                  className={`flex-shrink-0 rounded-md overflow-hidden border-2 transition ${
+                    i === slideIdx ? "border-brand-500" : "border-transparent opacity-60 hover:opacity-100"
+                  }`}
+                >
+                  <img src={url} alt={`Slide ${i + 1}`} className="w-14 h-14 object-cover" />
+                </button>
               ))}
             </div>
           )}

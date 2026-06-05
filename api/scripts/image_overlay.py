@@ -1,5 +1,6 @@
 """
-Image overlay - renders text over a base image (the Pollinations output).
+Image overlay - renders text over a base image (a provider URL or a local
+template path).
 
 Used by the repurpose-youtube-video skill to produce Instagram carousels with the
 fixed 3-slide format (Hook / Info / Credits), Instagram single images with a
@@ -96,23 +97,35 @@ def _load_font(size: int, *, bold: bool) -> ImageFont.ImageFont:
 _TIMEOUT_SECS = 30
 
 # Browser User-Agent: some image hosts (e.g. Higgsfield behind Cloudflare) reject
-# urllib's default UA. Harmless for Pollinations.
+# urllib's default UA. Only used for remote URLs; local template paths skip it.
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
 
-def _fetch_base(url: str, target_size: tuple[int, int] = (1080, 1080)) -> Image.Image:
-    """Download the base image and return it as an RGB Pillow image of `target_size`.
+def _is_local_path(src: str) -> bool:
+    """True if `src` is a local filesystem path rather than an http(s) URL.
 
-    Defaults to 1080x1080 (IG square). Pass (1080, 1350) for LinkedIn 4:5.
-    Center-crops to preserve composition.
+    Template fallbacks pass a local .png path; Higgsfield passes a URL.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as r:
-        data = r.read()
-    img = Image.open(io.BytesIO(data)).convert("RGB")
+    return not src.lower().startswith(("http://", "https://"))
+
+
+def _fetch_base(url: str, target_size: tuple[int, int] = (1080, 1080)) -> Image.Image:
+    """Load the base image and return it as an RGB Pillow image of `target_size`.
+
+    `url` may be an http(s) URL (provider output) or a local filesystem path
+    (template fallback). Defaults to 1080x1080 (IG square). Pass (1080, 1350)
+    for LinkedIn 4:5. Center-crops to preserve composition.
+    """
+    if _is_local_path(url):
+        img = Image.open(url).convert("RGB")
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as r:
+            data = r.read()
+        img = Image.open(io.BytesIO(data)).convert("RGB")
     tw, th = target_size
     w, h = img.size
     if (w, h) != (tw, th):

@@ -36,10 +36,10 @@ class Config:
 
     @property
     def image_provider(self) -> str:
-        """'higgsfield' if both key and secret are set, else 'pollinations' (free fallback)."""
+        """'higgsfield' if both key and secret are set, else 'template' (local fallback)."""
         if self.higgsfield_api_key and self.higgsfield_api_secret:
             return "higgsfield"
-        return "pollinations"
+        return "template"
 
     @property
     def video_available(self) -> bool:

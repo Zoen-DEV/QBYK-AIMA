@@ -4,31 +4,60 @@ Image generation provider facade.
 Picks the image backend based on available credentials and exposes a uniform
 interface to job_runner so the pipeline stays provider-agnostic:
 
-  generate_base(prompt) -> url        Blocking. The shared square base image
+  generate_base(prompt) -> src         Blocking. The shared square base image
                                        (reused by LinkedIn, IG single, carousel
                                        slide 0). Raises only if generation fails
                                        with no usable fallback.
   prewarm_extras(prompts) -> handles   Start generating the extra carousel slides
-                                       (slides 1 & 2). Returns opaque handles.
-  resolve(handle) -> url               Blocking. Wait for one prewarmed handle
-                                       and return its final image URL.
+                                       (info slides + credits). Returns opaque
+                                       handles.
+  resolve(handle) -> src               Blocking. Wait for one prewarmed handle
+                                       and return its final image source.
 
-Two backends:
-  - Pollinations (free, no key): the handle IS the image URL (lazy generation).
+A "src" is either an http(s) URL (Higgsfield output) or a local filesystem path
+(a bundled template). image_overlay._fetch_base accepts both transparently.
+
+Backend:
   - Higgsfield Soul (paid, key+secret): submit/poll; the URL exists only once the
     job completes. On any per-image failure (network, timeout, nsfw, failed) the
-    Higgsfield provider falls back to Pollinations for *that* image so a single
-    failure never breaks the pipeline.
+    Higgsfield provider falls back to a bundled local template for *that* image
+    so a single failure never breaks the pipeline.
+  - Templates (free, offline): three bundled PNGs used only as a fallback when
+    Higgsfield is unavailable or fails. There is no standalone paid service to
+    call; when no Higgsfield credentials are set we serve templates directly.
 
-Seed scheme (kept identical to the original Pollinations flow so fallbacks line
-up): base = seed 42, extra carousel slides = seeds 43, 44, ... (distinct images).
+Template assignment (confirmed product decision — one template per slide type so
+a fallback carousel still looks varied):
+  - base / hook (LinkedIn, IG single, carousel slide 0)  -> template-1.png
+  - info / argument slides                               -> template-2.png
+  - credits / closing slide (last extra)                 -> template-3.png
 """
 
-import pollinations_client as pc
+from pathlib import Path
+
 import higgsfield_client as hf
 
-_BASE_SEED = 42
-_EXTRA_START_SEED = 43
+# Bundled fallback templates live next to the api package: api/assets/templates/.
+# scripts/ is api/scripts/, so go up one level to api/ then into assets/templates.
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "assets" / "templates"
+_TEMPLATE_BASE = _TEMPLATES_DIR / "template-1.png"     # base / hook
+_TEMPLATE_INFO = _TEMPLATES_DIR / "template-2.png"     # info / argument slides
+_TEMPLATE_CREDITS = _TEMPLATES_DIR / "template-3.png"  # credits / closing slide
+
+
+def _template_path(p: Path) -> str:
+    """Return the template path as a string, raising a clear error if missing.
+
+    The templates are bundled assets the user drops into api/assets/templates/;
+    a missing file is a deployment problem, not a runtime fallback, so surface it.
+    """
+    if not p.exists():
+        raise RuntimeError(
+            f"Template de respaldo no encontrado: {p}. "
+            "Coloca template-1.png, template-2.png y template-3.png (1080x1080) "
+            "en api/assets/templates/."
+        )
+    return str(p)
 
 
 def _short_reason(exc: Exception) -> str:
@@ -48,9 +77,16 @@ def _short_reason(exc: Exception) -> str:
     return msg if len(msg) <= 80 else msg[:77] + "..."
 
 
-class PollinationsProvider:
-    name = "pollinations"
-    label = "Pollinations"
+class TemplateProvider:
+    """Offline fallback backend: serves bundled local template images.
+
+    Used directly when no Higgsfield credentials are configured, and as the
+    per-image fallback inside HiggsfieldProvider. Returns local file paths;
+    image_overlay renders the copy on top exactly as it would over a URL.
+    """
+
+    name = "template"
+    label = "plantillas locales"
 
     def __init__(self):
         self._warnings: list[str] = []
@@ -62,16 +98,22 @@ class PollinationsProvider:
         return w
 
     def generate_base(self, prompt: str) -> str:
-        return pc.generate_image(prompt, aspect_ratio="square_1_1", seed=_BASE_SEED)[0]
+        # Base / hook slide always uses template-1.
+        return _template_path(_TEMPLATE_BASE)
 
     def prewarm_extras(self, prompts: list[str]) -> list:
-        # Returns URLs directly; for Pollinations the handle is the image URL.
-        return pc.prewarm_carousel_extra_slides(prompts, start_seed=_EXTRA_START_SEED)
+        # No async work — return one handle per extra slide. The last extra is the
+        # credits/closing slide; the rest are info slides. Encode that in the handle.
+        handles: list[dict] = []
+        n = len(prompts)
+        for i in range(n):
+            kind = "credits" if i == n - 1 else "info"
+            handles.append({"template_kind": kind})
+        return handles
 
-    def resolve(self, handle) -> str:
-        # handle is a URL string; block until generated, then return it.
-        pc.fetch_url(handle)
-        return handle
+    def resolve(self, handle: dict) -> str:
+        kind = handle.get("template_kind", "info")
+        return _template_path(_TEMPLATE_CREDITS if kind == "credits" else _TEMPLATE_INFO)
 
 
 class HiggsfieldProvider:
@@ -83,7 +125,7 @@ class HiggsfieldProvider:
         self._secret = api_secret
         self._model = model
         self._resolution = resolution
-        self._fallback = PollinationsProvider()
+        self._fallback = TemplateProvider()
         self._warnings: list[str] = []
 
     def pop_warnings(self) -> list[str]:
@@ -101,48 +143,47 @@ class HiggsfieldProvider:
         except Exception as e:
             reason = _short_reason(e)
             self._warnings.append(reason)
-            print(f"   [aviso] Higgsfield (imagen base) falló: {e}. Fallback a Pollinations.")
+            print(f"   [aviso] Higgsfield (imagen base) falló: {e}. Fallback a plantilla local.")
             return self._fallback.generate_base(prompt)
 
     def prewarm_extras(self, prompts: list[str]) -> list:
+        n = len(prompts)
         handles: list[dict] = []
         for i, prompt in enumerate(prompts):
-            seed = _EXTRA_START_SEED + i
+            # Track slide kind so a fallback picks the right template.
+            kind = "credits" if i == n - 1 else "info"
             try:
                 handle = hf.submit_image(
                     prompt, api_key=self._key, api_secret=self._secret,
                     aspect_ratio="1:1", resolution=self._resolution, model=self._model,
                 )
-                handle["fallback_seed"] = seed
+                handle["template_kind"] = kind
             except Exception as e:
                 # Don't warn yet — warn once at resolve time, attributed to the slide.
-                print(f"   [aviso] Higgsfield (envío slide {i + 2}) falló: {e}. Ese slide usará Pollinations.")
-                handle = {"fallback_prompt": prompt, "fallback_seed": seed, "fallback_reason": _short_reason(e)}
+                print(f"   [aviso] Higgsfield (envío slide {i + 2}) falló: {e}. Ese slide usará plantilla local.")
+                handle = {"fallback_template": True, "template_kind": kind, "fallback_reason": _short_reason(e)}
             handles.append(handle)
         return handles
 
     def resolve(self, handle: dict) -> str:
-        seed = handle.get("fallback_seed", _EXTRA_START_SEED)
-        if "fallback_prompt" in handle:  # submit already failed → straight to Pollinations
+        if handle.get("fallback_template"):  # submit already failed → straight to template
             self._warnings.append(handle.get("fallback_reason", "no se pudo enviar a Higgsfield"))
-            return self._pollinations_slide(handle["fallback_prompt"], seed)
+            return self._template_slide(handle)
         try:
             return hf.poll_image(handle, api_key=self._key, api_secret=self._secret)
         except Exception as e:
             self._warnings.append(_short_reason(e))
-            print(f"   [aviso] Higgsfield (slide) falló: {e}. Fallback a Pollinations.")
-            return self._pollinations_slide(handle.get("prompt", ""), seed)
+            print(f"   [aviso] Higgsfield (slide) falló: {e}. Fallback a plantilla local.")
+            return self._template_slide(handle)
 
-    @staticmethod
-    def _pollinations_slide(prompt: str, seed: int) -> str:
-        # Distinct seed per slide so fallback images don't collide with the base.
-        return pc.generate_image(prompt, aspect_ratio="square_1_1", seed=seed)[0]
+    def _template_slide(self, handle: dict) -> str:
+        return self._fallback.resolve(handle)
 
 
 def make_provider(*, hf_key: str = "", hf_secret: str = "",
                   hf_model: str = hf.DEFAULT_MODEL,
                   hf_resolution: str = hf.DEFAULT_RESOLUTION):
-    """Return a Higgsfield provider when both credentials are set, else Pollinations."""
+    """Return a Higgsfield provider when both credentials are set, else templates."""
     if hf_key and hf_secret:
         return HiggsfieldProvider(hf_key, hf_secret, model=hf_model, resolution=hf_resolution)
-    return PollinationsProvider()
+    return TemplateProvider()

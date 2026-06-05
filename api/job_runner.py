@@ -35,8 +35,47 @@ async def _run(fn, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
+def _is_local_src(src: str) -> bool:
+    """True if `src` is a local file path (a bundled template) rather than a URL.
+
+    Provider sources are either http(s) URLs (Higgsfield) or local template
+    paths (the fallback). Local paths can't be published directly — they must be
+    uploaded to Blotato first.
+    """
+    return not src.lower().startswith(("http://", "https://"))
+
+
+def _publishable_media(src: str, filename: str, *, api_key: str) -> str:
+    """Turn a provider source into a Blotato-hosted, publishable media URL.
+
+    URLs pass through unchanged. A local template path is read from disk and
+    uploaded to Blotato so the raw template (without overlay) can still be
+    published when Pillow is unavailable or the overlay failed.
+    """
+    if not _is_local_src(src):
+        return src
+    file_bytes = Path(src).read_bytes()
+    return bc.upload_media_local(file_bytes, filename, api_key=api_key)
+
+
 async def _push(queue: asyncio.Queue, event: dict):
     await queue.put(event)
+
+
+async def _media_fallback(q: asyncio.Queue, raw_urls: dict, key: str, filename: str, cfg) -> list[str]:
+    """Best-effort publishable media for `key` from raw_urls (URL or template path).
+
+    Returns [url] when a publishable URL is obtained, else [] (and warns). A local
+    template path is uploaded to Blotato first so it can be published raw.
+    """
+    if key not in raw_urls:
+        return []
+    try:
+        url = await _run(_publishable_media, raw_urls[key], filename, api_key=cfg.blotato_api_key)
+        return [url] if url else []
+    except Exception as e:
+        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"No se pudo subir respaldo: {e}"})
+        return []
 
 
 async def run_pipeline(job: dict):
@@ -89,8 +128,9 @@ async def run_pipeline(job: dict):
         # ── Step 2: Accounts ─────────────────────────────────────────────
         await _push(q, {"step": "accounts", "status": "running", "msg": "Verificando cuentas..."})
 
-        li_account_id = cfg.linkedin_account_id
-        ig_account_id = cfg.instagram_account_id
+        # Precedence: account picked in the UI form > .env default > first listed account.
+        li_account_id = params.get("linkedin_account_id") or cfg.linkedin_account_id
+        ig_account_id = params.get("instagram_account_id") or cfg.instagram_account_id
 
         if do_linkedin and not li_account_id:
             try:
@@ -108,7 +148,9 @@ async def run_pipeline(job: dict):
             except Exception as e:
                 await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta Instagram: {e}"})
 
-        job["accounts"] = {"linkedin_id": li_account_id, "instagram_id": ig_account_id}
+        # LinkedIn page id (a "subaccount") is optional — empty means personal profile.
+        li_page_id = params.get("linkedin_page_id") or ""
+        job["accounts"] = {"linkedin_id": li_account_id, "linkedin_page_id": li_page_id, "instagram_id": ig_account_id}
         await _push(q, {"step": "accounts", "status": "done", "msg": "Cuentas configuradas"})
 
         # ── Step 3: Resolve tone/objective ───────────────────────────────
@@ -197,12 +239,16 @@ async def run_pipeline(job: dict):
 
         # ── Steps 5-7: Images (generate + overlay + upload) ──────────────────
 
+        # Carousel slide count from the form (3–6); slide 0 = hook, last = credits,
+        # the slides in between are info/argument slides.
+        n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
+
         expected_subkeys: list[str] = []
         if do_linkedin:
             expected_subkeys.append("li-hook")
         if do_instagram:
             if formato_ig == "carrusel":
-                expected_subkeys.extend(["ig-0", "ig-1", "ig-2"])
+                expected_subkeys.extend(f"ig-{i}" for i in range(n_slides))
             else:
                 expected_subkeys.append("ig-single")
 
@@ -218,9 +264,10 @@ async def run_pipeline(job: dict):
 
         # image_bytes is mutable — /image/{key} can serve mid-pipeline as soon as a key is set
         image_bytes: dict[str, bytes] = job["images"]["bytes"]
-        # raw_urls: provider image URL per subkey, used as upload fallback when overlay/upload fails
+        # raw_urls: provider image source per subkey (URL or local template path),
+        # used as upload fallback when overlay/upload fails
         raw_urls: dict[str, str] = {}
-        # image_warnings: reasons Higgsfield fell back to Pollinations (empty when not applicable)
+        # image_warnings: reasons Higgsfield fell back to local templates (empty when not applicable)
         image_warnings: list[str] = []
 
         # ── 5a: Base image (shared by LinkedIn, IG single, and carousel slide 0) ──
@@ -245,13 +292,20 @@ async def run_pipeline(job: dict):
         extra_handles: list = []
         if do_instagram and formato_ig == "carrusel" and base_url:
             topic = content.get("title", "engaging topic")
-            extra_prompts = [
-                f"Conceptual editorial visual about: {topic}. Lateral composition or texture. Same color palette as the main image. No text, no typography, no logos, no watermarks.",
-                f"Minimal closing visual about: {topic}. Simple centered composition, low saturation. Same style as the main image. No text, no typography, no logos, no watermarks.",
+            # Slides 1..n-1: (n_slides - 2) info slides + 1 closing/credits slide.
+            n_info = n_slides - 2
+            info_prompts = [
+                f"Conceptual editorial visual about: {topic}. Lateral composition or texture, variation {i + 1}. Same color palette as the main image. No text, no typography, no logos, no watermarks."
+                for i in range(n_info)
             ]
-            # Start generating slides 1 & 2 now (Higgsfield submits the jobs; Pollinations
-            # fires background triggers) so they render while LinkedIn/IG-0 overlays run.
-            # raw_urls for these slides are filled in at resolve time, once we have a real URL.
+            credits_prompt = (
+                f"Minimal closing visual about: {topic}. Simple centered composition, low saturation. "
+                "Same style as the main image. No text, no typography, no logos, no watermarks."
+            )
+            extra_prompts = info_prompts + [credits_prompt]
+            # Start generating slides 1..n-1 now (Higgsfield submits the jobs; the template
+            # provider returns immediate handles) so they render while LinkedIn/IG-0 overlays run.
+            # raw_urls for these slides are filled in at resolve time, once we have a real src.
             extra_handles = await _run(provider.prewarm_extras, extra_prompts)
 
         if not _HAS_OVERLAY:
@@ -262,7 +316,10 @@ async def run_pipeline(job: dict):
         ig_hook = _extract_hook(posts.get("instagram_text", ""), max_words=10)
         channel = content.get("channel", "")
         title_str = content.get("title", "")
-        body_lines = _extract_body_lines(posts.get("instagram_text", "")) if do_instagram else []
+        # Number of info (argument) slides between the hook and the credits slide.
+        n_info = (n_slides - 2) if (do_instagram and formato_ig == "carrusel") else 1
+        # Grab up to 3 body lines per info slide so each slide gets distinct content.
+        body_lines = _extract_body_lines(posts.get("instagram_text", ""), max_lines=3 * max(1, n_info)) if do_instagram else []
         heading = _extract_heading(title_str) if do_instagram else ""
 
         # ── 5c: LinkedIn overlay (uses base_url — emits done immediately) ────────
@@ -317,11 +374,22 @@ async def run_pipeline(job: dict):
                 else:
                     await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": "Sin imagen base"})
 
-                # Carousel slides 1 & 2: fetch (pre-warmed) then overlay individually
-                extra_slide_defs = [
-                    ("ig-1", lambda u: ov.render_info(u, body_lines, heading=heading, lang=lang)),
-                    ("ig-2", lambda u: ov.render_credits(u, channel, title_str, lang=lang)),
-                ]
+                # Carousel slides 1..n-1: (n_info) info slides + 1 credits slide.
+                # Each info slide gets its own chunk of up to 3 body lines.
+                extra_slide_defs = []
+                for s in range(n_info):
+                    chunk = body_lines[s * 3:(s + 1) * 3]
+                    if not chunk:
+                        chunk = ["Mira el video completo para más detalles." if lang == "es"
+                                 else "Watch the full video for more."]
+                    # Bind chunk via default arg so each lambda captures its own slice.
+                    extra_slide_defs.append((
+                        f"ig-{s + 1}",
+                        lambda u, c=chunk: ov.render_info(u, c, heading=heading, lang=lang),
+                    ))
+                extra_slide_defs.append(
+                    (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang))
+                )
                 for i, (fname, render_fn) in enumerate(extra_slide_defs):
                     if i >= len(extra_handles):
                         await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": "Sin imagen base"})
@@ -353,27 +421,26 @@ async def run_pipeline(job: dict):
                 try:
                     url_li = await _run(bc.upload_media_local, image_bytes[key], "linkedin-hook.png", api_key=cfg.blotato_api_key)
                     li_media_urls = [url_li]
-                    job["images"]["blotato_urls"]["linkedin"] = url_li
                 except Exception as e:
                     await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                    if key in raw_urls:
-                        li_media_urls = [raw_urls[key]]
-            elif key in raw_urls:
-                li_media_urls = [raw_urls[key]]
+                    li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
+            else:
+                li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
+            if li_media_urls:
+                job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
 
         if do_instagram:
             if formato_ig == "carrusel":
-                for key in ["ig-0", "ig-1", "ig-2"]:
+                for key in [f"ig-{i}" for i in range(n_slides)]:
                     if key in image_bytes:
                         try:
                             u = await _run(bc.upload_media_local, image_bytes[key], f"{key}.png", api_key=cfg.blotato_api_key)
                             ig_media_urls.append(u)
                         except Exception as e:
                             await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                            if key in raw_urls:
-                                ig_media_urls.append(raw_urls[key])
-                    elif key in raw_urls:
-                        ig_media_urls.append(raw_urls[key])
+                            ig_media_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
+                    else:
+                        ig_media_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
             else:
                 key = "ig-single"
                 if key in image_bytes:
@@ -382,24 +449,35 @@ async def run_pipeline(job: dict):
                         ig_media_urls = [u]
                     except Exception as e:
                         await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                        if key in raw_urls:
-                            ig_media_urls = [raw_urls[key]]
-                elif "ig-single" in raw_urls:
-                    ig_media_urls = [raw_urls["ig-single"]]
+                        ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
+                else:
+                    ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
 
             job["images"]["blotato_urls"]["instagram"] = ig_media_urls
 
         job["_li_media_urls"] = li_media_urls
         job["_ig_media_urls"] = ig_media_urls
 
-        # If Higgsfield fell back to Pollinations on any image, surface why — live in the
-        # progress step and durably (stored on the job → shown on the review screen).
+        # If Higgsfield fell back to local templates on any image, surface why — live in
+        # the progress step and durably (stored on the job → shown on the review screen).
+        # Count what actually got produced (overlaid bytes) — a local template that never
+        # got an overlay rendered onto it isn't publishable to Blotato on its own.
         job["images"]["provider"] = provider.name
-        if image_warnings:
+        produced = len({k for k in image_bytes} | {k for k in raw_urls})
+        if produced == 0:
+            notice = (
+                "No se pudo generar ninguna imagen — Higgsfield no respondió y no se "
+                "pudo aplicar la plantilla de respaldo. Revisa los créditos de Higgsfield "
+                "y que las plantillas estén en api/assets/templates/. "
+                "Puedes publicar sin imagen o reintentar."
+            )
+            job["images"]["notice"] = notice
+            await _push(q, {"step": "images", "status": "warn", "msg": notice})
+        elif image_warnings:
             reasons = list(dict.fromkeys(image_warnings))  # dedupe, preserve order
             notice = (
                 f"Higgsfield no disponible ({'; '.join(reasons)}) — "
-                f"{len(image_warnings)} imagen(es) generada(s) con Pollinations."
+                f"{produced} imagen(es) generada(s) con plantillas de respaldo."
             )
             job["images"]["notice"] = notice
             await _push(q, {"step": "images", "status": "warn", "msg": notice})
@@ -426,11 +504,11 @@ def _extract_hook(text: str, max_words: int = 12) -> str:
     return " ".join(words[:max_words])
 
 
-def _extract_body_lines(text: str) -> list[str]:
+def _extract_body_lines(text: str, max_lines: int = 3) -> list[str]:
     lines = [l.strip().lstrip("•→-* ") for l in text.split("\n") if l.strip() and not l.strip().startswith("#")]
-    # Skip the first line (hook) and grab up to 3 body lines
+    # Skip the first line (hook) and grab up to max_lines body lines
     body = [l for l in lines[1:] if not l.startswith("▶") and not l.startswith("#") and len(l) > 10]
-    return body[:3] or ["Mira el video completo para más detalles."]
+    return body[:max_lines] or ["Mira el video completo para más detalles."]
 
 
 def _extract_heading(title: str) -> str:

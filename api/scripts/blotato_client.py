@@ -114,8 +114,8 @@ def _poll(
 def upload_media_from_url(public_url: str, *, api_key: str) -> str:
     """
     Re-host a publicly accessible media URL on Blotato.
-    Useful for taking a Pollinations-hosted URL and getting a Blotato-hosted one
-    so the post is decoupled from Pollinations' CDN lifetime.
+    Useful for taking a provider-hosted URL (e.g. Higgsfield's CDN) and getting a
+    Blotato-hosted one so the post is decoupled from the provider's CDN lifetime.
     Returns the new Blotato-hosted URL.
     """
     resp = _request("POST", "/media", {"url": public_url}, api_key=api_key)
@@ -227,6 +227,14 @@ def get_accounts(platform: str, *, api_key: str) -> list[dict]:
     return resp.get("items", [])
 
 
+def get_subaccounts(account_id: str, *, api_key: str) -> list[dict]:
+    """Subaccounts of a connected account (LinkedIn Company Pages, Facebook Pages,
+    YouTube playlists). Returns items with `id` (the pageId used when publishing)
+    and `name`. Empty list when the account manages no pages."""
+    resp = _request("GET", f"/users/me/accounts/{account_id}/subaccounts", api_key=api_key)
+    return resp.get("items", [])
+
+
 def get_templates(*, api_key: str) -> list[dict]:
     resp = _request("GET", "/videos/templates?fields=id,name,description", api_key=api_key)
     return resp.get("items", [])
@@ -265,6 +273,7 @@ def publish_post(
     api_key: str,
     schedule_time: str | None = None,
     share_to_feed: bool = True,
+    page_id: str | None = None,
 ) -> dict:
     """
     Publish or schedule a post.
@@ -272,6 +281,9 @@ def publish_post(
     media_urls: one URL = single image/video; multiple URLs = carousel (Instagram).
     schedule_time: ISO-8601 string for deferred publishing (e.g. "2026-05-14T18:00:00Z"),
                    or None to publish immediately.
+    page_id: LinkedIn Company Page (or Facebook Page) id from get_subaccounts(); when
+             set, the post targets that page instead of the personal profile. Omit/None
+             posts to the personal profile.
     Returns Blotato response with 'postSubmissionId'.
     """
     if platform == "instagram":
@@ -279,10 +291,14 @@ def publish_post(
 
     content: dict = {"text": text, "platform": platform, "mediaUrls": media_urls}
 
+    target: dict = {"targetType": platform}
+    if page_id:
+        target["pageId"] = page_id
+
     post_body: dict = {
         "accountId": account_id,
         "content": content,
-        "target": {"targetType": platform},
+        "target": target,
     }
     if platform == "instagram" and share_to_feed:
         post_body["shareToFeed"] = True
