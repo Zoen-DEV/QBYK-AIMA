@@ -23,7 +23,14 @@ def _system_prompt() -> str:
     return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn and Instagram based on YouTube video content.
 
 OUTPUT FORMAT: Respond with ONLY valid JSON in this exact shape — no markdown, no explanation, no preamble:
-{"linkedin_text": "...", "instagram_text": "..."}
+{"linkedin_text": "...", "instagram_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}}
+
+=== IMAGE TEXT (overlay copy for the visuals) ===
+The `image_text` object is the text that gets printed ON the images/carousel — it is NOT the caption. Write it as standalone, designed-poster copy:
+- `hook`: ONE short, complete, punchy phrase for the cover image (max ~10 words). It must read as a finished statement, not a truncated sentence. No hashtags, no emojis, no URL, no trailing "…". Capitalize naturally (sentence case, not ALL CAPS).
+- `slides`: an array of short idea-statements, ONE per info slide. The exact number of slides required is given in the user message ("INFO SLIDES NEEDED: N") — output EXACTLY that many strings. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
+- If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
+Write `image_text` in the same language as the posts.
 
 === LINKEDIN POST RULES ===
 - 150–300 words
@@ -81,6 +88,14 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     fmt_ig = params.get("formato_instagram", "imagen-unica")
     solo = params.get("solo", "")
 
+    # How many info slides the carousel needs (slide 0 = hook, last = credits).
+    # Only an Instagram carousel needs info slides; everything else needs 0.
+    if solo != "linkedin" and fmt_ig == "carrusel":
+        n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
+        n_info_slides = n_slides - 2
+    else:
+        n_info_slides = 0
+
     transcript_snippet = (content.get("transcript") or "")[:6000]
     tags = content.get("tags", [])
     chapters = content.get("chapters", [])
@@ -98,6 +113,7 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
 {chr(10).join(f'- {p}' for p in platforms)}
 
 Language to write in: {lang}
+INFO SLIDES NEEDED: {n_info_slides}  (output EXACTLY this many strings in image_text.slides — 0 means an empty array)
 YouTube URL (for LinkedIn): {clean_url}
 Channel: {channel}
 
@@ -119,6 +135,7 @@ Important reminders:
 - Verify every specific claim against the transcript above
 - Instagram: max 5 hashtags, no raw YouTube URL in caption
 - LinkedIn: include the raw YouTube URL with the CTA prefix, 3-5 hashtags
+- image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
 {"- Only write linkedin_text (set instagram_text to empty string)" if solo == "linkedin" else ""}
 {"- Only write instagram_text (set linkedin_text to empty string)" if solo == "instagram" else ""}
 """
@@ -191,18 +208,52 @@ def _extract_texts_fallback(raw: str) -> dict:
     return result
 
 
+def _normalize_image_text(value) -> dict | None:
+    """Coerce a parsed `image_text` into {"hook": str, "slides": [str, ...]}.
+
+    Returns None when the value is unusable (missing/wrong shape) so the caller
+    can fall back to the heuristic overlay copy. Tolerates a bare string hook and
+    non-string slide entries.
+    """
+    if not isinstance(value, dict):
+        return None
+    hook = value.get("hook", "")
+    if not isinstance(hook, str):
+        hook = str(hook) if hook is not None else ""
+    hook = hook.strip()
+    raw_slides = value.get("slides", [])
+    if isinstance(raw_slides, str):
+        raw_slides = [raw_slides]
+    if not isinstance(raw_slides, (list, tuple)):
+        raw_slides = []
+    slides = [str(s).strip() for s in raw_slides if str(s).strip()]
+    if not hook and not slides:
+        return None
+    return {"hook": hook, "slides": slides}
+
+
 def _parse_raw(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    parsed = None
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
-        pass
-    try:
-        return json.loads(_fix_control_chars(raw))
-    except json.JSONDecodeError:
-        pass
+        try:
+            parsed = json.loads(_fix_control_chars(raw))
+        except json.JSONDecodeError:
+            parsed = None
+    if isinstance(parsed, dict):
+        # Normalize image_text in place (None when absent/unusable -> heuristic fallback downstream).
+        img = _normalize_image_text(parsed.get("image_text"))
+        if img is not None:
+            parsed["image_text"] = img
+        else:
+            parsed.pop("image_text", None)
+        return parsed
+    # Level-3 fallback recovers only the caption texts; image_text is left out
+    # on purpose so job_runner degrades the overlay copy to its heuristics.
     result = _extract_texts_fallback(raw)
     if result.get("linkedin_text") or result.get("instagram_text"):
         return result
@@ -301,9 +352,15 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
     raw = await loop.run_in_executor(None, _stream)
     posts = _parse_raw(raw)
     # Safety net: sonar models sometimes append citation markers like [1] despite instructions.
+    _strip = lambda s: re.sub(r"\s*\[\d+\]", "", s).strip()
     for key in ("linkedin_text", "instagram_text"):
         if posts.get(key):
-            posts[key] = re.sub(r"\s*\[\d+\]", "", posts[key]).strip()
+            posts[key] = _strip(posts[key])
+    img = posts.get("image_text")
+    if isinstance(img, dict):
+        if img.get("hook"):
+            img["hook"] = _strip(img["hook"])
+        img["slides"] = [_strip(s) for s in img.get("slides", [])]
     return posts
 
 
