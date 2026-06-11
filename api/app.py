@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 
@@ -88,7 +88,9 @@ def list_accounts():
 
 @app.post("/jobs")
 async def create_job(
-    youtube_url: Annotated[str, Form()],
+    source_type: Annotated[str, Form()] = "youtube",
+    youtube_url: Annotated[str, Form()] = "",
+    media_file: Annotated[UploadFile | None, File()] = None,
     tono: Annotated[str, Form()] = "",
     tono_linkedin: Annotated[str, Form()] = "",
     tono_instagram: Annotated[str, Form()] = "",
@@ -112,12 +114,35 @@ async def create_job(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Resolve the content source. "youtube" needs a URL; "audio"/"texto" need an
+    # uploaded file whose bytes we read now (the UploadFile is tied to this request,
+    # but the pipeline runs asynchronously after we return).
+    source_type = (source_type or "youtube").strip().lower()
+    if source_type not in ("youtube", "audio", "texto"):
+        raise HTTPException(status_code=400, detail=f"source_type inválido: {source_type}")
+
+    upload_bytes = b""
+    upload_filename = ""
+    if source_type == "youtube":
+        if not youtube_url.strip():
+            raise HTTPException(status_code=400, detail="Falta la URL de YouTube")
+    else:
+        if media_file is None:
+            raise HTTPException(status_code=400, detail="Falta el archivo de audio/texto")
+        upload_bytes = await media_file.read()
+        if not upload_bytes:
+            raise HTTPException(status_code=400, detail="El archivo está vacío")
+        default_name = "audio.ogg" if source_type == "audio" else "texto.txt"
+        upload_filename = media_file.filename or default_name
+
     job_id = str(uuid.uuid4())
     job: dict = {
         "id": job_id,
         "status": "running",
         "params": {
+            "source_type": source_type,
             "youtube_url": youtube_url,
+            "upload_filename": upload_filename,
             "tono": tono,
             "tono_linkedin": tono_linkedin,
             "tono_instagram": tono_instagram,
@@ -147,6 +172,8 @@ async def create_job(
         "_cfg": cfg,
         "_li_media_urls": [],
         "_ig_media_urls": [],
+        "_upload_bytes": upload_bytes,
+        "_upload_filename": upload_filename,
     }
     jobs[job_id] = job
     asyncio.create_task(run_pipeline(job))

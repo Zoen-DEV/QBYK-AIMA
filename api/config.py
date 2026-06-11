@@ -22,6 +22,24 @@ class Config:
     higgsfield_video_model: str = "higgsfield-ai/text2video/turbo"
     higgsfield_video_aspect: str = "9:16"
     higgsfield_video_duration: int = 0  # 0 = don't send duration (let model default)
+    # Speech-to-text (for the "audio" source). Two engines:
+    #   "api"   — OpenAI-compatible Whisper endpoint (OpenAI default, or Groq).
+    #   "local" — faster-whisper running on this machine (free, offline, no key).
+    transcription_engine: str = "api"
+    transcription_api_key: str = ""
+    transcription_base_url: str = "https://api.openai.com/v1"
+    transcription_model: str = "whisper-1"
+    # Local (faster-whisper) settings — only used when engine == "local".
+    transcription_local_model: str = "base"
+    transcription_local_device: str = "cpu"
+    transcription_local_compute: str = "int8"
+
+    @property
+    def transcription_available(self) -> bool:
+        """Local engine needs no key; the API engine needs a Whisper key."""
+        if self.transcription_engine == "local":
+            return True
+        return bool(self.transcription_api_key)
 
     @property
     def llm_provider(self) -> str:
@@ -64,4 +82,15 @@ def load_config() -> Config:
         higgsfield_video_model=os.environ.get("HIGGSFIELD_VIDEO_MODEL", "") or "higgsfield-ai/text2video/turbo",
         higgsfield_video_aspect=os.environ.get("HIGGSFIELD_VIDEO_ASPECT", "") or "9:16",
         higgsfield_video_duration=int(os.environ.get("HIGGSFIELD_VIDEO_DURATION", "") or "0"),
+        # "local" uses faster-whisper offline; anything else (default) uses the
+        # hosted OpenAI-compatible endpoint below.
+        transcription_engine=(os.environ.get("TRANSCRIPTION_ENGINE", "") or "api").lower(),
+        # Prefer OPENAI_API_KEY; fall back to GROQ_API_KEY (Groq exposes an
+        # OpenAI-compatible Whisper endpoint — set TRANSCRIPTION_BASE_URL too).
+        transcription_api_key=os.environ.get("OPENAI_API_KEY", "") or os.environ.get("GROQ_API_KEY", ""),
+        transcription_base_url=os.environ.get("TRANSCRIPTION_BASE_URL", "") or "https://api.openai.com/v1",
+        transcription_model=os.environ.get("TRANSCRIPTION_MODEL", "") or "whisper-1",
+        transcription_local_model=os.environ.get("TRANSCRIPTION_LOCAL_MODEL", "") or "base",
+        transcription_local_device=os.environ.get("TRANSCRIPTION_LOCAL_DEVICE", "") or "cpu",
+        transcription_local_compute=os.environ.get("TRANSCRIPTION_LOCAL_COMPUTE", "") or "int8",
     )

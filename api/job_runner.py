@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 import blotato_client as bc
 import image_provider as improv
 import higgsfield_client as hf
+import transcribe as tr
+import transcribe_local as trl
+import document_text as doc
 
 try:
     import image_overlay as ov
@@ -83,7 +86,8 @@ async def run_pipeline(job: dict):
     params: dict = job["params"]
     cfg = job["_cfg"]
 
-    url: str = params["youtube_url"]
+    source_type: str = params.get("source_type", "youtube")
+    url: str = params.get("youtube_url", "")
     solo: str = params.get("solo", "")
     dry_run: bool = params.get("dry_run", False)
     formato_ig: str = params.get("formato_instagram", "imagen-unica")
@@ -93,24 +97,73 @@ async def run_pipeline(job: dict):
 
     try:
         # ── Step 1: Extract ──────────────────────────────────────────────
-        await _push(q, {"step": "extract", "status": "running", "msg": "Extrayendo video de YouTube..."})
-        clean_url = re.sub(r'[&?]t=\d+s?', '', url)
+        # The pipeline downstream only needs a `content` dict (title/transcript/…)
+        # and a `clean_url` (the LinkedIn "watch the video" CTA target, empty for
+        # non-YouTube sources). Each source builds those two, then everything
+        # after this step is source-agnostic.
+        forced_lang = params.get("idioma", "auto")
+        lang_hint = forced_lang if forced_lang in ("es", "en") else None
 
-        try:
-            content = await _run(bc.extract_youtube_local, clean_url)
-        except Exception:
+        if source_type == "audio":
+            await _push(q, {"step": "extract", "status": "running", "msg": "Transcribiendo audio..."})
+            if not cfg.transcription_available:
+                raise RuntimeError(
+                    "Transcripción de audio no configurada. Define OPENAI_API_KEY "
+                    "(o GROQ_API_KEY + TRANSCRIPTION_BASE_URL), o usa "
+                    "TRANSCRIPTION_ENGINE=local, en .env."
+                )
+            if cfg.transcription_engine == "local":
+                transcript = await _run(
+                    trl.transcribe_audio_local,
+                    job["_upload_bytes"], job["_upload_filename"],
+                    model_size=cfg.transcription_local_model,
+                    device=cfg.transcription_local_device,
+                    compute_type=cfg.transcription_local_compute,
+                    language=lang_hint,
+                )
+            else:
+                transcript = await _run(
+                    tr.transcribe_audio,
+                    job["_upload_bytes"], job["_upload_filename"],
+                    api_key=cfg.transcription_api_key,
+                    base_url=cfg.transcription_base_url,
+                    model=cfg.transcription_model,
+                    language=lang_hint,
+                )
+            if not transcript.strip():
+                raise RuntimeError("La transcripción quedó vacía — revisa el audio o las credenciales.")
+            content = _content_from_text(transcript, default_title="Nota de voz")
+            clean_url = ""
+
+        elif source_type == "texto":
+            await _push(q, {"step": "extract", "status": "running", "msg": "Leyendo documento..."})
+            # Accepts .txt/.md, PDF and Word (.docx); the extractor picks the parser
+            # by extension/magic bytes and raises a user-facing message on failure.
+            text = (await _run(doc.extract_document_text, job["_upload_bytes"], job["_upload_filename"])).strip()
+            if not text:
+                raise RuntimeError("El documento está vacío o no se pudo extraer texto.")
+            content = _content_from_text(
+                text, default_title=Path(job["_upload_filename"] or "Documento").stem
+            )
+            clean_url = ""
+
+        else:  # youtube
+            await _push(q, {"step": "extract", "status": "running", "msg": "Extrayendo video de YouTube..."})
+            clean_url = re.sub(r'[&?]t=\d+s?', '', url)
             try:
-                vid_match = re.search(r'[?&]v=([^&]+)', url)
-                if vid_match:
-                    content = await _run(bc.extract_youtube_local, f"https://www.youtube.com/watch?v={vid_match.group(1)}")
-                else:
-                    raise
-            except Exception as e:
-                content = {"title": url, "description": "", "transcript": "", "tags": [], "chapters": [], "channel": ""}
-                await _push(q, {"step": "extract", "status": "warn", "msg": f"No se pudo extraer transcript: {e}. Continuando con el título."})
+                content = await _run(bc.extract_youtube_local, clean_url)
+            except Exception:
+                try:
+                    vid_match = re.search(r'[?&]v=([^&]+)', url)
+                    if vid_match:
+                        content = await _run(bc.extract_youtube_local, f"https://www.youtube.com/watch?v={vid_match.group(1)}")
+                    else:
+                        raise
+                except Exception as e:
+                    content = {"title": url, "description": "", "transcript": "", "tags": [], "chapters": [], "channel": ""}
+                    await _push(q, {"step": "extract", "status": "warn", "msg": f"No se pudo extraer transcript: {e}. Continuando con el título."})
 
         # Detect language
-        forced_lang = params.get("idioma", "auto")
         if forced_lang in ("es", "en"):
             lang = forced_lang
         else:
@@ -534,6 +587,28 @@ async def run_pipeline(job: dict):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _content_from_text(text: str, *, default_title: str) -> dict:
+    """Build the pipeline `content` dict from a plain transcript/document.
+
+    Shared by the audio (transcription) and text-file sources. The title is the
+    first non-empty line (trimmed); the rest is treated as the transcript so the
+    post writer has the full material. No tags/chapters/channel are available.
+    """
+    text = (text or "").strip()
+    first_line = next((l.strip() for l in text.splitlines() if l.strip()), "")
+    title = (first_line[:120] or default_title).strip()
+    return {
+        "title": title,
+        "description": "",
+        "transcript": text,
+        "summary": "",
+        "keyPoints": [],
+        "tags": [],
+        "chapters": [],
+        "channel": "",
+    }
+
 
 def _extract_hook(text: str, max_words: int = 12) -> str:
     if not text:

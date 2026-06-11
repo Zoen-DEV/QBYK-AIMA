@@ -6,3 +6,8 @@ yt-dlp
 youtube-transcript-api
 Pillow
 python-dotenv
+# Lectura de documentos para la fuente "texto" (PDF y Word .docx)
+pypdf
+python-docx
+# Transcripción local gratuita (solo si TRANSCRIPTION_ENGINE=local)
+faster-whisper

@@ -37,11 +37,11 @@ Write `image_text` in the same language as the posts.
 - Strong hook in the first line — NEVER start with "En este video..." / "In this video..." / "Descubre cómo..." / "Discover how..."
 - 3–5 key insights or takeaways with → or bullet formatting
 - Conversational but authoritative tone
-- Always include the YouTube URL on its own line just before the hashtags, with this exact CTA:
+- If a source video URL is provided (see the user message), include it on its own line just before the hashtags, with this exact CTA:
   Spanish: "▶ Mira el video completo aquí: <url>"
   English: "▶ Watch the full video here: <url>"
-  Do NOT wrap the URL in markdown — paste it raw.
-- End with a question to spark engagement (goes after the URL line, before or among the hashtags)
+  Do NOT wrap the URL in markdown — paste it raw. If NO source URL is provided, skip this line entirely (do not invent a URL or a "watch the video" CTA).
+- End with a question to spark engagement (goes after the URL line if present, before or among the hashtags)
 - 3–5 relevant hashtags at the very end
 
 === INSTAGRAM POST RULES ===
@@ -87,6 +87,8 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     obj_ig = params.get("objetivo_instagram", "engagement")
     fmt_ig = params.get("formato_instagram", "imagen-unica")
     solo = params.get("solo", "")
+    source_type = params.get("source_type", "youtube")
+    has_url = bool((clean_url or "").strip())
 
     # How many info slides the carousel needs (slide 0 = hook, last = credits).
     # Only an Instagram carousel needs info slides; everything else needs 0.
@@ -109,15 +111,30 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     if solo != "linkedin":
         platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {fmt_ig}")
 
+    # The content can come from a YouTube video, a voice note transcription, or a
+    # text document. Tell the model what it is reading and whether a source URL
+    # exists (only YouTube has one — the LinkedIn CTA line depends on it).
+    source_label = {
+        "audio": "a voice-note audio transcription (e.g. WhatsApp)",
+        "texto": "a text document provided by the user",
+    }.get(source_type, "a YouTube video")
+    url_line = f"Source URL (for LinkedIn): {clean_url}" if has_url else "Source URL: NONE (do not include any URL or 'watch the video' CTA)"
+    li_url_reminder = (
+        "- LinkedIn: include the raw source URL with the CTA prefix, 3-5 hashtags"
+        if has_url
+        else "- LinkedIn: there is NO source URL — do NOT add a URL line or a 'watch the video' CTA; just the hook, insights, engagement question and 3-5 hashtags"
+    )
+
     return f"""Write posts for these platforms:
 {chr(10).join(f'- {p}' for p in platforms)}
 
+CONTENT SOURCE: {source_label}.
 Language to write in: {lang}
 INFO SLIDES NEEDED: {n_info_slides}  (output EXACTLY this many strings in image_text.slides — 0 means an empty array)
-YouTube URL (for LinkedIn): {clean_url}
+{url_line}
 Channel: {channel}
 
-VIDEO TITLE: {title}
+TITLE: {title}
 
 DESCRIPTION (first 500 chars): {description}
 
@@ -125,7 +142,7 @@ TAGS: {tags}
 
 CHAPTERS: {chapters}
 
-TRANSCRIPT (first 6000 chars):
+TRANSCRIPT / TEXT (first 6000 chars):
 {transcript_snippet}
 
 {"[Note: transcript is empty — use title + description only]" if not transcript_snippet.strip() else ""}
@@ -133,8 +150,8 @@ TRANSCRIPT (first 6000 chars):
 Important reminders:
 - Apply the full humanization checklist before outputting
 - Verify every specific claim against the transcript above
-- Instagram: max 5 hashtags, no raw YouTube URL in caption
-- LinkedIn: include the raw YouTube URL with the CTA prefix, 3-5 hashtags
+- Instagram: max 5 hashtags, no raw URL in caption
+{li_url_reminder}
 - image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
 {"- Only write linkedin_text (set instagram_text to empty string)" if solo == "linkedin" else ""}
 {"- Only write instagram_text (set linkedin_text to empty string)" if solo == "instagram" else ""}

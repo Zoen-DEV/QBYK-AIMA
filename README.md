@@ -1,6 +1,10 @@
 # AIMA — Web
 
-Interfaz web para el skill `repurpose-youtube-video`. Convierte un video de YouTube en posts listos para publicar en LinkedIn e Instagram con un visual generado por IA (imagen o video).
+Interfaz web para el skill `repurpose-youtube-video`. Convierte contenido en posts listos para publicar en LinkedIn e Instagram con un visual generado por IA (imagen o video). El contenido puede venir de tres fuentes:
+
+- **Link de YouTube** — extrae metadata + transcript.
+- **Audio (nota de voz de WhatsApp)** — se transcribe con Whisper y reemplaza al link de YouTube como contexto.
+- **Documento** (`.txt`/`.md`, **PDF** o **Word `.docx`**) — se extrae su texto y se usa como base.
 
 ## Estructura
 
@@ -25,6 +29,9 @@ El archivo `.env` debe estar en la raíz del repositorio (`web/`). La API lo car
 | `BLOTATO_API_KEY` | Sí | API key de Blotato |
 | `ANTHROPIC_API_KEY` | Uno de los dos | LLM para escribir los posts |
 | `PERPLEXITY_API_KEY` | Uno de los dos | Alternativa (sonar-pro) |
+| `OPENAI_API_KEY` | Solo fuente audio | Whisper para transcribir notas de voz (o usa `GROQ_API_KEY`) |
+| `TRANSCRIPTION_BASE_URL` | No | Base URL del endpoint Whisper (default OpenAI; usar para Groq) |
+| `TRANSCRIPTION_MODEL` | No | Modelo de transcripción (default `whisper-1`) |
 | `BLOTATO_LINKEDIN_ACCOUNT_ID` | No | ID de cuenta LinkedIn; si falta, se lista automáticamente |
 | `BLOTATO_INSTAGRAM_ACCOUNT_ID` | No | ID de cuenta Instagram; si falta, se lista automáticamente |
 | `HIGGSFIELD_API_KEY` | No | Activa Higgsfield Soul para imágenes (requiere también el secret) |
@@ -85,9 +92,9 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 
 ## Flujo de la aplicación
 
-1. El usuario pega una URL de YouTube y configura tono, objetivo, formato (incluido el **número de slides del carrusel**, 3–6), tipo de medio (imagen o video), idioma y, opcionalmente, **qué cuenta** de LinkedIn/Instagram usar (y la **Company Page** de LinkedIn) eligiéndola en los selectores que el formulario carga vía `GET /accounts`.
+1. El usuario elige la **fuente del contenido** (link de YouTube, audio o archivo de texto) y configura tono, objetivo, formato (incluido el **número de slides del carrusel**, 3–6), tipo de medio (imagen o video), idioma y, opcionalmente, **qué cuenta** de LinkedIn/Instagram usar (y la **Company Page** de LinkedIn) eligiéndola en los selectores que el formulario carga vía `GET /accounts`.
 2. La API arranca un job asíncrono con las siguientes fases:
-   - **Extracción**: metadata + transcript con `yt-dlp` y `youtube-transcript-api`.
+   - **Extracción** (según la fuente): YouTube → metadata + transcript con `yt-dlp` y `youtube-transcript-api`; audio → transcripción con Whisper (endpoint compatible con OpenAI); documento → extracción del texto (`.txt`/`.md` directo, PDF con `pypdf`, Word `.docx` con `python-docx`). En audio y texto no hay URL de origen, así que el post de LinkedIn omite el CTA "mira el video".
    - **Cuentas**: resuelve las cuentas con precedencia *cuenta elegida en el formulario* > IDs del `.env` > primera cuenta listada en Blotato. Para LinkedIn, una Company Page opcional (`linkedin_page_id`) publica en la página en vez del perfil personal.
    - **Escritura**: Claude (Anthropic) o Sonar (Perplexity) redactan los posts en JSON; parser robusto con fallback para respuestas malformadas.
    - **Imágenes** (`tipo_medio = imagen`): genera una imagen base compartida con Higgsfield Soul (si hay credenciales), aplica overlays de texto con Pillow (LinkedIn 4:5, Instagram single o carrusel) y sube cada imagen a Blotato. Reintentos automáticos con backoff; si Higgsfield falla en una imagen concreta (o no hay credenciales), cae a la **plantilla local** correspondiente (`template-1` base/hook, `template-2` info, `template-3` créditos). El frontend muestra progreso y thumbnail por imagen a medida que se completan.

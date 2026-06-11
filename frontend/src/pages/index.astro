@@ -6,21 +6,43 @@ import Base from "../layouts/Base.astro";
   <div class="max-w-2xl mx-auto">
     <div class="mb-8">
       <h1 class="text-3xl font-bold text-white mb-2">Nuevo post</h1>
-      <p class="text-gray-400">Pega el link de un video de YouTube y genera posts listos para publicar en LinkedIn e Instagram.</p>
+      <p class="text-gray-400">Genera posts para LinkedIn e Instagram a partir de un video de YouTube, una nota de voz o un documento (texto, PDF o Word).</p>
     </div>
 
-    <form method="POST" action="/api/jobs" id="job-form" class="space-y-6">
-      <!-- YouTube URL -->
+    <form method="POST" action="/api/jobs" id="job-form" class="space-y-6" enctype="multipart/form-data">
+      <!-- Fuente del contenido -->
       <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
         <label class="block">
-          <span class="text-sm font-medium text-gray-300 mb-2 block">URL de YouTube <span class="text-red-400">*</span></span>
+          <span class="text-sm font-medium text-gray-300 mb-2 block">Fuente del contenido <span class="text-red-400">*</span></span>
+          <select name="source_type" id="source-type" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition">
+            <option value="youtube">Link de YouTube</option>
+            <option value="audio">Audio — nota de voz (WhatsApp)</option>
+            <option value="texto">Documento (texto, PDF o Word)</option>
+          </select>
+        </label>
+
+        <!-- YouTube URL -->
+        <label class="block" id="src-youtube">
+          <span class="text-xs text-gray-400 mb-1 block">URL de YouTube</span>
           <input
             type="url"
             name="youtube_url"
-            required
+            id="youtube-url"
             placeholder="https://www.youtube.com/watch?v=..."
             class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition"
           />
+        </label>
+
+        <!-- Archivo (audio o texto) -->
+        <label class="block hidden" id="src-file">
+          <span class="text-xs text-gray-400 mb-1 block" id="file-label">Archivo</span>
+          <input
+            type="file"
+            name="media_file"
+            id="media-file"
+            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition"
+          />
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="file-hint"></span>
         </label>
       </div>
 
@@ -225,6 +247,50 @@ import Base from "../layouts/Base.astro";
 <script>
   const form = document.getElementById("job-form") as HTMLFormElement;
   const btn = document.getElementById("submit-btn") as HTMLButtonElement;
+
+  // Content source switcher: YouTube link vs. uploaded audio/text file.
+  // Disabled inputs aren't submitted, so only the active source's field is sent.
+  const sourceType = document.getElementById("source-type") as HTMLSelectElement;
+  const srcYoutube = document.getElementById("src-youtube") as HTMLElement;
+  const srcFile = document.getElementById("src-file") as HTMLElement;
+  const youtubeUrl = document.getElementById("youtube-url") as HTMLInputElement;
+  const mediaFile = document.getElementById("media-file") as HTMLInputElement;
+  const fileLabel = document.getElementById("file-label") as HTMLElement;
+  const fileHint = document.getElementById("file-hint") as HTMLElement;
+
+  const FILE_CONFIG: Record<string, { label: string; accept: string; hint: string }> = {
+    audio: {
+      label: "Audio (.ogg / .opus / .m4a / .mp3 / .wav)",
+      accept: "audio/*,.ogg,.opus,.m4a,.mp3,.wav",
+      hint: "Sube tu nota de voz de WhatsApp. Se transcribe automáticamente y de ahí se genera el contenido.",
+    },
+    texto: {
+      label: "Documento (.pdf / .docx / .txt / .md)",
+      accept:
+        ".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown",
+      hint: "Sube un PDF, Word (.docx) o texto (.txt / .md); su contenido se usa como base para los posts.",
+    },
+  };
+
+  const syncSource = () => {
+    const v = sourceType.value;
+    const isYoutube = v === "youtube";
+    srcYoutube.classList.toggle("hidden", !isYoutube);
+    srcFile.classList.toggle("hidden", isYoutube);
+    youtubeUrl.disabled = !isYoutube;
+    youtubeUrl.required = isYoutube;
+    mediaFile.disabled = isYoutube;
+    mediaFile.required = !isYoutube;
+    if (!isYoutube) {
+      const cfg = FILE_CONFIG[v];
+      mediaFile.accept = cfg.accept;
+      fileLabel.textContent = cfg.label;
+      fileHint.textContent = cfg.hint;
+      mediaFile.value = "";
+    }
+  };
+  sourceType.addEventListener("change", syncSource);
+  syncSource();
 
   // Instagram carousel/single format doesn't apply when generating video.
   const tipoMedio = document.getElementById("tipo-medio") as HTMLSelectElement;
