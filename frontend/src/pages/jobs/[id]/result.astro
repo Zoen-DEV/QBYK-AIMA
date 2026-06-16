@@ -116,6 +116,42 @@ function statusColor(s: string | undefined) {
           </div>
         </div>
       )}
+
+      {result.facebook && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-5">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+            </svg>
+            <span class="font-semibold text-white">Facebook</span>
+          </div>
+          <div class="space-y-3 text-sm">
+            <div class="flex gap-2">
+              <span class="text-gray-500 w-16 flex-shrink-0">Status</span>
+              <span class={statusColor(result.facebook.status)}>{result.facebook.status || "—"}</span>
+            </div>
+            {result.facebook.url && (
+              <a
+                href={result.facebook.url}
+                target="_blank"
+                rel="noopener"
+                class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                Ver publicación
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+            )}
+            {result.facebook.error && (
+              <div class="flex gap-2">
+                <span class="text-gray-500 w-16 flex-shrink-0">Error</span>
+                <span class="text-red-400">{result.facebook.error}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
 
     <div class="mt-8 flex gap-3">

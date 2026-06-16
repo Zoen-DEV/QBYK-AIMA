@@ -29,7 +29,7 @@ def _row_status_from_result(result: dict, schedule_iso: str | None, dry_run: boo
     """Deriva el estado mostrado de una fila a partir del resultado de publicación."""
     if dry_run:
         return "dry-run"
-    statuses = [result[k] for k in ("linkedin", "instagram") if isinstance(result.get(k), dict)]
+    statuses = [result[k] for k in ("linkedin", "instagram", "facebook") if isinstance(result.get(k), dict)]
     ok = [s for s in statuses if s.get("status") in ("published", "scheduled")]
     errs = [s for s in statuses if s.get("error")]
     if ok and errs:

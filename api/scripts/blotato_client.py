@@ -55,6 +55,7 @@ def load_config() -> dict:
         "api_key": key,
         "linkedin_account_id": env.get("BLOTATO_LINKEDIN_ACCOUNT_ID", ""),
         "instagram_account_id": env.get("BLOTATO_INSTAGRAM_ACCOUNT_ID", ""),
+        "facebook_account_id": env.get("BLOTATO_FACEBOOK_ACCOUNT_ID", ""),
     }
 
 

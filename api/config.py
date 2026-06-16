@@ -15,6 +15,7 @@ class Config:
     perplexity_api_key: str
     linkedin_account_id: str
     instagram_account_id: str
+    facebook_account_id: str = ""
     higgsfield_api_key: str = ""
     higgsfield_api_secret: str = ""
     higgsfield_model: str = "higgsfield-ai/soul/standard"
@@ -75,6 +76,7 @@ def load_config() -> Config:
         perplexity_api_key=os.environ.get("PERPLEXITY_API_KEY", ""),
         linkedin_account_id=os.environ.get("BLOTATO_LINKEDIN_ACCOUNT_ID", ""),
         instagram_account_id=os.environ.get("BLOTATO_INSTAGRAM_ACCOUNT_ID", ""),
+        facebook_account_id=os.environ.get("BLOTATO_FACEBOOK_ACCOUNT_ID", ""),
         higgsfield_api_key=os.environ.get("HIGGSFIELD_API_KEY", ""),
         higgsfield_api_secret=os.environ.get("HIGGSFIELD_API_SECRET", ""),
         higgsfield_model=os.environ.get("HIGGSFIELD_MODEL", "") or "higgsfield-ai/soul/standard",

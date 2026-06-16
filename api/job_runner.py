@@ -40,7 +40,7 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "content": {},
         "accounts": {},
         "posts": {},
-        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": []}, "base_urls": {"linkedin": [], "instagram": []}, "provider": "", "notice": ""},
+        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": [], "facebook": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": ""},
         "video": {"url": "", "provider": "", "notice": ""},
         "result": {},
         "error_msg": None,
@@ -48,6 +48,7 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "_cfg": cfg,
         "_li_media_urls": [],
         "_ig_media_urls": [],
+        "_fb_media_urls": [],
         "_upload_bytes": upload_bytes,
         "_upload_filename": upload_filename,
     }
@@ -121,8 +122,10 @@ async def run_pipeline(job: dict):
     dry_run: bool = params.get("dry_run", False)
     formato_ig: str = params.get("formato_instagram", "imagen-unica")
 
-    do_linkedin = solo != "instagram"
-    do_instagram = solo != "linkedin"
+    # `solo` vacío = todas las redes; si trae una red, solo esa. (3 redes ahora.)
+    do_linkedin = solo in ("", "linkedin")
+    do_instagram = solo in ("", "instagram")
+    do_facebook = solo in ("", "facebook")
 
     try:
         # ── Step 1: Extract ──────────────────────────────────────────────
@@ -162,6 +165,15 @@ async def run_pipeline(job: dict):
             if not transcript.strip():
                 raise RuntimeError("La transcripción quedó vacía — revisa el audio o las credenciales.")
             content = _content_from_text(transcript, default_title="Nota de voz")
+            clean_url = ""
+
+        elif source_type == "manual":
+            await _push(q, {"step": "extract", "status": "running", "msg": "Leyendo texto..."})
+            # Texto plano escrito directamente en el form (solo flujo individual).
+            text = (params.get("manual_text") or "").strip()
+            if not text:
+                raise RuntimeError("El texto manual está vacío.")
+            content = _content_from_text(text, default_title="Texto manual")
             clean_url = ""
 
         elif source_type == "texto":
@@ -213,6 +225,7 @@ async def run_pipeline(job: dict):
         # Precedence: account picked in the UI form > .env default > first listed account.
         li_account_id = params.get("linkedin_account_id") or cfg.linkedin_account_id
         ig_account_id = params.get("instagram_account_id") or cfg.instagram_account_id
+        fb_account_id = params.get("facebook_account_id") or cfg.facebook_account_id
 
         if do_linkedin and not li_account_id:
             try:
@@ -230,22 +243,40 @@ async def run_pipeline(job: dict):
             except Exception as e:
                 await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta Instagram: {e}"})
 
+        if do_facebook and not fb_account_id:
+            try:
+                accounts = await _run(bc.get_accounts, "facebook", api_key=cfg.blotato_api_key)
+                if accounts:
+                    fb_account_id = str(accounts[0]["id"])
+            except Exception as e:
+                await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta Facebook: {e}"})
+
         # LinkedIn page id (a "subaccount") is optional — empty means personal profile.
+        # Facebook posts always target a Page (its pageId is a subaccount too).
         li_page_id = params.get("linkedin_page_id") or ""
-        job["accounts"] = {"linkedin_id": li_account_id, "linkedin_page_id": li_page_id, "instagram_id": ig_account_id}
+        fb_page_id = params.get("facebook_page_id") or ""
+        job["accounts"] = {
+            "linkedin_id": li_account_id, "linkedin_page_id": li_page_id,
+            "instagram_id": ig_account_id,
+            "facebook_id": fb_account_id, "facebook_page_id": fb_page_id,
+        }
         await _push(q, {"step": "accounts", "status": "done", "msg": "Cuentas configuradas"})
 
         # ── Step 3: Resolve tone/objective ───────────────────────────────
         tono_li = params.get("tono_linkedin") or params.get("tono") or "educativo"
         tono_ig = params.get("tono_instagram") or params.get("tono") or "inspiracional"
+        tono_fb = params.get("tono_facebook") or params.get("tono") or "personal"
         obj_li = params.get("objetivo_linkedin") or params.get("objetivo") or "engagement"
         obj_ig = params.get("objetivo_instagram") or params.get("objetivo") or "engagement"
+        obj_fb = params.get("objetivo_facebook") or params.get("objetivo") or "engagement"
 
         params.update({
             "tono_linkedin": tono_li,
             "tono_instagram": tono_ig,
+            "tono_facebook": tono_fb,
             "objetivo_linkedin": obj_li,
             "objetivo_instagram": obj_ig,
+            "objetivo_facebook": obj_fb,
             "formato_instagram": formato_ig,
         })
 
@@ -305,15 +336,18 @@ async def run_pipeline(job: dict):
                 job["video"]["url"] = play_url
                 job["_li_media_urls"] = [play_url] if do_linkedin else []
                 job["_ig_media_urls"] = [play_url] if do_instagram else []
+                job["_fb_media_urls"] = [play_url] if do_facebook else []
                 job["images"]["blotato_urls"] = {
                     "linkedin": play_url if do_linkedin else "",
                     "instagram": [play_url] if do_instagram else [],
+                    "facebook": play_url if do_facebook else "",
                 }
                 await _push(q, {"step": "video", "status": "done", "msg": "Video listo"})
             else:
                 # No media — the user can still publish text-only, or retry.
                 job["_li_media_urls"] = []
                 job["_ig_media_urls"] = []
+                job["_fb_media_urls"] = []
 
             job["status"] = "review"
             await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
@@ -328,17 +362,23 @@ async def run_pipeline(job: dict):
         expected_subkeys: list[str] = []
         if do_linkedin:
             expected_subkeys.append("li-hook")
+        if do_facebook:
+            expected_subkeys.append("fb-hook")
         if do_instagram:
             if formato_ig == "carrusel":
                 expected_subkeys.extend(f"ig-{i}" for i in range(n_slides))
             else:
                 expected_subkeys.append("ig-single")
 
+        # El usuario puede forzar plantillas locales (sin llamar a Higgsfield) o usar
+        # el flujo normal (Higgsfield con fallback a plantilla). Default: higgsfield.
+        force_template = params.get("fuente_imagen", "higgsfield") == "template"
         provider = improv.make_provider(
             hf_key=cfg.higgsfield_api_key,
             hf_secret=cfg.higgsfield_api_secret,
             hf_model=cfg.higgsfield_model,
             hf_resolution=cfg.higgsfield_resolution,
+            force_template=force_template,
         )
 
         await _push(q, {"step": "images", "status": "init", "subkeys": expected_subkeys})
@@ -354,9 +394,9 @@ async def run_pipeline(job: dict):
         # overlay_text_warnings: reasons the overlay copy fell back to heuristics (missing image_text)
         overlay_text_warnings: list[str] = []
 
-        # ── 5a: Base image (shared by LinkedIn, IG single, and carousel slide 0) ──
+        # ── 5a: Base image (shared by LinkedIn, Facebook, IG single, carousel slide 0) ──
         base_url: str | None = None
-        if do_linkedin or do_instagram:
+        if do_linkedin or do_instagram or do_facebook:
             try:
                 topic = content.get("title", "professional topic")
                 base_prompt = (
@@ -407,14 +447,16 @@ async def run_pipeline(job: dict):
         llm_hook = (image_text or {}).get("hook", "").strip()
         llm_slides = [s for s in (image_text or {}).get("slides", []) if s.strip()]
 
-        # Hook: image_text.hook for both networks; fall back to the first caption line.
+        # Hook: image_text.hook for every network; fall back to the first caption line.
         if llm_hook:
             li_hook = llm_hook
             ig_hook = llm_hook
+            fb_hook = llm_hook
         else:
             li_hook = _extract_hook(posts.get("linkedin_text", ""), max_words=12)
             ig_hook = _extract_hook(posts.get("instagram_text", ""), max_words=10)
-            if do_linkedin or do_instagram:
+            fb_hook = _extract_hook(posts.get("facebook_text", ""), max_words=12)
+            if do_linkedin or do_instagram or do_facebook:
                 overlay_text_warnings.append("sin texto de portada del modelo")
 
         # Info slides: exactly one closed idea per slide. Use image_text.slides; if
@@ -451,6 +493,23 @@ async def run_pipeline(job: dict):
                     await _push(q, {"step": "images", "status": "done", "subkey": "li-hook"})
             else:
                 await _push(q, {"step": "images", "status": "warn", "subkey": "li-hook", "msg": "Sin imagen base"})
+
+        # ── 5c-bis: Facebook overlay (mismo formato 4:5 que LinkedIn — usa base_url) ──
+        if do_facebook:
+            if base_url:
+                raw_urls["fb-hook"] = base_url
+                if _HAS_OVERLAY:
+                    try:
+                        png = await _run(ov.render_linkedin_hook, base_url, fb_hook, lang=lang, tone=tono_fb)
+                        image_bytes["fb-hook"] = png
+                        _save_image(job["id"], "fb-hook", png)
+                        await _push(q, {"step": "images", "status": "done", "subkey": "fb-hook"})
+                    except Exception as e:
+                        await _push(q, {"step": "images", "status": "warn", "subkey": "fb-hook", "msg": f"Overlay falló: {e}"})
+                else:
+                    await _push(q, {"step": "images", "status": "done", "subkey": "fb-hook"})
+            else:
+                await _push(q, {"step": "images", "status": "warn", "subkey": "fb-hook", "msg": "Sin imagen base"})
 
         # ── 5d: Instagram overlay ─────────────────────────────────────────────────
         if do_instagram:
@@ -525,6 +584,7 @@ async def run_pipeline(job: dict):
         # ── 5e: Upload ────────────────────────────────────────────────────────────
         li_media_urls: list[str] = []
         ig_media_urls: list[str] = []
+        fb_media_urls: list[str] = []
 
         if do_linkedin:
             key = "li-hook"
@@ -539,6 +599,20 @@ async def run_pipeline(job: dict):
                 li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
             if li_media_urls:
                 job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
+
+        if do_facebook:
+            key = "fb-hook"
+            if key in image_bytes:
+                try:
+                    url_fb = await _run(bc.upload_media_local, image_bytes[key], "facebook-hook.png", api_key=cfg.blotato_api_key)
+                    fb_media_urls = [url_fb]
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                    fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
+            else:
+                fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
+            if fb_media_urls:
+                job["images"]["blotato_urls"]["facebook"] = fb_media_urls[0]
 
         if do_instagram:
             if formato_ig == "carrusel":
@@ -568,6 +642,7 @@ async def run_pipeline(job: dict):
 
         job["_li_media_urls"] = li_media_urls
         job["_ig_media_urls"] = ig_media_urls
+        job["_fb_media_urls"] = fb_media_urls
 
         # Surface warnings — live in the progress step and durably (stored on the
         # job → shown on the review screen). Two independent kinds can co-occur:
@@ -655,15 +730,22 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
     dry_run = params.get("dry_run", False)
     solo = params.get("solo", "")
 
+    # `solo` vacío = todas las redes; si trae una red, solo esa.
+    do_linkedin = solo in ("", "linkedin")
+    do_instagram = solo in ("", "instagram")
+    do_facebook = solo in ("", "facebook")
+
     li_text = posts.get("linkedin_text", "")
     ig_text = posts.get("instagram_text", "")
+    fb_text = posts.get("facebook_text", "")
     li_media = job.get("_li_media_urls", [])
     ig_media = job.get("_ig_media_urls", [])
+    fb_media = job.get("_fb_media_urls", [])
 
     result: dict = {}
     scheduled_at = (schedule_time or "").strip() or None
 
-    if not dry_run and solo != "instagram" and accounts.get("linkedin_id") and li_text:
+    if not dry_run and do_linkedin and accounts.get("linkedin_id") and li_text:
         try:
             resp = await _run(bc.publish_post, accounts["linkedin_id"], "linkedin", li_text, li_media,
                               api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
@@ -673,7 +755,7 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
         except Exception as e:
             result["linkedin"] = {"error": str(e)}
 
-    if not dry_run and solo != "linkedin" and accounts.get("instagram_id") and ig_text:
+    if not dry_run and do_instagram and accounts.get("instagram_id") and ig_text:
         try:
             resp = await _run(bc.publish_post, accounts["instagram_id"], "instagram", ig_text, ig_media,
                               api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True)
@@ -682,10 +764,21 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
         except Exception as e:
             result["instagram"] = {"error": str(e)}
 
+    if not dry_run and do_facebook and accounts.get("facebook_id") and fb_text:
+        try:
+            resp = await _run(bc.publish_post, accounts["facebook_id"], "facebook", fb_text, fb_media,
+                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
+                              page_id=accounts.get("facebook_page_id") or None)
+            status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
+            result["facebook"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
+        except Exception as e:
+            result["facebook"] = {"error": str(e)}
+
     if dry_run:
         result["dry_run"] = True
         result["linkedin"] = {"status": "dry-run"}
         result["instagram"] = {"status": "dry-run"}
+        result["facebook"] = {"status": "dry-run"}
 
     job["result"] = result
     job["status"] = "done"

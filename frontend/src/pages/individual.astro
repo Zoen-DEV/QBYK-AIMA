@@ -6,7 +6,7 @@ import Base from "../layouts/Base.astro";
   <div class="max-w-2xl mx-auto">
     <div class="mb-8">
       <h1 class="text-3xl font-bold text-white mb-2">Nuevo post</h1>
-      <p class="text-gray-400">Genera posts para LinkedIn e Instagram a partir de un video de YouTube, una nota de voz o un documento (texto, PDF o Word).</p>
+      <p class="text-gray-400">Genera posts para LinkedIn, Instagram y Facebook a partir de un video de YouTube, una nota de voz, un documento (texto, PDF o Word) o texto escrito manualmente.</p>
     </div>
 
     <form method="POST" action="/api/jobs" id="job-form" class="space-y-6" enctype="multipart/form-data">
@@ -18,6 +18,7 @@ import Base from "../layouts/Base.astro";
             <option value="youtube">Link de YouTube</option>
             <option value="audio">Audio — nota de voz (WhatsApp)</option>
             <option value="texto">Documento (texto, PDF o Word)</option>
+            <option value="manual">Manual — escribir texto</option>
           </select>
         </label>
 
@@ -43,6 +44,19 @@ import Base from "../layouts/Base.astro";
             class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition"
           />
           <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="file-hint"></span>
+        </label>
+
+        <!-- Texto manual -->
+        <label class="block hidden" id="src-manual">
+          <span class="text-xs text-gray-400 mb-1 block">Texto</span>
+          <textarea
+            name="manual_text"
+            id="manual-text"
+            rows="6"
+            placeholder="Escribe o pega aquí el texto que quieres convertir en posts..."
+            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition resize-y"
+          ></textarea>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">La primera línea se usa como título; el resto es la base para los posts.</span>
         </label>
       </div>
 
@@ -86,6 +100,18 @@ import Base from "../layouts/Base.astro";
           </span>
         </label>
 
+        <!-- Fuente de las imágenes (solo aplica a Tipo de medio = Imagen) -->
+        <label class="block" id="fuente-imagen-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Fuente de las imágenes</span>
+          <select name="fuente_imagen" id="fuente-imagen" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="higgsfield">Higgsfield (con respaldo en plantillas)</option>
+            <option value="template">Plantillas directamente</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">
+            <strong class="text-gray-400">Higgsfield</strong> genera imágenes con IA y, si falla, usa las plantillas locales. <strong class="text-gray-400">Plantillas directamente</strong> omite Higgsfield y usa siempre las plantillas (más rápido, sin consumir créditos).
+          </span>
+        </label>
+
         <div class="grid grid-cols-2 gap-4">
           <!-- Formato Instagram -->
           <label class="block" id="formato-ig-wrap">
@@ -122,6 +148,12 @@ import Base from "../layouts/Base.astro";
               <option value="">Cargando cuentas...</option>
             </select>
           </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Facebook</span>
+            <select name="facebook_account_id" id="facebook-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
         </div>
 
         <!-- Página de LinkedIn (aparece solo si la cuenta seleccionada tiene páginas) -->
@@ -129,6 +161,14 @@ import Base from "../layouts/Base.astro";
           <span class="text-xs text-gray-400 mb-1 block">Publicar en LinkedIn como</span>
           <select name="linkedin_page_id" id="linkedin-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
             <option value="">Perfil personal</option>
+          </select>
+        </label>
+
+        <!-- Página de Facebook (Facebook publica siempre en una Página) -->
+        <label class="block hidden" id="facebook-page-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Página de Facebook</span>
+          <select name="facebook_page_id" id="facebook-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Página por defecto</option>
           </select>
         </label>
 
@@ -200,15 +240,34 @@ import Base from "../layouts/Base.astro";
                   <option value="trafico">Tráfico</option>
                 </select>
               </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Tono Facebook (override)</span>
+                <select name="tono_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="educativo">Educativo</option>
+                  <option value="inspiracional">Inspiracional</option>
+                  <option value="personal">Personal</option>
+                </select>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Objetivo Facebook (override)</span>
+                <select name="objetivo_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">— mismo que global —</option>
+                  <option value="engagement">Engagement</option>
+                  <option value="awareness">Awareness</option>
+                  <option value="trafico">Tráfico</option>
+                </select>
+              </label>
             </div>
 
             <div class="grid grid-cols-2 gap-4">
               <label class="block">
                 <span class="text-xs text-gray-400 mb-1 block">Publicar solo en</span>
                 <select name="solo" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">Ambas plataformas</option>
+                  <option value="">Todas las plataformas</option>
                   <option value="linkedin">Solo LinkedIn</option>
                   <option value="instagram">Solo Instagram</option>
+                  <option value="facebook">Solo Facebook</option>
                 </select>
               </label>
               <label class="block">
@@ -253,8 +312,10 @@ import Base from "../layouts/Base.astro";
   const sourceType = document.getElementById("source-type") as HTMLSelectElement;
   const srcYoutube = document.getElementById("src-youtube") as HTMLElement;
   const srcFile = document.getElementById("src-file") as HTMLElement;
+  const srcManual = document.getElementById("src-manual") as HTMLElement;
   const youtubeUrl = document.getElementById("youtube-url") as HTMLInputElement;
   const mediaFile = document.getElementById("media-file") as HTMLInputElement;
+  const manualText = document.getElementById("manual-text") as HTMLTextAreaElement;
   const fileLabel = document.getElementById("file-label") as HTMLElement;
   const fileHint = document.getElementById("file-hint") as HTMLElement;
 
@@ -275,13 +336,19 @@ import Base from "../layouts/Base.astro";
   const syncSource = () => {
     const v = sourceType.value;
     const isYoutube = v === "youtube";
+    const isManual = v === "manual";
+    const isFile = !isYoutube && !isManual;
+    // Disabled inputs aren't submitted, so only the active source's field is sent.
     srcYoutube.classList.toggle("hidden", !isYoutube);
-    srcFile.classList.toggle("hidden", isYoutube);
+    srcFile.classList.toggle("hidden", !isFile);
+    srcManual.classList.toggle("hidden", !isManual);
     youtubeUrl.disabled = !isYoutube;
     youtubeUrl.required = isYoutube;
-    mediaFile.disabled = isYoutube;
-    mediaFile.required = !isYoutube;
-    if (!isYoutube) {
+    mediaFile.disabled = !isFile;
+    mediaFile.required = isFile;
+    manualText.disabled = !isManual;
+    manualText.required = isManual;
+    if (isFile) {
       const cfg = FILE_CONFIG[v];
       mediaFile.accept = cfg.accept;
       fileLabel.textContent = cfg.label;
@@ -297,6 +364,7 @@ import Base from "../layouts/Base.astro";
   const formatoWrap = document.getElementById("formato-ig-wrap") as HTMLElement;
   const formatoIg = document.getElementById("formato-instagram") as HTMLSelectElement;
   const slidesWrap = document.getElementById("carrusel-slides-wrap") as HTMLElement;
+  const fuenteImagenWrap = document.getElementById("fuente-imagen-wrap") as HTMLElement;
 
   // Carousel slide count only matters for carousel format (and not for video).
   const syncSlidesState = () => {
@@ -309,6 +377,9 @@ import Base from "../layouts/Base.astro";
     const isVideo = tipoMedio.value === "video";
     formatoWrap.classList.toggle("opacity-40", isVideo);
     formatoWrap.classList.toggle("pointer-events-none", isVideo);
+    // La fuente de imágenes no aplica cuando se genera video.
+    fuenteImagenWrap.classList.toggle("opacity-40", isVideo);
+    fuenteImagenWrap.classList.toggle("pointer-events-none", isVideo);
     syncSlidesState();
   };
   tipoMedio.addEventListener("change", syncFormatoState);
@@ -321,11 +392,15 @@ import Base from "../layouts/Base.astro";
 
   const liAccount = document.getElementById("linkedin-account") as HTMLSelectElement;
   const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+  const fbAccount = document.getElementById("facebook-account") as HTMLSelectElement;
   const liPage = document.getElementById("linkedin-page") as HTMLSelectElement;
   const liPageWrap = document.getElementById("linkedin-page-wrap") as HTMLLabelElement;
+  const fbPage = document.getElementById("facebook-page") as HTMLSelectElement;
+  const fbPageWrap = document.getElementById("facebook-page-wrap") as HTMLLabelElement;
 
-  // LinkedIn accounts kept around so we can look up each account's pages on change.
+  // LinkedIn/Facebook accounts kept around so we can look up each account's pages on change.
   let liAccounts: Account[] = [];
+  let fbAccounts: Account[] = [];
 
   function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
     sel.innerHTML = "";
@@ -362,7 +437,31 @@ import Base from "../layouts/Base.astro";
     liPageWrap.classList.toggle("hidden", pages.length === 0);
   }
 
+  // Populate the page selector for the currently selected Facebook account.
+  // Facebook publishes to a Page, so when the account has pages we list them and
+  // pre-select the first; only when it has none do we fall back to "Página por
+  // defecto" (empty → Blotato picks). The selector hides when there are no pages.
+  function updateFacebookPages() {
+    const acc = fbAccounts.find((a) => a.id === fbAccount.value);
+    const pages = acc?.pages ?? [];
+    fbPage.innerHTML = "";
+    if (pages.length === 0) {
+      const def = document.createElement("option");
+      def.value = "";
+      def.textContent = "Página por defecto";
+      fbPage.appendChild(def);
+    }
+    for (const p of pages) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name || `Página ${p.id}`;
+      fbPage.appendChild(opt);
+    }
+    fbPageWrap.classList.toggle("hidden", pages.length === 0);
+  }
+
   liAccount.addEventListener("change", updateLinkedinPages);
+  fbAccount.addEventListener("change", updateFacebookPages);
 
   (async () => {
     try {
@@ -370,12 +469,16 @@ import Base from "../layouts/Base.astro";
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       liAccounts = data.linkedin ?? [];
+      fbAccounts = data.facebook ?? [];
       fillSelect(liAccount, liAccounts, data.linkedin_error);
       fillSelect(igAccount, data.instagram, data.instagram_error);
+      fillSelect(fbAccount, fbAccounts, data.facebook_error);
       updateLinkedinPages();
+      updateFacebookPages();
     } catch (e) {
       fillSelect(liAccount, [], String(e));
       fillSelect(igAccount, [], String(e));
+      fillSelect(fbAccount, [], String(e));
     }
   })();
 

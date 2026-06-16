@@ -20,10 +20,11 @@ _PERPLEXITY_GROUNDING = (
 
 
 def _system_prompt() -> str:
-    return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn and Instagram based on YouTube video content.
+    return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn, Instagram and Facebook based on YouTube video content.
 
 OUTPUT FORMAT: Respond with ONLY valid JSON in this exact shape — no markdown, no explanation, no preamble:
-{"linkedin_text": "...", "instagram_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}}
+{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}}
+Only write text for the platforms requested in the user message; set any non-requested platform's text to an empty string.
 
 === IMAGE TEXT (overlay copy for the visuals) ===
 The `image_text` object is the text that gets printed ON the images/carousel — it is NOT the caption. Write it as standalone, designed-poster copy:
@@ -52,6 +53,15 @@ Write `image_text` in the same language as the posts.
 - Clear call-to-action: "Link en bio" / "Link in bio" — do NOT paste the raw YouTube URL in captions
 - MAXIMUM 5 hashtags (hard limit — the platform rejects more)
 
+=== FACEBOOK POST RULES ===
+- 80–180 words
+- Warm, conversational opening hook (1–2 sentences) — write like a person talking to their community, not a corporate brand
+- Short paragraphs; you may use 2–3 bullets but prose is fine
+- 1–3 emojis woven in naturally (optional, never stacked)
+- If a source video URL is provided (see the user message), you MAY include it raw on its own line near the end (Facebook renders link previews); if NO source URL is provided, do not invent one
+- End with a question or a clear call-to-action
+- 2–4 relevant hashtags at the very end (Facebook hashtags are low-value, keep them few)
+
 === FAITHFUL CITATIONS (STRICT) ===
 Any verbatim quote, number, percentage, name, or specific claim in either post MUST appear literally in the transcript (or title+description if transcript is empty). Never invent figures, attributions, or quotes. Paraphrasing is fine, fabricating is not.
 
@@ -60,10 +70,10 @@ Build the hashtag pool primarily from the video's own `tags` and `chapters`:
 1. Pick 2-3 from `tags` that fit the platform's audience (skip generic ones like #video)
 2. Add 1-2 derived from `chapters` titles
 3. Only invent extra if still under minimum — keep them concrete and topic-specific
-4. Cap: LinkedIn 3-5, Instagram max 5
+4. Cap: LinkedIn 3-5, Instagram max 5, Facebook 2-4
 
 === HUMANIZATION CHECKLIST (apply before outputting) ===
-Apply these rules to both posts silently:
+Apply these rules to every post silently:
 1. Delete AI filler connectors — ES: "En conclusión", "En resumen", "En definitiva", "Es importante destacar", "Cabe destacar", "Asimismo", "Por consiguiente", "En última instancia", "Sin lugar a dudas". EN: "In conclusion", "It's important to note that", "Furthermore", "Moreover", "That said,", "Needless to say", "At the end of the day"
 2. Remove inflated AI vocabulary — ES: "revolucionario", "transformador", "disruptivo", "imprescindible", "esencialmente", "fundamentalmente". EN: "game-changer", "leverage", "unlock", "harness", "elevate", "delve into", "robust", "seamless", "cutting-edge", "synergy", "empower"
 3. Vary sentence lengths — if 3+ consecutive sentences are similar length, break one or extend another
@@ -83,8 +93,10 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     lang = params.get("lang", "es")
     tono_li = params.get("tono_linkedin", "educativo")
     tono_ig = params.get("tono_instagram", "inspiracional")
+    tono_fb = params.get("tono_facebook", "personal")
     obj_li = params.get("objetivo_linkedin", "engagement")
     obj_ig = params.get("objetivo_instagram", "engagement")
+    obj_fb = params.get("objetivo_facebook", "engagement")
     fmt_ig = params.get("formato_instagram", "imagen-unica")
     solo = params.get("solo", "")
     source_type = params.get("source_type", "youtube")
@@ -92,7 +104,7 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
 
     # How many info slides the carousel needs (slide 0 = hook, last = credits).
     # Only an Instagram carousel needs info slides; everything else needs 0.
-    if solo != "linkedin" and fmt_ig == "carrusel":
+    if solo in ("", "instagram") and fmt_ig == "carrusel":
         n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
         n_info_slides = n_slides - 2
     else:
@@ -106,10 +118,12 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     description = (content.get("description") or "")[:500]
 
     platforms = []
-    if solo != "instagram":
+    if solo in ("", "linkedin"):
         platforms.append(f"LinkedIn — tone: {tono_li}, objective: {obj_li}")
-    if solo != "linkedin":
+    if solo in ("", "instagram"):
         platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {fmt_ig}")
+    if solo in ("", "facebook"):
+        platforms.append(f"Facebook — tone: {tono_fb}, objective: {obj_fb}")
 
     # The content can come from a YouTube video, a voice note transcription, or a
     # text document. Tell the model what it is reading and whether a source URL
@@ -153,8 +167,10 @@ Important reminders:
 - Instagram: max 5 hashtags, no raw URL in caption
 {li_url_reminder}
 - image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
-{"- Only write linkedin_text (set instagram_text to empty string)" if solo == "linkedin" else ""}
-{"- Only write instagram_text (set linkedin_text to empty string)" if solo == "instagram" else ""}
+- Only write text for the platforms listed above; set every other platform's text to an empty string
+{"- Only write linkedin_text (set instagram_text and facebook_text to empty strings)" if solo == "linkedin" else ""}
+{"- Only write instagram_text (set linkedin_text and facebook_text to empty strings)" if solo == "instagram" else ""}
+{"- Only write facebook_text (set linkedin_text and instagram_text to empty strings)" if solo == "facebook" else ""}
 """
 
 
@@ -193,8 +209,8 @@ def _extract_texts_fallback(raw: str) -> dict:
     Handles unescaped double quotes inside string values by using lookahead
     to distinguish value-terminating quotes from embedded ones.
     """
-    result: dict = {"linkedin_text": "", "instagram_text": ""}
-    for key in ("linkedin_text", "instagram_text"):
+    result: dict = {"linkedin_text": "", "instagram_text": "", "facebook_text": ""}
+    for key in ("linkedin_text", "instagram_text", "facebook_text"):
         m = re.search(rf'"{key}"\s*:\s*"', raw)
         if not m:
             continue
@@ -272,7 +288,7 @@ def _parse_raw(raw: str) -> dict:
     # Level-3 fallback recovers only the caption texts; image_text is left out
     # on purpose so job_runner degrades the overlay copy to its heuristics.
     result = _extract_texts_fallback(raw)
-    if result.get("linkedin_text") or result.get("instagram_text"):
+    if result.get("linkedin_text") or result.get("instagram_text") or result.get("facebook_text"):
         return result
     raise json.JSONDecodeError("Could not parse or repair response JSON", raw, 0)
 
@@ -370,7 +386,7 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
     posts = _parse_raw(raw)
     # Safety net: sonar models sometimes append citation markers like [1] despite instructions.
     _strip = lambda s: re.sub(r"\s*\[\d+\]", "", s).strip()
-    for key in ("linkedin_text", "instagram_text"):
+    for key in ("linkedin_text", "instagram_text", "facebook_text"):
         if posts.get(key):
             posts[key] = _strip(posts[key])
     img = posts.get("image_text")

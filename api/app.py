@@ -64,8 +64,12 @@ def list_accounts():
         raise HTTPException(status_code=500, detail=str(e))
 
     out: dict[str, list[dict]] = {}
-    env_fallback = {"linkedin": cfg.linkedin_account_id, "instagram": cfg.instagram_account_id}
-    for platform in ("linkedin", "instagram"):
+    env_fallback = {
+        "linkedin": cfg.linkedin_account_id,
+        "instagram": cfg.instagram_account_id,
+        "facebook": cfg.facebook_account_id,
+    }
+    for platform in ("linkedin", "instagram", "facebook"):
         try:
             accounts = bc.get_accounts(platform, api_key=cfg.blotato_api_key)
             out[platform] = [{"id": str(a.get("id", "")), "label": _account_label(a)} for a in accounts if a.get("id")]
@@ -77,15 +81,16 @@ def list_accounts():
         if env_id and not any(a["id"] == env_id for a in out[platform]):
             out[platform].insert(0, {"id": env_id, "label": f"Configurada en .env ({env_id})"})
 
-    # Attach the LinkedIn Company Pages each account can post to (the form offers them
-    # as a second selector). Failures per account are non-fatal — the account stays
-    # selectable for the personal profile.
-    for acc in out.get("linkedin", []):
-        try:
-            subs = bc.get_subaccounts(acc["id"], api_key=cfg.blotato_api_key)
-            acc["pages"] = [{"id": str(p.get("id", "")), "name": str(p.get("name", ""))} for p in subs if p.get("id")]
-        except Exception:
-            acc["pages"] = []
+    # Attach the Pages each account can post to (the form offers them as a second
+    # selector): LinkedIn Company Pages and Facebook Pages. Failures per account are
+    # non-fatal — the account stays selectable (personal profile for LinkedIn).
+    for platform in ("linkedin", "facebook"):
+        for acc in out.get(platform, []):
+            try:
+                subs = bc.get_subaccounts(acc["id"], api_key=cfg.blotato_api_key)
+                acc["pages"] = [{"id": str(p.get("id", "")), "name": str(p.get("name", ""))} for p in subs if p.get("id")]
+            except Exception:
+                acc["pages"] = []
 
     return out
 
@@ -94,21 +99,27 @@ def list_accounts():
 async def create_job(
     source_type: Annotated[str, Form()] = "youtube",
     youtube_url: Annotated[str, Form()] = "",
+    manual_text: Annotated[str, Form()] = "",
     media_file: Annotated[UploadFile | None, File()] = None,
     tono: Annotated[str, Form()] = "",
     tono_linkedin: Annotated[str, Form()] = "",
     tono_instagram: Annotated[str, Form()] = "",
+    tono_facebook: Annotated[str, Form()] = "",
     objetivo: Annotated[str, Form()] = "",
     objetivo_linkedin: Annotated[str, Form()] = "",
     objetivo_instagram: Annotated[str, Form()] = "",
+    objetivo_facebook: Annotated[str, Form()] = "",
     formato_instagram: Annotated[str, Form()] = "imagen-unica",
     carrusel_slides: Annotated[int, Form()] = 3,
     tipo_medio: Annotated[str, Form()] = "imagen",
+    fuente_imagen: Annotated[str, Form()] = "higgsfield",
     idioma: Annotated[str, Form()] = "auto",
     modelo_perplexity: Annotated[str, Form()] = "sonar-pro",
     linkedin_account_id: Annotated[str, Form()] = "",
     linkedin_page_id: Annotated[str, Form()] = "",
     instagram_account_id: Annotated[str, Form()] = "",
+    facebook_account_id: Annotated[str, Form()] = "",
+    facebook_page_id: Annotated[str, Form()] = "",
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     publicar: Annotated[str, Form()] = "",
@@ -121,8 +132,9 @@ async def create_job(
     # Resolve the content source. "youtube" needs a URL; "audio"/"texto" need an
     # uploaded file whose bytes we read now (the UploadFile is tied to this request,
     # but the pipeline runs asynchronously after we return).
+    # "manual" (texto plano escrito en el form) solo existe en el flujo individual.
     source_type = (source_type or "youtube").strip().lower()
-    if source_type not in ("youtube", "audio", "texto"):
+    if source_type not in ("youtube", "audio", "texto", "manual"):
         raise HTTPException(status_code=400, detail=f"source_type inválido: {source_type}")
 
     upload_bytes = b""
@@ -130,6 +142,9 @@ async def create_job(
     if source_type == "youtube":
         if not youtube_url.strip():
             raise HTTPException(status_code=400, detail="Falta la URL de YouTube")
+    elif source_type == "manual":
+        if not manual_text.strip():
+            raise HTTPException(status_code=400, detail="Falta el texto manual")
     else:
         if media_file is None:
             raise HTTPException(status_code=400, detail="Falta el archivo de audio/texto")
@@ -142,21 +157,27 @@ async def create_job(
     params = {
         "source_type": source_type,
         "youtube_url": youtube_url,
+        "manual_text": manual_text,
         "upload_filename": upload_filename,
         "tono": tono,
         "tono_linkedin": tono_linkedin,
         "tono_instagram": tono_instagram,
+        "tono_facebook": tono_facebook,
         "objetivo": objetivo,
         "objetivo_linkedin": objetivo_linkedin,
         "objetivo_instagram": objetivo_instagram,
+        "objetivo_facebook": objetivo_facebook,
         "formato_instagram": formato_instagram,
         "carrusel_slides": max(3, min(6, carrusel_slides)),
         "tipo_medio": tipo_medio,
+        "fuente_imagen": fuente_imagen if fuente_imagen in ("higgsfield", "template") else "higgsfield",
         "idioma": idioma,
         "modelo_perplexity": modelo_perplexity,
         "linkedin_account_id": linkedin_account_id.strip(),
         "linkedin_page_id": linkedin_page_id.strip(),
         "instagram_account_id": instagram_account_id.strip(),
+        "facebook_account_id": facebook_account_id.strip(),
+        "facebook_page_id": facebook_page_id.strip(),
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
@@ -207,6 +228,7 @@ def get_job(job_id: str):
         "images": {
             "blotato_urls": job["images"]["blotato_urls"],
             "has_li_hook": "li-hook" in job["images"]["bytes"],
+            "has_fb_hook": "fb-hook" in job["images"]["bytes"],
             "has_ig_single": "ig-single" in job["images"]["bytes"],
             "has_ig_carousel": any(k.startswith("ig-") and k != "ig-single" for k in job["images"]["bytes"]),
             "ig_slides": [k for k in (f"ig-{i}" for i in range(6)) if k in job["images"]["bytes"]],
@@ -216,6 +238,7 @@ def get_job(job_id: str):
         "video": job.get("video", {"url": "", "provider": "", "notice": ""}),
         "li_media_urls": job.get("_li_media_urls", []),
         "ig_media_urls": job.get("_ig_media_urls", []),
+        "fb_media_urls": job.get("_fb_media_urls", []),
         "result": job["result"],
         "error_msg": job["error_msg"],
     }
@@ -226,6 +249,7 @@ async def edit_job(
     job_id: str,
     linkedin_text: Annotated[str, Form()] = "",
     instagram_text: Annotated[str, Form()] = "",
+    facebook_text: Annotated[str, Form()] = "",
 ):
     if job_id not in jobs:
         raise HTTPException(status_code=404)
@@ -234,6 +258,8 @@ async def edit_job(
         job["posts"]["linkedin_text"] = linkedin_text
     if instagram_text:
         job["posts"]["instagram_text"] = instagram_text
+    if facebook_text:
+        job["posts"]["facebook_text"] = facebook_text
     return {"posts": job["posts"]}
 
 
@@ -277,6 +303,8 @@ async def create_sheet_batch(
     linkedin_account_id: Annotated[str, Form()] = "",
     linkedin_page_id: Annotated[str, Form()] = "",
     instagram_account_id: Annotated[str, Form()] = "",
+    facebook_account_id: Annotated[str, Form()] = "",
+    facebook_page_id: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     tz_offset: Annotated[int, Form()] = 0,
 ):
@@ -308,6 +336,8 @@ async def create_sheet_batch(
         "linkedin_account_id": linkedin_account_id.strip(),
         "linkedin_page_id": linkedin_page_id.strip(),
         "instagram_account_id": instagram_account_id.strip(),
+        "facebook_account_id": facebook_account_id.strip(),
+        "facebook_page_id": facebook_page_id.strip(),
     }
 
     batch_id = str(uuid.uuid4())

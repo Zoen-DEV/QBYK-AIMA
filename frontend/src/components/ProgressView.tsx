@@ -28,6 +28,7 @@ const STEP_DEFS: { key: string; label: string }[] = [
 
 const SUBKEY_LABELS: Record<string, string> = {
   "li-hook": "LinkedIn",
+  "fb-hook": "Facebook",
   "ig-single": "Instagram",
   "ig-0": "Instagram · Slide 1",
   "ig-1": "Instagram · Slide 2",

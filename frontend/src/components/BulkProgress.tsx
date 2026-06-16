@@ -14,7 +14,7 @@ interface Row {
   schedule: string;
   status: string;
   job_id: string | null;
-  result: { linkedin?: RowResult; instagram?: RowResult; dry_run?: boolean };
+  result: { linkedin?: RowResult; instagram?: RowResult; facebook?: RowResult; dry_run?: boolean };
   error: string | null;
 }
 
@@ -421,7 +421,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
           const steps = rowSteps(row);
           const meta = statusMeta(row.status);
           const hasFooter = Boolean(
-            row.error || row.result?.linkedin || row.result?.instagram || (row.job_id && row.status !== "error")
+            row.error || row.result?.linkedin || row.result?.instagram || row.result?.facebook || (row.job_id && row.status !== "error")
           );
 
           return (
@@ -497,6 +497,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
                   {row.error && <span className="text-xs text-red-400">{row.error}</span>}
                   <NetworkResult name="LinkedIn" res={row.result?.linkedin} />
                   <NetworkResult name="Instagram" res={row.result?.instagram} />
+                  <NetworkResult name="Facebook" res={row.result?.facebook} />
                   {row.job_id && row.status !== "error" && (
                     <a href={`/jobs/${row.job_id}/result`} className="text-xs text-gray-500 hover:text-gray-300 ml-auto">
                       Ver detalle →

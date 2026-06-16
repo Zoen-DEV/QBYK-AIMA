@@ -75,6 +75,12 @@ import Base from "../layouts/Base.astro";
               <option value="">Cargando cuentas...</option>
             </select>
           </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Facebook</span>
+            <select name="facebook_account_id" id="facebook-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
         </div>
 
         <!-- Página de LinkedIn (aparece solo si la cuenta seleccionada tiene páginas) -->
@@ -82,6 +88,14 @@ import Base from "../layouts/Base.astro";
           <span class="text-xs text-gray-400 mb-1 block">Publicar en LinkedIn como</span>
           <select name="linkedin_page_id" id="linkedin-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
             <option value="">Perfil personal</option>
+          </select>
+        </label>
+
+        <!-- Página de Facebook (Facebook publica siempre en una Página) -->
+        <label class="block hidden" id="facebook-page-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Página de Facebook</span>
+          <select name="facebook_page_id" id="facebook-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Página por defecto</option>
           </select>
         </label>
 
@@ -117,10 +131,14 @@ import Base from "../layouts/Base.astro";
 
   const liAccount = document.getElementById("linkedin-account") as HTMLSelectElement;
   const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+  const fbAccount = document.getElementById("facebook-account") as HTMLSelectElement;
   const liPage = document.getElementById("linkedin-page") as HTMLSelectElement;
   const liPageWrap = document.getElementById("linkedin-page-wrap") as HTMLLabelElement;
+  const fbPage = document.getElementById("facebook-page") as HTMLSelectElement;
+  const fbPageWrap = document.getElementById("facebook-page-wrap") as HTMLLabelElement;
 
   let liAccounts: Account[] = [];
+  let fbAccounts: Account[] = [];
 
   function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
     sel.innerHTML = "";
@@ -156,7 +174,29 @@ import Base from "../layouts/Base.astro";
     liPageWrap.classList.toggle("hidden", pages.length === 0);
   }
 
+  // Facebook publishes to a Page: list them and pre-select the first when the
+  // account has pages; otherwise fall back to "Página por defecto" (empty).
+  function updateFacebookPages() {
+    const acc = fbAccounts.find((a) => a.id === fbAccount.value);
+    const pages = acc?.pages ?? [];
+    fbPage.innerHTML = "";
+    if (pages.length === 0) {
+      const def = document.createElement("option");
+      def.value = "";
+      def.textContent = "Página por defecto";
+      fbPage.appendChild(def);
+    }
+    for (const p of pages) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name || `Página ${p.id}`;
+      fbPage.appendChild(opt);
+    }
+    fbPageWrap.classList.toggle("hidden", pages.length === 0);
+  }
+
   liAccount.addEventListener("change", updateLinkedinPages);
+  fbAccount.addEventListener("change", updateFacebookPages);
 
   (async () => {
     try {
@@ -164,12 +204,16 @@ import Base from "../layouts/Base.astro";
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       liAccounts = data.linkedin ?? [];
+      fbAccounts = data.facebook ?? [];
       fillSelect(liAccount, liAccounts, data.linkedin_error);
       fillSelect(igAccount, data.instagram, data.instagram_error);
+      fillSelect(fbAccount, fbAccounts, data.facebook_error);
       updateLinkedinPages();
+      updateFacebookPages();
     } catch (e) {
       fillSelect(liAccount, [], String(e));
       fillSelect(igAccount, [], String(e));
+      fillSelect(fbAccount, [], String(e));
     }
   })();
 

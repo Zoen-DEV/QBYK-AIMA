@@ -182,8 +182,15 @@ class HiggsfieldProvider:
 
 def make_provider(*, hf_key: str = "", hf_secret: str = "",
                   hf_model: str = hf.DEFAULT_MODEL,
-                  hf_resolution: str = hf.DEFAULT_RESOLUTION):
-    """Return a Higgsfield provider when both credentials are set, else templates."""
+                  hf_resolution: str = hf.DEFAULT_RESOLUTION,
+                  force_template: bool = False):
+    """Return a Higgsfield provider when both credentials are set, else templates.
+
+    `force_template=True` ignores Higgsfield entirely and serves bundled templates
+    directly (the user explicitly chose plantillas en el formulario / la hoja).
+    """
+    if force_template:
+        return TemplateProvider()
     if hf_key and hf_secret:
         return HiggsfieldProvider(hf_key, hf_secret, model=hf_model, resolution=hf_resolution)
     return TemplateProvider()
