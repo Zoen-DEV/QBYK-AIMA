@@ -1,0 +1,13 @@
+---
+import Base from "../../layouts/Base.astro";
+import BulkProgress from "../../components/BulkProgress";
+
+const { id } = Astro.params;
+if (!id) return Astro.redirect("/");
+---
+
+<Base title="Lote de posts">
+  <div class="max-w-3xl mx-auto">
+    <BulkProgress client:load batchId={id} apiUrl="/api" />
+  </div>
+</Base>

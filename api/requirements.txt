@@ -9,5 +9,7 @@ python-dotenv
 # Lectura de documentos para la fuente "texto" (PDF y Word .docx)
 pypdf
 python-docx
+# Generación y lectura de la plantilla de creación en lote (.xlsx)
+openpyxl
 # Transcripción local gratuita (solo si TRANSCRIPTION_ENGINE=local)
 faster-whisper

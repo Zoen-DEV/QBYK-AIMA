@@ -1,6 +1,7 @@
 import asyncio
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,34 @@ from post_writer import write_posts
 
 _loop_executor = None
 _OUTPUTS_DIR = Path(__file__).parent / "outputs"
+
+
+def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: str = "") -> dict:
+    """Build a fresh in-memory job from an already-normalized `params` dict.
+
+    Shared by the single-post endpoint (`create_job`) and the bulk batch runner so
+    both produce the exact same job shape the pipeline expects. `params` must already
+    be normalized by the caller (clamped slide count, stripped account ids, etc.).
+    For non-YouTube sources, pass the source bytes via `upload_bytes`/`upload_filename`.
+    """
+    return {
+        "id": str(uuid.uuid4()),
+        "status": "running",
+        "params": params,
+        "content": {},
+        "accounts": {},
+        "posts": {},
+        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": []}, "base_urls": {"linkedin": [], "instagram": []}, "provider": "", "notice": ""},
+        "video": {"url": "", "provider": "", "notice": ""},
+        "result": {},
+        "error_msg": None,
+        "_queue": asyncio.Queue(),
+        "_cfg": cfg,
+        "_li_media_urls": [],
+        "_ig_media_urls": [],
+        "_upload_bytes": upload_bytes,
+        "_upload_filename": upload_filename,
+    }
 
 
 def _save_image(job_id: str, key: str, png: bytes) -> None:
@@ -584,6 +613,83 @@ async def run_pipeline(job: dict):
         job["status"] = "error"
         job["error_msg"] = str(e)
         await _push(q, {"step": "error", "msg": str(e)})
+
+
+# ── Publishing ──────────────────────────────────────────────────────────────────
+
+def _post_url(status: dict) -> str | None:
+    """Extract the published-post permalink from a Blotato post-status response.
+
+    Blotato exposes the link as `publicUrl` on a published post (per the API
+    reference). Some shapes nest the state under `state` and/or use `postUrl`;
+    we check the known variants so the "Ver publicación" link is robust.
+    """
+    if not isinstance(status, dict):
+        return None
+    for key in ("publicUrl", "postUrl", "url"):
+        val = status.get(key)
+        if val:
+            return val
+    state = status.get("state")
+    if isinstance(state, dict):
+        for key in ("publicUrl", "postUrl", "url"):
+            val = state.get(key)
+            if val:
+                return val
+    return None
+
+
+async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
+    """Publish (or schedule) a job's already-generated posts to Blotato.
+
+    Shared by the single-post publish endpoint and the bulk batch runner. Respects
+    `params.solo` (publish to one network only) and `params.dry_run` (generate but
+    don't publish). `schedule_time` is an ISO-8601 string for deferred publishing,
+    or empty/None to publish now. Sets `job["result"]`/`job["status"]` and returns
+    the result dict.
+    """
+    cfg = job["_cfg"]
+    posts = job["posts"]
+    accounts = job["accounts"]
+    params = job["params"]
+    dry_run = params.get("dry_run", False)
+    solo = params.get("solo", "")
+
+    li_text = posts.get("linkedin_text", "")
+    ig_text = posts.get("instagram_text", "")
+    li_media = job.get("_li_media_urls", [])
+    ig_media = job.get("_ig_media_urls", [])
+
+    result: dict = {}
+    scheduled_at = (schedule_time or "").strip() or None
+
+    if not dry_run and solo != "instagram" and accounts.get("linkedin_id") and li_text:
+        try:
+            resp = await _run(bc.publish_post, accounts["linkedin_id"], "linkedin", li_text, li_media,
+                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
+                              page_id=accounts.get("linkedin_page_id") or None)
+            status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
+            result["linkedin"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
+        except Exception as e:
+            result["linkedin"] = {"error": str(e)}
+
+    if not dry_run and solo != "linkedin" and accounts.get("instagram_id") and ig_text:
+        try:
+            resp = await _run(bc.publish_post, accounts["instagram_id"], "instagram", ig_text, ig_media,
+                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True)
+            status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
+            result["instagram"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
+        except Exception as e:
+            result["instagram"] = {"error": str(e)}
+
+    if dry_run:
+        result["dry_run"] = True
+        result["linkedin"] = {"status": "dry-run"}
+        result["instagram"] = {"status": "dry-run"}
+
+    job["result"] = result
+    job["status"] = "done"
+    return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

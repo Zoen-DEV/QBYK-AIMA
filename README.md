@@ -6,12 +6,32 @@ Interfaz web para el skill `repurpose-youtube-video`. Convierte contenido en pos
 - **Audio (nota de voz de WhatsApp)** — se transcribe con Whisper y reemplaza al link de YouTube como contexto.
 - **Documento** (`.txt`/`.md`, **PDF** o **Word `.docx`**) — se extrae su texto y se usa como base.
 
+## Los dos flujos de creación
+
+La app ofrece dos formas de crear contenido. **Ambos comparten exactamente el mismo pipeline de generación y publicación** (`make_job` → `run_pipeline` → `publish_job_posts` en `api/job_runner.py`), así que cualquier mejora del pipeline (extracción, escritura, imágenes/video, publicación) aplica a los dos sin duplicar lógica.
+
+1. **Post individual** (`/individual`) — un formulario por post. El usuario elige fuente, tono, objetivo, formato, medio, idioma y cuentas, ve el progreso en tiempo real (SSE), edita los textos y aprueba antes de publicar. Es el flujo interactivo, de un solo post.
+2. **Creación en lote (bulk)** (`/bulk`) — el usuario descarga una plantilla `.xlsx`, llena una fila por post (máximo 6) con su fecha/hora de programación, elige las cuentas **una sola vez** y sube el sheet. El backend parsea cada fila a un job normal, corre el pipeline completo y publica/programa el resultado en Blotato fila por fila (secuencial, por el rate-limit de Blotato). El avance del lote se sigue en `/batches/:id`.
+
+> **Regla para implementaciones nuevas:** toda funcionalidad nueva debe contemplar **los dos flujos**. Ver [`CLAUDE.md`](CLAUDE.md).
+
 ## Estructura
 
 ```
 web/
-├── api/          # FastAPI — pipeline de generación y publicación
-└── frontend/     # Astro + React + Tailwind — UI
+├── api/                    # FastAPI — pipeline de generación y publicación
+│   ├── app.py              # Endpoints (single + bulk) y stores en memoria
+│   ├── job_runner.py       # make_job, run_pipeline y publish_job_posts (núcleo compartido)
+│   ├── batch_runner.py     # Orquestación del lote: por fila → job → pipeline → publish
+│   ├── sheets.py           # Plantilla .xlsx descargable y parseo del sheet subido
+│   ├── post_writer.py      # Redacción de los posts (Anthropic / Perplexity)
+│   └── scripts/            # Clientes externos (Blotato, Higgsfield, transcripción, overlay)
+└── frontend/               # Astro + React + Tailwind — UI
+    └── src/pages/
+        ├── index.astro       # Landing: elige flujo (individual o bulk)
+        ├── individual.astro  # Flujo 1: formulario de un post
+        ├── bulk.astro        # Flujo 2: descarga plantilla + sube sheet
+        └── batches/[id].astro# Progreso del lote (BulkProgress.tsx)
 ```
 
 ## Requisitos
@@ -92,6 +112,8 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 
 ## Flujo de la aplicación
 
+> Lo que sigue describe el **flujo individual** (`/individual`). El **flujo bulk** (`/bulk`) reutiliza los mismos pasos 2 (extracción → cuentas → escritura → imágenes/video) y 5 (publicación), pero por cada fila del sheet y sin pantalla de revisión: ver [Creación en lote](#creación-en-lote-bulk).
+
 1. El usuario elige la **fuente del contenido** (link de YouTube, audio o archivo de texto) y configura tono, objetivo, formato (incluido el **número de slides del carrusel**, 3–6), tipo de medio (imagen o video), idioma y, opcionalmente, **qué cuenta** de LinkedIn/Instagram usar (y la **Company Page** de LinkedIn) eligiéndola en los selectores que el formulario carga vía `GET /accounts`.
 2. La API arranca un job asíncrono con las siguientes fases:
    - **Extracción** (según la fuente): YouTube → metadata + transcript con `yt-dlp` y `youtube-transcript-api`; audio → transcripción con Whisper (endpoint compatible con OpenAI); documento → extracción del texto (`.txt`/`.md` directo, PDF con `pypdf`, Word `.docx` con `python-docx`). En audio y texto no hay URL de origen, así que el post de LinkedIn omite el CTA "mira el video".
@@ -102,6 +124,15 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 3. El frontend sigue el progreso en tiempo real por SSE (`/jobs/:id/stream`).
 4. En la pantalla de revisión el usuario puede editar los textos y aprobar.
 5. Al publicar, la API llama a Blotato para enviar los posts a LinkedIn e Instagram. La pantalla de resultado muestra el botón **"Ver publicación"** con el enlace directo a cada post (el permalink `publicUrl` que devuelve Blotato).
+
+## Creación en lote (bulk)
+
+El flujo bulk genera y programa varios posts de una sola subida:
+
+1. El usuario descarga la plantilla `.xlsx` desde `/bulk` (`GET /sheets/template`). Cada **fila = un post**; columnas: `youtube_url` **o** `texto` (una sola fuente por fila), `tono`, `objetivo`, `tipo_medio`, `formato_instagram`, `carrusel_slides`, `idioma`, `solo` y `fecha_hora` (programación; vacío = publicar ahora). Máximo **6 filas**. La plantilla trae listas desplegables, comentarios de ayuda y una hoja "Instrucciones".
+2. Las **cuentas** de LinkedIn/Instagram (y Company Page) y el **dry-run** se eligen una sola vez en la UI, **no** en el sheet, y se inyectan por fila.
+3. Al subir el sheet (`POST /sheets/jobs`), `sheets.parse_sheet` valida cada fila y la convierte al mismo `params` que consume el pipeline. Se crea un **batch** en memoria y `batch_runner.run_batch` procesa las filas **secuencialmente** (para respetar el rate-limit de subida de medios de Blotato, 10 req/min): por cada fila construye un job normal (`make_job`), corre `run_pipeline` y publica/programa con `publish_job_posts` usando la `fecha_hora` convertida a UTC (`tz_offset` del navegador).
+4. Cada fila queda registrada como un **job individual** en el mismo store, así puede inspeccionarse en `/jobs/:id`. El progreso del lote completo se sigue en `/batches/:id` (componente `BulkProgress`, que hace polling a `GET /sheets/batches/:id`).
 
 ## Endpoints de la API
 
@@ -115,3 +146,8 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 | `POST` | `/jobs/:id/edit` | Edita los textos antes de publicar |
 | `GET` | `/jobs/:id/image/:key` | Sirve la imagen generada (`li-hook`, `ig-single`, `ig-0`…`ig-N`) |
 | `POST` | `/jobs/:id/publish` | Publica en las redes configuradas (la respuesta incluye el permalink de cada post) |
+| `GET` | `/sheets/template` | Descarga la plantilla `.xlsx` para la creación en lote |
+| `POST` | `/sheets/jobs` | Sube el sheet llenado, crea un batch y lanza la generación + programación por fila |
+| `GET` | `/sheets/batches/:id` | Estado del batch (filas, jobs y resultados de publicación) |
+
+> Los endpoints `/jobs/*` sirven al **flujo individual**; los `/sheets/*` al **flujo bulk**. Ambos terminan ejecutando el mismo pipeline de `job_runner.py`.

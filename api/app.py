@@ -7,8 +7,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 
+import sheets
 from config import load_config
-from job_runner import run_pipeline
+from job_runner import run_pipeline, make_job, publish_job_posts
+from batch_runner import run_batch, to_utc_iso
 
 app = FastAPI(title="repurpose-youtube-video API")
 
@@ -21,6 +23,8 @@ app.add_middleware(
 
 # In-memory job store
 jobs: dict[str, dict] = {}
+# In-memory batch store (creación en lote desde un sheet)
+batches: dict[str, dict] = {}
 
 
 @app.get("/health")
@@ -135,49 +139,32 @@ async def create_job(
         default_name = "audio.ogg" if source_type == "audio" else "texto.txt"
         upload_filename = media_file.filename or default_name
 
-    job_id = str(uuid.uuid4())
-    job: dict = {
-        "id": job_id,
-        "status": "running",
-        "params": {
-            "source_type": source_type,
-            "youtube_url": youtube_url,
-            "upload_filename": upload_filename,
-            "tono": tono,
-            "tono_linkedin": tono_linkedin,
-            "tono_instagram": tono_instagram,
-            "objetivo": objetivo,
-            "objetivo_linkedin": objetivo_linkedin,
-            "objetivo_instagram": objetivo_instagram,
-            "formato_instagram": formato_instagram,
-            "carrusel_slides": max(3, min(6, carrusel_slides)),
-            "tipo_medio": tipo_medio,
-            "idioma": idioma,
-            "modelo_perplexity": modelo_perplexity,
-            "linkedin_account_id": linkedin_account_id.strip(),
-            "linkedin_page_id": linkedin_page_id.strip(),
-            "instagram_account_id": instagram_account_id.strip(),
-            "solo": solo,
-            "dry_run": dry_run,
-            "publicar": publicar,
-        },
-        "content": {},
-        "accounts": {},
-        "posts": {},
-        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": []}, "base_urls": {"linkedin": [], "instagram": []}, "provider": "", "notice": ""},
-        "video": {"url": "", "provider": "", "notice": ""},
-        "result": {},
-        "error_msg": None,
-        "_queue": asyncio.Queue(),
-        "_cfg": cfg,
-        "_li_media_urls": [],
-        "_ig_media_urls": [],
-        "_upload_bytes": upload_bytes,
-        "_upload_filename": upload_filename,
+    params = {
+        "source_type": source_type,
+        "youtube_url": youtube_url,
+        "upload_filename": upload_filename,
+        "tono": tono,
+        "tono_linkedin": tono_linkedin,
+        "tono_instagram": tono_instagram,
+        "objetivo": objetivo,
+        "objetivo_linkedin": objetivo_linkedin,
+        "objetivo_instagram": objetivo_instagram,
+        "formato_instagram": formato_instagram,
+        "carrusel_slides": max(3, min(6, carrusel_slides)),
+        "tipo_medio": tipo_medio,
+        "idioma": idioma,
+        "modelo_perplexity": modelo_perplexity,
+        "linkedin_account_id": linkedin_account_id.strip(),
+        "linkedin_page_id": linkedin_page_id.strip(),
+        "instagram_account_id": instagram_account_id.strip(),
+        "solo": solo,
+        "dry_run": dry_run,
+        "publicar": publicar,
     }
-    jobs[job_id] = job
+    job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename)
+    jobs[job["id"]] = job
     asyncio.create_task(run_pipeline(job))
-    return {"job_id": job_id}
+    return {"job_id": job["id"]}
 
 
 @app.get("/jobs/{job_id}/stream")
@@ -261,86 +248,127 @@ def serve_image(job_id: str, key: str):
     return Response(content=img_bytes, media_type="image/png")
 
 
-def _post_url(status: dict) -> str | None:
-    """Extract the published-post permalink from a Blotato post-status response.
-
-    Blotato exposes the link as `publicUrl` on a published post (per the API
-    reference). Some shapes nest the state under `state` and/or use `postUrl`;
-    we check the known variants so the "Ver publicación" link is robust.
-    """
-    if not isinstance(status, dict):
-        return None
-    for key in ("publicUrl", "postUrl", "url"):
-        val = status.get(key)
-        if val:
-            return val
-    state = status.get("state")
-    if isinstance(state, dict):
-        for key in ("publicUrl", "postUrl", "url"):
-            val = state.get(key)
-            if val:
-                return val
-    return None
-
-
 @app.post("/jobs/{job_id}/publish")
 async def publish_job(
     job_id: str,
     schedule_time: Annotated[str, Form()] = "",
 ):
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent / "scripts"))
-    import blotato_client as bc
-
     if job_id not in jobs:
         raise HTTPException(status_code=404)
+    return await publish_job_posts(jobs[job_id], schedule_time)
 
-    job = jobs[job_id]
-    cfg = job["_cfg"]
-    posts = job["posts"]
-    accounts = job["accounts"]
-    params = job["params"]
-    dry_run = params.get("dry_run", False)
-    solo = params.get("solo", "")
 
-    li_text = posts.get("linkedin_text", "")
-    ig_text = posts.get("instagram_text", "")
-    li_media = job.get("_li_media_urls", [])
-    ig_media = job.get("_ig_media_urls", [])
+# ── Creación en lote desde un sheet (.xlsx / .csv) ───────────────────────────────
 
-    result: dict = {}
-    scheduled_at = schedule_time.strip() or None
+@app.get("/sheets/template")
+def sheets_template():
+    """Descarga la plantilla .xlsx para llenar y volver a subir."""
+    data = sheets.build_template_xlsx()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="aima-plantilla-posts.xlsx"'},
+    )
 
-    loop = asyncio.get_event_loop()
 
-    async def _run(fn, *args, **kwargs):
-        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+@app.post("/sheets/jobs")
+async def create_sheet_batch(
+    sheet_file: Annotated[UploadFile, File()],
+    linkedin_account_id: Annotated[str, Form()] = "",
+    linkedin_page_id: Annotated[str, Form()] = "",
+    instagram_account_id: Annotated[str, Form()] = "",
+    dry_run: Annotated[bool, Form()] = False,
+    tz_offset: Annotated[int, Form()] = 0,
+):
+    """Parsea el sheet, crea un batch y lanza la generación + programación por fila.
 
-    if not dry_run and solo != "instagram" and accounts.get("linkedin_id") and li_text:
-        try:
-            resp = await _run(bc.publish_post, accounts["linkedin_id"], "linkedin", li_text, li_media,
-                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
-                              page_id=accounts.get("linkedin_page_id") or None)
-            status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
-            result["linkedin"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
-        except Exception as e:
-            result["linkedin"] = {"error": str(e)}
+    Las cuentas y el dry-run son globales (de la UI) y se inyectan en cada fila.
+    `tz_offset` (minutos, de Date.getTimezoneOffset()) convierte cada fecha/hora
+    local del sheet a UTC para programar en Blotato.
+    """
+    try:
+        cfg = load_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    if not dry_run and solo != "linkedin" and accounts.get("instagram_id") and ig_text:
-        try:
-            resp = await _run(bc.publish_post, accounts["instagram_id"], "instagram", ig_text, ig_media,
-                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True)
-            status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
-            result["instagram"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
-        except Exception as e:
-            result["instagram"] = {"error": str(e)}
+    data = await sheet_file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    try:
+        specs, warnings = sheets.parse_sheet(data, sheet_file.filename or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not specs:
+        detail = "No se encontraron filas válidas en el archivo."
+        if warnings:
+            detail += " " + " ".join(warnings)
+        raise HTTPException(status_code=400, detail=detail)
 
-    if dry_run:
-        result["dry_run"] = True
-        result["linkedin"] = {"status": "dry-run"}
-        result["instagram"] = {"status": "dry-run"}
+    account_params = {
+        "linkedin_account_id": linkedin_account_id.strip(),
+        "linkedin_page_id": linkedin_page_id.strip(),
+        "instagram_account_id": instagram_account_id.strip(),
+    }
 
-    job["result"] = result
-    job["status"] = "done"
-    return result
+    batch_id = str(uuid.uuid4())
+    rows = []
+    for i, spec in enumerate(specs, start=1):
+        dt = spec["schedule_dt"]
+        rows.append({
+            "index": i,
+            "source": spec["source"],
+            "label": spec["label"],
+            "title": spec["label"],
+            "schedule": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
+            "schedule_utc": to_utc_iso(dt, tz_offset) or "",
+            "status": "queued",
+            "job_id": None,
+            "result": {},
+            "error": None,
+            "_spec": spec,
+        })
+
+    batch = {
+        "id": batch_id,
+        "status": "running",
+        "warnings": warnings,
+        "dry_run": dry_run,
+        "tz_offset": tz_offset,
+        "account_params": account_params,
+        "rows": rows,
+        "_cfg": cfg,
+    }
+    batches[batch_id] = batch
+    asyncio.create_task(run_batch(batch, jobs))
+    return {"batch_id": batch_id, "warnings": warnings, "count": len(rows)}
+
+
+def _batch_snapshot(batch: dict) -> dict:
+    """Vista serializable del batch (sin el spec interno ni la config)."""
+    return {
+        "id": batch["id"],
+        "status": batch["status"],
+        "warnings": batch["warnings"],
+        "dry_run": batch["dry_run"],
+        "rows": [
+            {
+                "index": r["index"],
+                "source": r["source"],
+                "label": r["label"],
+                "title": r.get("title") or r["label"],
+                "schedule": r["schedule"],
+                "status": r["status"],
+                "job_id": r["job_id"],
+                "result": r["result"],
+                "error": r["error"],
+            }
+            for r in batch["rows"]
+        ],
+    }
+
+
+@app.get("/sheets/batches/{batch_id}")
+def get_batch(batch_id: str):
+    if batch_id not in batches:
+        raise HTTPException(status_code=404)
+    return _batch_snapshot(batches[batch_id])

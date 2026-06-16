@@ -1,0 +1,202 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Crear en lote">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-8">
+      <a href="/" class="text-sm text-gray-500 hover:text-gray-300 transition">← Volver</a>
+      <h1 class="text-3xl font-bold text-white mt-2 mb-2">Crear varios posts con un sheet</h1>
+      <p class="text-gray-400">Descarga la plantilla, llena una fila por post (máximo 6) con su fecha y hora, súbela y se generará y programará cada post automáticamente.</p>
+    </div>
+
+    <form id="bulk-form" class="space-y-6">
+      <!-- Paso 1: descargar plantilla -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6">
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-full bg-brand-500/15 text-brand-500 flex items-center justify-center flex-shrink-0 font-semibold text-sm">1</div>
+          <div class="flex-1">
+            <h2 class="text-sm font-semibold text-gray-200 mb-1">Descarga la plantilla</h2>
+            <p class="text-xs text-gray-500 mb-4 leading-relaxed">
+              Ábrela en Excel o Google Sheets. Cada fila es un post; llena <strong class="text-gray-400">youtube_url</strong> o <strong class="text-gray-400">texto</strong> (una sola por fila) y la columna <strong class="text-gray-400">fecha_hora</strong> para programarlo (vacío = publicar ahora). La hoja "Instrucciones" tiene los valores válidos.
+            </p>
+            <a
+              href="/api/sheets/template"
+              class="inline-flex items-center gap-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Descargar plantilla (.xlsx)
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Paso 2: subir el sheet -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6">
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-full bg-brand-500/15 text-brand-500 flex items-center justify-center flex-shrink-0 font-semibold text-sm">2</div>
+          <div class="flex-1">
+            <h2 class="text-sm font-semibold text-gray-200 mb-1">Sube el sheet lleno <span class="text-red-400">*</span></h2>
+            <p class="text-xs text-gray-500 mb-4 leading-relaxed">Acepta archivos <strong class="text-gray-400">.xlsx</strong> o <strong class="text-gray-400">.csv</strong>.</p>
+            <input
+              type="file"
+              name="sheet_file"
+              id="sheet-file"
+              accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              required
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Paso 3: cuentas + opciones (globales para todas las filas) -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-full bg-brand-500/15 text-brand-500 flex items-center justify-center flex-shrink-0 font-semibold text-sm">3</div>
+          <div class="flex-1">
+            <h2 class="text-sm font-semibold text-gray-200 mb-1">Cuentas y opciones</h2>
+            <p class="text-xs text-gray-500 leading-relaxed">Aplican a todos los posts del lote.</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de LinkedIn</span>
+            <select name="linkedin_account_id" id="linkedin-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Instagram</span>
+            <select name="instagram_account_id" id="instagram-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Página de LinkedIn (aparece solo si la cuenta seleccionada tiene páginas) -->
+        <label class="block hidden" id="linkedin-page-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Publicar en LinkedIn como</span>
+          <select name="linkedin_page_id" id="linkedin-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Perfil personal</option>
+          </select>
+        </label>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" name="dry_run" value="true" class="w-4 h-4 rounded bg-gray-800 border-gray-600 text-brand-500 focus:ring-brand-500" />
+          <span class="text-sm text-gray-400">Dry-run (generar todo pero no publicar)</span>
+        </label>
+      </div>
+
+      <!-- Submit -->
+      <button
+        type="submit"
+        id="submit-btn"
+        class="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3.5 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        Generar y programar posts
+      </button>
+    </form>
+  </div>
+</Base>
+
+<script>
+  const form = document.getElementById("bulk-form") as HTMLFormElement;
+  const btn = document.getElementById("submit-btn") as HTMLButtonElement;
+  const fileInput = document.getElementById("sheet-file") as HTMLInputElement;
+
+  // Load connected Blotato accounts into the selectors (same flow as the single form).
+  type LiPage = { id: string; name: string };
+  type Account = { id: string; label: string; pages?: LiPage[] };
+
+  const liAccount = document.getElementById("linkedin-account") as HTMLSelectElement;
+  const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+  const liPage = document.getElementById("linkedin-page") as HTMLSelectElement;
+  const liPageWrap = document.getElementById("linkedin-page-wrap") as HTMLLabelElement;
+
+  let liAccounts: Account[] = [];
+
+  function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
+    sel.innerHTML = "";
+    if (!accounts || accounts.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = errorMsg ? `Sin cuentas (${errorMsg})` : "No hay cuentas conectadas";
+      sel.appendChild(opt);
+      return;
+    }
+    for (const a of accounts) {
+      const opt = document.createElement("option");
+      opt.value = a.id;
+      opt.textContent = a.label;
+      sel.appendChild(opt);
+    }
+  }
+
+  function updateLinkedinPages() {
+    const acc = liAccounts.find((a) => a.id === liAccount.value);
+    const pages = acc?.pages ?? [];
+    liPage.innerHTML = "";
+    const personal = document.createElement("option");
+    personal.value = "";
+    personal.textContent = "Perfil personal";
+    liPage.appendChild(personal);
+    for (const p of pages) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name || `Página ${p.id}`;
+      liPage.appendChild(opt);
+    }
+    liPageWrap.classList.toggle("hidden", pages.length === 0);
+  }
+
+  liAccount.addEventListener("change", updateLinkedinPages);
+
+  (async () => {
+    try {
+      const res = await fetch("/api/accounts");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      liAccounts = data.linkedin ?? [];
+      fillSelect(liAccount, liAccounts, data.linkedin_error);
+      fillSelect(igAccount, data.instagram, data.instagram_error);
+      updateLinkedinPages();
+    } catch (e) {
+      fillSelect(liAccount, [], String(e));
+      fillSelect(igAccount, [], String(e));
+    }
+  })();
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!fileInput.files || fileInput.files.length === 0) {
+      alert("Sube el archivo del sheet (.xlsx o .csv).");
+      return;
+    }
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Procesando...`;
+
+    const data = new FormData(form);
+    if (!data.get("dry_run")) data.delete("dry_run");
+    // Browser timezone offset (minutes) so the backend can convert each row's
+    // local fecha_hora to UTC for Blotato scheduling.
+    data.set("tz_offset", String(new Date().getTimezoneOffset()));
+
+    const res = await fetch("/api/sheets/jobs", { method: "POST", body: data });
+    if (res.ok) {
+      const { batch_id } = await res.json();
+      window.location.href = `/batches/${batch_id}`;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(`Error: ${err.detail || JSON.stringify(err)}`);
+      btn.disabled = false;
+      btn.innerHTML = "Generar y programar posts";
+    }
+  });
+</script>
