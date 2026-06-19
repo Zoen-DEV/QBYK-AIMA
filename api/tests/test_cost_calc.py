@@ -1,0 +1,189 @@
+"""Tests de la fórmula de costos (Fase 0 del dashboard de costos).
+
+Cubren la fórmula de Claude con caché (el caso central confirmado), Perplexity con
+sus cuatro componentes, Higgsfield imagen/video, Whisper (incluido el motor local
+gratis) y el comportamiento best-effort ante tarifas `null` / servicios desconocidos.
+"""
+
+import json
+import math
+
+import pytest
+
+import cost_calc
+
+
+# Tarifas de prueba autocontenidas: todas las cifras conocidas para verificar la
+# aritmética exacta sin depender del contenido de pricing.json.
+PRICING = {
+    "version": "test-1",
+    "base_currency": "USD",
+    "anthropic": {
+        "claude-sonnet-4-6": {
+            "input_per_1m": 3.00,
+            "output_per_1m": 15.00,
+            "cache_write_5m_per_1m": 3.75,
+            "cache_read_per_1m": 0.30,
+        }
+    },
+    "perplexity": {
+        "sonar-pro": {
+            "input_per_1m": 3.00,
+            "output_per_1m": 15.00,
+            "request_fee": 0.005,
+            "search_per_1k": 5.00,
+        }
+    },
+    "higgsfield": {
+        "image_per_generation": 0.10,
+        "video_per_generation": 0.50,
+    },
+    "whisper": {
+        "whisper-1": {"per_minute": 0.006},
+    },
+}
+
+
+def approx(value: float) -> float:
+    return pytest.approx(value, rel=1e-9, abs=1e-12)
+
+
+# ----------------------------- Anthropic / Claude -----------------------------
+
+def test_anthropic_full_formula_with_cache():
+    units = {
+        "input_tokens": 1_000_000,
+        "output_tokens": 1_000_000,
+        "cache_creation_input_tokens": 1_000_000,
+        "cache_read_input_tokens": 1_000_000,
+    }
+    # 3.00 + 15.00 + 3.75 + 0.30
+    assert cost_calc.cost_anthropic("claude-sonnet-4-6", units, PRICING) == approx(22.05)
+
+
+def test_anthropic_realistic_mixed_tokens():
+    units = {
+        "input_tokens": 1234,
+        "output_tokens": 567,
+        "cache_creation_input_tokens": 8900,
+        "cache_read_input_tokens": 200,
+    }
+    expected = (
+        1234 / 1e6 * 3.00
+        + 567 / 1e6 * 15.00
+        + 8900 / 1e6 * 3.75
+        + 200 / 1e6 * 0.30
+    )
+    assert cost_calc.cost_anthropic("claude-sonnet-4-6", units, PRICING) == approx(expected)
+
+
+def test_anthropic_missing_cache_fields_default_to_zero():
+    # Sin campos de caché → solo input/output cuentan.
+    units = {"input_tokens": 1_000_000, "output_tokens": 0}
+    assert cost_calc.cost_anthropic("claude-sonnet-4-6", units, PRICING) == approx(3.00)
+
+
+def test_anthropic_unknown_model_is_zero():
+    units = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+    assert cost_calc.cost_anthropic("claude-opus-nope", units, PRICING) == 0.0
+
+
+# ------------------------------- Perplexity -----------------------------------
+
+def test_perplexity_all_four_components():
+    units = {
+        "input_tokens": 1_000_000,
+        "output_tokens": 1_000_000,
+        "requests": 2,
+        "searches": 1000,
+    }
+    # 3.00 + 15.00 + 2*0.005 + (1000/1000)*5.00
+    assert cost_calc.cost_perplexity("sonar-pro", units, PRICING) == approx(23.01)
+
+
+def test_perplexity_defaults_to_one_request():
+    # Sin `requests` explícito se asume 1 llamada → un request_fee.
+    units = {"input_tokens": 0, "output_tokens": 0}
+    assert cost_calc.cost_perplexity("sonar-pro", units, PRICING) == approx(0.005)
+
+
+def test_perplexity_null_rates_are_best_effort_zero():
+    pricing = {"perplexity": {"sonar": {"input_per_1m": None, "output_per_1m": None,
+                                        "request_fee": None, "search_per_1k": None}}}
+    units = {"input_tokens": 9_999_999, "output_tokens": 9_999_999, "searches": 50}
+    assert cost_calc.cost_perplexity("sonar", units, pricing) == 0.0
+
+
+# ------------------------------- Higgsfield -----------------------------------
+
+def test_higgsfield_image_per_generation():
+    # 1 base + 3 slides de carrusel = 4 generaciones.
+    assert cost_calc.cost_higgsfield_image({"generations": 4}, PRICING) == approx(0.40)
+
+
+def test_higgsfield_video_per_generation():
+    assert cost_calc.cost_higgsfield_video({"generations": 1}, PRICING) == approx(0.50)
+
+
+def test_higgsfield_null_rate_is_zero():
+    pricing = {"higgsfield": {"image_per_generation": None, "video_per_generation": None}}
+    assert cost_calc.cost_higgsfield_image({"generations": 10}, pricing) == 0.0
+
+
+# -------------------------------- Whisper -------------------------------------
+
+def test_whisper_per_minute():
+    assert cost_calc.cost_whisper("whisper-1", {"minutes": 1.5}, PRICING) == approx(0.009)
+
+
+def test_whisper_local_engine_is_free():
+    # El motor local no cobra, sin importar los minutos.
+    assert cost_calc.cost_whisper("local", {"minutes": 120}, PRICING) == 0.0
+
+
+# ----------------------------- compute_cost (dispatch) ------------------------
+
+def test_compute_cost_dispatch_anthropic():
+    units = {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
+             "cache_creation_input_tokens": 1_000_000, "cache_read_input_tokens": 1_000_000}
+    assert cost_calc.compute_cost("anthropic", units, PRICING,
+                                  model="claude-sonnet-4-6") == approx(22.05)
+
+
+def test_compute_cost_higgsfield_uses_operation_to_pick_rate():
+    img = cost_calc.compute_cost("higgsfield", {"generations": 1}, PRICING,
+                                 operation="image_generation")
+    vid = cost_calc.compute_cost("higgsfield", {"generations": 1}, PRICING,
+                                 operation="video_generation")
+    assert img == approx(0.10)
+    assert vid == approx(0.50)
+
+
+def test_compute_cost_unknown_service_is_zero():
+    assert cost_calc.compute_cost("mystery", {"whatever": 99}, PRICING) == 0.0
+
+
+# ----------------------------- carga de pricing.json --------------------------
+
+def test_load_pricing_explicit_path(tmp_path):
+    data = {"version": "from-disk", "anthropic": {}}
+    p = tmp_path / "pricing.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    loaded = cost_calc.load_pricing(p)
+    assert loaded["version"] == "from-disk"
+
+
+def test_default_pricing_file_is_valid_and_has_confirmed_claude_rates():
+    # Carga el pricing.json (o el .example como fallback) del repo y verifica que
+    # las tarifas de Claude estén presentes (las únicas confirmadas en Fase 0).
+    pricing = cost_calc.load_pricing(force_reload=True)
+    claude = pricing["anthropic"]["claude-sonnet-4-6"]
+    assert claude["input_per_1m"] == 3.00
+    assert claude["output_per_1m"] == 15.00
+    assert claude["cache_write_5m_per_1m"] == 3.75
+    assert claude["cache_read_per_1m"] == 0.30
+
+
+def test_pricing_version_reads_field():
+    assert cost_calc.pricing_version({"version": "2026-06-16"}) == "2026-06-16"
+    assert cost_calc.pricing_version({}) == "unknown"

@@ -19,7 +19,7 @@ La app tiene dos maneras de crear contenido y **comparten el mismo pipeline**. A
   - En el flujo bulk: añádelo como **columna** en `COLUMNS`/`DEFAULTS`/`ALLOWED`/`DROPDOWN_OPTIONS`/`COLUMN_HELP` de [`api/sheets.py`](api/sheets.py) y mapéalo en `_row_to_spec`.
   - Normaliza el valor (clamps, `.strip()`, defaults) en **ambos** caminos de entrada antes de pasarlo a `make_job`.
 - Si cambias el **shape del job**, hazlo en `make_job` (única fuente) — no construyas jobs a mano.
-- Si tocas **publicación**, hazlo en `publish_job_posts` para que el single-publish y el batch se comporten igual (respeta `params.solo` y `params.dry_run`).
+- Si tocas **publicación**, hazlo en `publish_job_posts` para que el single-publish y el batch se comporten igual (respeta `params.redes` —las redes destino, normalizadas en [`api/networks.py`](api/networks.py)— y `params.dry_run`).
 - En las **pruebas/verificación**, ejercita los dos flujos: un post individual y un sheet de varias filas (incluyendo una fila con `fecha_hora` para programación).
 
 Si una funcionalidad genuinamente solo aplica a un flujo, déjalo explícito en el PR y documenta por qué.
@@ -31,10 +31,11 @@ Si una funcionalidad genuinamente solo aplica a un flujo, déjalo explícito en 
   - `job_runner.py` — **núcleo compartido**: `make_job`, `run_pipeline`, `publish_job_posts`, `_post_url`.
   - `batch_runner.py` — `run_batch`: itera filas **secuencialmente** (rate-limit de Blotato), por fila → `make_job` → `run_pipeline` → `publish_job_posts`. Convierte `fecha_hora` local → UTC con `tz_offset` del navegador.
   - `sheets.py` — genera la plantilla `.xlsx` (openpyxl) y parsea el sheet subido (`.xlsx`/`.csv`).
-  - `post_writer.py` — redacción de posts (Anthropic Claude o Perplexity Sonar).
+  - `post_writer.py` — redacción de posts (Anthropic Claude o Perplexity Sonar). `write_posts` devuelve `(posts, usage)` para el tracking de costos.
   - `scripts/` — clientes externos: Blotato (publicar), Higgsfield (imagen/video), transcripción (Whisper), overlay de texto (Pillow).
+  - **Dashboard de costos** (ver [`docs/dashboard-costos.md`](docs/dashboard-costos.md)): `cost_calc.py` (fórmula pura USD desde `pricing.json`), `cost_tracker.py` (`record_event`, best-effort), `db.py` (MongoDB async `motor`, conexión perezosa), `cost_queries.py` (agregaciones mes/año/serie/por-job). Endpoints `/costs/*` en `app.py`.
 - **Frontend** — Astro (SSR, adapter Node) + React + Tailwind en [`frontend/`](frontend/).
-  - `index.astro` (landing, elige flujo) · `individual.astro` (flujo 1) · `bulk.astro` + `batches/[id].astro` + `components/BulkProgress.tsx` (flujo 2).
+  - `index.astro` (landing, elige flujo) · `individual.astro` (flujo 1) · `bulk.astro` + `batches/[id].astro` + `components/BulkProgress.tsx` (flujo 2) · `dashboard.astro` + `components/CostDashboard.tsx` (dashboard de costos).
   - Todas las llamadas al backend pasan por el proxy `src/pages/api/[...path].ts` (reenvía `/api/*` a `API_URL`, default `http://127.0.0.1:8000`; deja pasar SSE).
 
 ### Pipeline (compartido por ambos flujos)
@@ -56,5 +57,6 @@ El `.env` va en la **raíz del repo** (la API lo carga desde `../` relativo a `a
 ## Convenciones
 
 - Idioma del producto y de los comentarios/strings de cara al usuario: **español**.
-- Las imágenes generadas (`api/outputs/`) y el `.env` están en `.gitignore`; no los commitees.
-- Stores en memoria: cualquier estado que deba sobrevivir a un reinicio necesitaría persistencia (hoy no la hay).
+- Las imágenes generadas (`api/outputs/`) y el `.env` están en `.gitignore`; no los commitees. `pricing.json` (tarifas reales) también está ignorado — commitea solo `pricing.example.json`.
+- Stores en memoria: cualquier estado que deba sobrevivir a un reinicio necesitaría persistencia (hoy no la hay). Los `usage_events` del dashboard **sí** se persisten en MongoDB.
+- **Tracking de costos:** si agregas una nueva llamada de pago al pipeline, regístrala con `job_runner._track(...)` (punto único, lo heredan los dos flujos) y añade su tarifa a `pricing.example.json`. La medición es **best-effort**: nunca debe poder interrumpir la generación o publicación de un post.

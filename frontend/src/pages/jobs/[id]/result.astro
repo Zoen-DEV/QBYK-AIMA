@@ -1,5 +1,6 @@
 ---
 import Base from "../../../layouts/Base.astro";
+import BackLink from "../../../components/BackLink.astro";
 const { id } = Astro.params;
 
 const apiUrl = import.meta.env.API_URL || "http://127.0.0.1:8000";
@@ -21,6 +22,9 @@ function statusColor(s: string | undefined) {
 
 <Base title="Resultado">
   <div class="max-w-2xl mx-auto">
+    <div class="mb-6">
+      <BackLink href="/" />
+    </div>
     <div class="mb-8">
       {dry_run ? (
         <div class="flex items-center gap-3 mb-2">

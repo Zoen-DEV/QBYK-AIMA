@@ -44,9 +44,12 @@ def transcribe_audio_local(
     device: str = "cpu",
     compute_type: str = "int8",
     language: str | None = None,
-) -> str:
-    """Transcribe audio bytes to text with faster-whisper. Returns the transcript.
+) -> tuple[str, float]:
+    """Transcribe audio bytes con faster-whisper. Devuelve `(transcript, duration_seconds)`.
 
+    `duration_seconds` (de `info.duration`) se usa para el tracking de costos de
+    Whisper; el motor local es gratis, así que el costo siempre será 0, pero el
+    dato de minutos transcritos queda registrado igual.
     `language` is an optional ISO hint (e.g. "es"/"en"); omit to auto-detect.
     faster-whisper decodes the container itself (PyAV), so WhatsApp Opus/Ogg
     voice notes work without re-encoding. There is no 25 MB cap here.
@@ -54,10 +57,15 @@ def transcribe_audio_local(
     """
     model = _get_model(model_size, device, compute_type)
     # vad_filter trims silence/noise, which keeps voice-note transcripts cleaner.
-    segments, _info = model.transcribe(
+    segments, info = model.transcribe(
         io.BytesIO(file_bytes),
         language=language,
         vad_filter=True,
     )
     # `segments` is a generator — iterating it is what actually runs inference.
-    return "".join(seg.text for seg in segments).strip()
+    text = "".join(seg.text for seg in segments).strip()
+    try:
+        duration = float(getattr(info, "duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return text, duration

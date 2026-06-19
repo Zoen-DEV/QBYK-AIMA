@@ -172,15 +172,12 @@ function NetworkResult({ name, res }: { name: string; res?: RowResult }) {
 // ── Cabecera (dinámica según el estado del lote) ────────────────────────────
 
 function Header({ title, subtitle }: { title: string; subtitle: string }) {
+  // La navegación "Volver" la provee la página (batches/[id].astro) con el
+  // componente compartido BackLink, para que sea igual en toda la app.
   return (
-    <div className="flex items-start justify-between gap-4">
-      <div>
-        <h1 className="text-2xl font-bold text-white">{title}</h1>
-        <p className="text-gray-400 text-sm mt-1 max-w-xl">{subtitle}</p>
-      </div>
-      <a href="/" className="text-sm text-gray-500 hover:text-gray-300 transition whitespace-nowrap mt-1">
-        ← Inicio
-      </a>
+    <div>
+      <h1 className="text-2xl font-bold text-white">{title}</h1>
+      <p className="text-gray-400 text-sm mt-1 max-w-xl">{subtitle}</p>
     </div>
   );
 }

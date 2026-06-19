@@ -87,6 +87,8 @@ class TemplateProvider:
 
     name = "template"
     label = "plantillas locales"
+    # Las plantillas locales son gratis: nunca cuentan como generación de pago.
+    hf_generations = 0
 
     def __init__(self):
         self._warnings: list[str] = []
@@ -127,6 +129,14 @@ class HiggsfieldProvider:
         self._resolution = resolution
         self._fallback = TemplateProvider()
         self._warnings: list[str] = []
+        # Cuenta solo las generaciones HF que terminaron con éxito (las que caen a
+        # plantilla local son gratis y no se cuentan). Lo lee job_runner para el
+        # tracking de costos al cerrar la fase de imágenes.
+        self._hf_generations = 0
+
+    @property
+    def hf_generations(self) -> int:
+        return self._hf_generations
 
     def pop_warnings(self) -> list[str]:
         """Return and clear fallback warnings accumulated since the last call."""
@@ -136,10 +146,12 @@ class HiggsfieldProvider:
 
     def generate_base(self, prompt: str) -> str:
         try:
-            return hf.generate_image(
+            url = hf.generate_image(
                 prompt, api_key=self._key, api_secret=self._secret,
                 aspect_ratio="1:1", resolution=self._resolution, model=self._model,
             )[0]
+            self._hf_generations += 1
+            return url
         except Exception as e:
             reason = _short_reason(e)
             self._warnings.append(reason)
@@ -170,7 +182,9 @@ class HiggsfieldProvider:
             self._warnings.append(handle.get("fallback_reason", "no se pudo enviar a Higgsfield"))
             return self._template_slide(handle)
         try:
-            return hf.poll_image(handle, api_key=self._key, api_secret=self._secret)
+            url = hf.poll_image(handle, api_key=self._key, api_secret=self._secret)
+            self._hf_generations += 1
+            return url
         except Exception as e:
             self._warnings.append(_short_reason(e))
             print(f"   [aviso] Higgsfield (slide) falló: {e}. Fallback a plantilla local.")

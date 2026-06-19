@@ -1,0 +1,44 @@
+{
+  "version": "2026-06-19",
+  "base_currency": "USD",
+  "display_currency": "USD",
+  "fx_rate": 1.0,
+
+  "anthropic": {
+    "claude-sonnet-4-6": {
+      "input_per_1m": 3.00,
+      "output_per_1m": 15.00,
+      "cache_write_5m_per_1m": 3.75,
+      "cache_read_per_1m": 0.30
+    }
+  },
+
+  "perplexity": {
+    "sonar-pro": {
+      "input_per_1m": 3.00,
+      "output_per_1m": 15.00,
+      "request_fee": 0.006,
+      "search_per_1k": 0
+    },
+    "sonar": {
+      "input_per_1m": 1.00,
+      "output_per_1m": 1.00,
+      "request_fee": 0.005,
+      "search_per_1k": 0
+    }
+  },
+
+  "higgsfield": {
+    "image_per_generation": 0,
+    "video_per_generation": 0
+  },
+
+  "whisper": {
+    "whisper-1": { "per_minute": null }
+  },
+
+  "fixed_monthly": [
+    { "service": "blotato",    "monthly_usd": 0, "note": "plan mensual — pon tu monto" },
+    { "service": "higgsfield", "monthly_usd": 0, "note": "suscripcion (prob. anual) — monthly_usd = anual/12" }
+  ]
+}

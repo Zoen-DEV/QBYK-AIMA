@@ -54,9 +54,11 @@ def transcribe_audio(
     base_url: str = "https://api.openai.com/v1",
     model: str = "whisper-1",
     language: str | None = None,
-) -> str:
-    """Transcribe audio bytes to text. Returns the plain transcript string.
+) -> tuple[str, float]:
+    """Transcribe audio bytes to text. Returns `(transcript, duration_seconds)`.
 
+    `duration_seconds` (de la respuesta `verbose_json`) alimenta el tracking de
+    costos de Whisper (cobro por minuto); es 0.0 si el proveedor no la reporta.
     `language` is an optional ISO hint (e.g. "es"/"en"); omit to auto-detect.
     Raises RuntimeError on an API error.
     """
@@ -79,7 +81,9 @@ def transcribe_audio(
             break
     content_type = mimetypes.guess_type(send_name)[0] or "application/octet-stream"
 
-    fields: dict = {"model": model, "response_format": "json"}
+    # verbose_json incluye `duration` (segundos de audio) además del texto — lo
+    # necesitamos para el costo por minuto de Whisper. OpenAI y Groq lo soportan.
+    fields: dict = {"model": model, "response_format": "verbose_json"}
     if language:
         fields["language"] = language
 
@@ -100,4 +104,8 @@ def transcribe_audio(
         body_text = e.read().decode(errors="replace")
         raise RuntimeError(f"Transcription API error {e.code}: {body_text}") from e
 
-    return (data.get("text") or "").strip()
+    try:
+        duration = float(data.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return (data.get("text") or "").strip(), duration

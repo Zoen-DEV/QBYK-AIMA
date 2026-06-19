@@ -4,6 +4,8 @@ import re
 import urllib.request
 import urllib.error
 
+from networks import active_networks
+
 PERPLEXITY_MODEL = "sonar-pro"
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 PERPLEXITY_MODELS = {"sonar", "sonar-pro"}
@@ -98,13 +100,16 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     obj_ig = params.get("objetivo_instagram", "engagement")
     obj_fb = params.get("objetivo_facebook", "engagement")
     fmt_ig = params.get("formato_instagram", "imagen-unica")
-    solo = params.get("solo", "")
+    nets = active_networks(params)
+    do_li = "linkedin" in nets
+    do_ig = "instagram" in nets
+    do_fb = "facebook" in nets
     source_type = params.get("source_type", "youtube")
     has_url = bool((clean_url or "").strip())
 
     # How many info slides the carousel needs (slide 0 = hook, last = credits).
     # Only an Instagram carousel needs info slides; everything else needs 0.
-    if solo in ("", "instagram") and fmt_ig == "carrusel":
+    if do_ig and fmt_ig == "carrusel":
         n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
         n_info_slides = n_slides - 2
     else:
@@ -118,11 +123,11 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     description = (content.get("description") or "")[:500]
 
     platforms = []
-    if solo in ("", "linkedin"):
+    if do_li:
         platforms.append(f"LinkedIn — tone: {tono_li}, objective: {obj_li}")
-    if solo in ("", "instagram"):
+    if do_ig:
         platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {fmt_ig}")
-    if solo in ("", "facebook"):
+    if do_fb:
         platforms.append(f"Facebook — tone: {tono_fb}, objective: {obj_fb}")
 
     # The content can come from a YouTube video, a voice note transcription, or a
@@ -168,10 +173,22 @@ Important reminders:
 {li_url_reminder}
 - image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
 - Only write text for the platforms listed above; set every other platform's text to an empty string
-{"- Only write linkedin_text (set instagram_text and facebook_text to empty strings)" if solo == "linkedin" else ""}
-{"- Only write instagram_text (set linkedin_text and facebook_text to empty strings)" if solo == "instagram" else ""}
-{"- Only write facebook_text (set linkedin_text and instagram_text to empty strings)" if solo == "facebook" else ""}
+{_off_networks_reminder(do_li, do_ig, do_fb)}
 """
+
+
+def _off_networks_reminder(do_li: bool, do_ig: bool, do_fb: bool) -> str:
+    """Recordatorio explícito de qué *_text dejar vacíos según las redes desactivadas."""
+    off = []
+    if not do_li:
+        off.append("linkedin_text")
+    if not do_ig:
+        off.append("instagram_text")
+    if not do_fb:
+        off.append("facebook_text")
+    if not off:
+        return ""
+    return f"- Set these to empty strings (those networks are disabled): {', '.join(off)}"
 
 
 def _fix_control_chars(s: str) -> str:
@@ -293,13 +310,39 @@ def _parse_raw(raw: str) -> dict:
     raise json.JSONDecodeError("Could not parse or repair response JSON", raw, 0)
 
 
-async def _write_with_anthropic(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> dict:
+def _anthropic_usage(usage) -> dict | None:
+    """Normaliza el `usage` del mensaje final de Claude al shape de `usage_events`.
+
+    Devuelve `{service, model, units}` (tokens de entrada/salida + caché) o `None`
+    si no hubo usage. Best-effort: nunca lanza (el tracking no debe romper la escritura).
+    """
+    if usage is None:
+        return None
+    def _g(name: str) -> int:
+        try:
+            return int(getattr(usage, name, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {
+        "service": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "units": {
+            "input_tokens": _g("input_tokens"),
+            "output_tokens": _g("output_tokens"),
+            "cache_creation_input_tokens": _g("cache_creation_input_tokens"),
+            "cache_read_input_tokens": _g("cache_read_input_tokens"),
+        },
+    }
+
+
+async def _write_with_anthropic(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> tuple[dict, dict | None]:
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key)
     loop = asyncio.get_event_loop()
 
     def _stream():
         chunks = []
+        usage = None
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=4096,
@@ -317,13 +360,48 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
                         queue.put({"step": "writing", "status": "chunk", "text": c})
                     )
                 )
-            return "".join(chunks)
+            # El usage real (con tokens de caché) vive en el mensaje final del stream.
+            try:
+                usage = stream.get_final_message().usage
+            except Exception:
+                usage = None
+        return "".join(chunks), usage
 
-    raw = await loop.run_in_executor(None, _stream)
-    return _parse_raw(raw)
+    raw, usage = await loop.run_in_executor(None, _stream)
+    return _parse_raw(raw), _anthropic_usage(usage)
 
 
-async def _write_with_perplexity(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> dict:
+def _perplexity_usage(usage, model: str) -> dict | None:
+    """Normaliza el `usage` del último evento SSE de Perplexity al shape de `usage_events`.
+
+    Mapea prompt/completion → input/output tokens, asume 1 request por llamada y
+    captura las búsquedas (`num_search_queries`) si la API las reporta. `None` si no
+    hubo usage. Best-effort: nunca lanza.
+    """
+    if not isinstance(usage, dict):
+        return None
+    def _g(*names: str) -> int:
+        for n in names:
+            v = usage.get(n)
+            if v is not None:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    pass
+        return 0
+    return {
+        "service": "perplexity",
+        "model": model,
+        "units": {
+            "input_tokens": _g("prompt_tokens", "input_tokens"),
+            "output_tokens": _g("completion_tokens", "output_tokens"),
+            "requests": 1,
+            "searches": _g("num_search_queries", "search_queries"),
+        },
+    }
+
+
+async def _write_with_perplexity(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> tuple[dict, dict | None]:
     """Perplexity exposes an OpenAI-compatible streaming chat endpoint. We hit it
     with urllib (no SDK) and parse the SSE `data: {...}` lines ourselves."""
     loop = asyncio.get_event_loop()
@@ -356,6 +434,7 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
             },
         )
         chunks = []
+        usage = None
         try:
             with urllib.request.urlopen(req) as resp:
                 for raw_line in resp:
@@ -369,6 +448,9 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    # El usage llega en el(los) último(s) evento(s); nos quedamos con el más reciente.
+                    if obj.get("usage"):
+                        usage = obj["usage"]
                     delta = (obj.get("choices") or [{}])[0].get("delta", {})
                     text = delta.get("content") or ""
                     if text:
@@ -380,9 +462,9 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
                         )
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"Perplexity API error {e.code}: {e.read().decode()}")
-        return "".join(chunks)
+        return "".join(chunks), usage
 
-    raw = await loop.run_in_executor(None, _stream)
+    raw, usage = await loop.run_in_executor(None, _stream)
     posts = _parse_raw(raw)
     # Safety net: sonar models sometimes append citation markers like [1] despite instructions.
     _strip = lambda s: re.sub(r"\s*\[\d+\]", "", s).strip()
@@ -394,10 +476,15 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
         if img.get("hook"):
             img["hook"] = _strip(img["hook"])
         img["slides"] = [_strip(s) for s in img.get("slides", [])]
-    return posts
+    return posts, _perplexity_usage(usage, model)
 
 
-async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, cfg) -> dict:
+async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, cfg) -> tuple[dict, dict | None]:
+    """Escribe los posts y devuelve `(posts, usage)`.
+
+    `usage` es `{service, model, units}` para el tracking de costos (o `None` si el
+    proveedor no reportó consumo). El núcleo del pipeline lo pasa a `record_event`.
+    """
     provider = cfg.llm_provider  # raises if neither key is set
     if provider == "perplexity":
         return await _write_with_perplexity(content, params, clean_url, queue, cfg.perplexity_api_key)

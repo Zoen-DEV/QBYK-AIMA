@@ -13,3 +13,8 @@ python-docx
 openpyxl
 # Transcripción local gratuita (solo si TRANSCRIPTION_ENGINE=local)
 faster-whisper
+# Persistencia del dashboard de costos (driver async de MongoDB)
+motor
+# Tests (dashboard de costos): pytest + pytest-asyncio
+pytest
+pytest-asyncio

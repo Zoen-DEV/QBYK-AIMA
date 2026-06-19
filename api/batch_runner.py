@@ -59,6 +59,8 @@ async def run_batch(batch: dict, jobs: dict) -> None:
                 cfg, params,
                 upload_bytes=spec["upload_bytes"],
                 upload_filename=spec["upload_filename"],
+                flow="bulk",
+                batch_id=batch["id"],
             )
             row["job_id"] = job["id"]
             jobs[job["id"]] = job

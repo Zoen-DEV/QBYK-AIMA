@@ -12,6 +12,8 @@ import io
 from datetime import date, datetime
 from pathlib import Path
 
+import networks
+
 # Orden de columnas = orden en la plantilla. Los encabezados deben coincidir con
 # lo que lee parse_sheet (la lectura es case-insensitive).
 COLUMNS = [
@@ -24,7 +26,7 @@ COLUMNS = [
     "formato_instagram",
     "carrusel_slides",
     "idioma",
-    "solo",
+    "redes",
     "fecha_hora",
 ]
 
@@ -38,7 +40,7 @@ ALLOWED = {
     "fuente_imagen": {"higgsfield", "template"},
     "formato_instagram": {"imagen-unica", "carrusel"},
     "idioma": {"auto", "es", "en"},
-    "solo": {"", "linkedin", "instagram", "facebook"},
+    # `redes` no es enum simple (admite varias separadas por coma) → se parsea aparte.
 }
 
 # Opciones (ordenadas) que se muestran como lista desplegable en la plantilla.
@@ -51,7 +53,6 @@ DROPDOWN_OPTIONS = {
     "fuente_imagen": ["higgsfield", "template"],
     "formato_instagram": ["imagen-unica", "carrusel"],
     "idioma": ["auto", "es", "en"],
-    "solo": ["linkedin", "instagram", "facebook"],
     "carrusel_slides": ["3", "4", "5", "6"],
 }
 
@@ -62,7 +63,6 @@ DEFAULTS = {
     "fuente_imagen": "higgsfield",
     "formato_instagram": "imagen-unica",
     "idioma": "auto",
-    "solo": "",
     "carrusel_slides": 3,
 }
 
@@ -78,7 +78,7 @@ COLUMN_HELP = {
     "formato_instagram": "imagen-unica | carrusel",
     "carrusel_slides": "Número de 3 a 6 (solo aplica si formato_instagram = carrusel)",
     "idioma": "auto | es | en",
-    "solo": "Vacío (todas las redes) | linkedin | instagram | facebook",
+    "redes": "Redes a publicar separadas por coma: linkedin, instagram, facebook. Vacío = las tres.",
     "fecha_hora": "Programar el post, formato AAAA-MM-DD HH:MM. Vacío = publicar ahora.",
 }
 
@@ -93,7 +93,7 @@ COLUMN_WIDTHS = {
     "formato_instagram": 22,
     "carrusel_slides": 18,
     "idioma": 14,
-    "solo": 14,
+    "redes": 30,
     "fecha_hora": 22,
 }
 
@@ -108,7 +108,7 @@ EXAMPLE_ROWS = [
         "formato_instagram": "carrusel",
         "carrusel_slides": 4,
         "idioma": "auto",
-        "solo": "",
+        "redes": "",
         "fecha_hora": "2026-06-20 09:00",
     },
     {
@@ -121,7 +121,7 @@ EXAMPLE_ROWS = [
         "formato_instagram": "imagen-unica",
         "carrusel_slides": 3,
         "idioma": "es",
-        "solo": "",
+        "redes": "linkedin, facebook",
         "fecha_hora": "",
     },
 ]
@@ -356,7 +356,7 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
         "fuente_imagen": _enum(g.get("fuente_imagen"), "fuente_imagen", w, idx),
         "idioma": _enum(g.get("idioma"), "idioma", w, idx),
         "modelo_perplexity": "sonar-pro",
-        "solo": _enum(g.get("solo"), "solo", w, idx),
+        "redes": _parse_redes(g.get("redes"), w, idx),
         "publicar": "",
     }
 
@@ -398,6 +398,22 @@ def _enum(value, col: str, w: list[str], idx: int) -> str:
         return DEFAULTS[col]
     w.append(f"Fila {idx}: '{col}' inválido ('{_clean(value)}'); se usa el valor por defecto.")
     return DEFAULTS[col]
+
+
+def _parse_redes(value, w: list[str], idx: int) -> list[str]:
+    """Celda 'redes' (lista separada por coma) → lista canónica. Vacío = las tres."""
+    s = _clean(value)
+    if not s:
+        return list(networks.NETWORKS)
+    given = {t.strip().lower() for t in s.replace(";", ",").split(",") if t.strip()}
+    unknown = given - set(networks.NETWORKS)
+    nets = networks.normalize_networks(s)
+    if unknown:
+        w.append(
+            f"Fila {idx}: redes no reconocidas ({', '.join(sorted(unknown))}); "
+            f"se publican {', '.join(nets)}."
+        )
+    return nets
 
 
 def _parse_slides(value, w: list[str], idx: int) -> int:

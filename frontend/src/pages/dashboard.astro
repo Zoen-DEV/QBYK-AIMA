@@ -1,0 +1,12 @@
+---
+import Base from "../layouts/Base.astro";
+import BackLink from "../components/BackLink.astro";
+import CostDashboard from "../components/CostDashboard";
+---
+
+<Base title="Dashboard de costos">
+  <div class="mb-6">
+    <BackLink href="/" />
+  </div>
+  <CostDashboard client:load apiUrl="/api" />
+</Base>

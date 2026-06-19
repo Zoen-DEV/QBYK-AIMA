@@ -20,22 +20,58 @@ except ImportError:
     _HAS_OVERLAY = False
 
 from post_writer import write_posts
+from networks import active_networks
+import cost_tracker
 
 _loop_executor = None
 _OUTPUTS_DIR = Path(__file__).parent / "outputs"
 
 
-def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: str = "") -> dict:
+def _event_context(job: dict) -> dict:
+    """Contexto común de un usage_event extraído del job (flow, ids, plataformas…)."""
+    params = job.get("params", {})
+    return {
+        "flow": job.get("flow", "individual"),
+        "job_id": job.get("id"),
+        "batch_id": job.get("batch_id"),
+        "source_type": params.get("source_type"),
+        "platforms": active_networks(params),
+        "dry_run": bool(params.get("dry_run", False)),
+    }
+
+
+async def _track(job: dict, *, service: str, operation: str, units: dict,
+                 model: str | None = None, status: str = "success") -> None:
+    """Registra un usage_event para este job. Best-effort: nunca rompe el pipeline.
+
+    Punto único de instrumentación (regla de los dos flujos): tanto el post
+    individual como cada fila del bulk pasan por aquí y heredan el tracking gratis.
+    """
+    try:
+        await cost_tracker.record_event(
+            service=service, operation=operation, units=units, model=model,
+            status=status, **_event_context(job),
+        )
+    except Exception:
+        pass  # record_event ya es best-effort; este guard cubre el armado del contexto
+
+
+def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: str = "",
+             flow: str = "individual", batch_id: str | None = None) -> dict:
     """Build a fresh in-memory job from an already-normalized `params` dict.
 
     Shared by the single-post endpoint (`create_job`) and the bulk batch runner so
     both produce the exact same job shape the pipeline expects. `params` must already
     be normalized by the caller (clamped slide count, stripped account ids, etc.).
     For non-YouTube sources, pass the source bytes via `upload_bytes`/`upload_filename`.
+    `flow`/`batch_id` etiquetan el origen del job para el tracking de costos
+    ("individual" por defecto; el bulk pasa "bulk" + el id del batch).
     """
     return {
         "id": str(uuid.uuid4()),
         "status": "running",
+        "flow": flow,
+        "batch_id": batch_id,
         "params": params,
         "content": {},
         "accounts": {},
@@ -118,14 +154,14 @@ async def run_pipeline(job: dict):
 
     source_type: str = params.get("source_type", "youtube")
     url: str = params.get("youtube_url", "")
-    solo: str = params.get("solo", "")
     dry_run: bool = params.get("dry_run", False)
     formato_ig: str = params.get("formato_instagram", "imagen-unica")
 
-    # `solo` vacío = todas las redes; si trae una red, solo esa. (3 redes ahora.)
-    do_linkedin = solo in ("", "linkedin")
-    do_instagram = solo in ("", "instagram")
-    do_facebook = solo in ("", "facebook")
+    # Redes destino elegidas en el form/sheet (default: las tres). Fuente única: networks.
+    nets = active_networks(params)
+    do_linkedin = "linkedin" in nets
+    do_instagram = "instagram" in nets
+    do_facebook = "facebook" in nets
 
     try:
         # ── Step 1: Extract ──────────────────────────────────────────────
@@ -145,7 +181,7 @@ async def run_pipeline(job: dict):
                     "TRANSCRIPTION_ENGINE=local, en .env."
                 )
             if cfg.transcription_engine == "local":
-                transcript = await _run(
+                transcript, audio_seconds = await _run(
                     trl.transcribe_audio_local,
                     job["_upload_bytes"], job["_upload_filename"],
                     model_size=cfg.transcription_local_model,
@@ -153,8 +189,9 @@ async def run_pipeline(job: dict):
                     compute_type=cfg.transcription_local_compute,
                     language=lang_hint,
                 )
+                whisper_model = "local"
             else:
-                transcript = await _run(
+                transcript, audio_seconds = await _run(
                     tr.transcribe_audio,
                     job["_upload_bytes"], job["_upload_filename"],
                     api_key=cfg.transcription_api_key,
@@ -162,8 +199,12 @@ async def run_pipeline(job: dict):
                     model=cfg.transcription_model,
                     language=lang_hint,
                 )
+                whisper_model = cfg.transcription_model
             if not transcript.strip():
                 raise RuntimeError("La transcripción quedó vacía — revisa el audio o las credenciales.")
+            # Tracking de costos: minutos transcritos (motor local = $0, igual se registra).
+            await _track(job, service="whisper", operation="transcription",
+                         units={"minutes": (audio_seconds or 0.0) / 60.0}, model=whisper_model)
             content = _content_from_text(transcript, default_title="Nota de voz")
             clean_url = ""
 
@@ -287,9 +328,14 @@ async def run_pipeline(job: dict):
             writer_label = "Claude"
         await _push(q, {"step": "writing", "status": "running", "msg": f"Escribiendo posts con {writer_label}..."})
 
-        posts = await write_posts(content, params, clean_url, q, cfg)
+        posts, writer_usage = await write_posts(content, params, clean_url, q, cfg)
         job["posts"] = posts
         await _push(q, {"step": "writing", "status": "done", "msg": "Posts escritos y humanizados"})
+
+        # Tracking de costos del LLM (tokens de entrada/salida + caché en Claude).
+        if writer_usage:
+            await _track(job, service=writer_usage["service"], operation="post_writing",
+                         units=writer_usage["units"], model=writer_usage["model"])
 
         # ── Media decision: video (text-to-video) OR images ─────────────────
         tipo_medio = params.get("tipo_medio", "imagen")
@@ -318,6 +364,9 @@ async def run_pipeline(job: dict):
                     duration=(cfg.higgsfield_video_duration or None),
                     model=cfg.higgsfield_video_model,
                 )
+                # Tracking de costos: 1 clip generado en Higgsfield (éxito = hay URL).
+                await _track(job, service="higgsfield", operation="video_generation",
+                             units={"generations": 1}, model=cfg.higgsfield_video_model)
                 # Re-host on Blotato so the post is decoupled from Higgsfield's CDN.
                 # If that fails, fall back to the raw provider URL.
                 try:
@@ -651,6 +700,12 @@ async def run_pipeline(job: dict):
         # Count what actually got produced (overlaid bytes) — a local template that never
         # got an overlay rendered onto it isn't publishable to Blotato on its own.
         job["images"]["provider"] = provider.name
+        # Tracking de costos: solo las generaciones HF reales (las que cayeron a
+        # plantilla local son gratis y no las cuenta el provider).
+        hf_gens = getattr(provider, "hf_generations", 0)
+        if hf_gens:
+            await _track(job, service="higgsfield", operation="image_generation",
+                         units={"generations": hf_gens}, model=cfg.higgsfield_model)
         produced = len({k for k in image_bytes} | {k for k in raw_urls})
         notices: list[str] = []
         if produced == 0:
@@ -718,7 +773,7 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
     """Publish (or schedule) a job's already-generated posts to Blotato.
 
     Shared by the single-post publish endpoint and the bulk batch runner. Respects
-    `params.solo` (publish to one network only) and `params.dry_run` (generate but
+    `params.redes` (the set of target networks) and `params.dry_run` (generate but
     don't publish). `schedule_time` is an ISO-8601 string for deferred publishing,
     or empty/None to publish now. Sets `job["result"]`/`job["status"]` and returns
     the result dict.
@@ -728,12 +783,12 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
     accounts = job["accounts"]
     params = job["params"]
     dry_run = params.get("dry_run", False)
-    solo = params.get("solo", "")
 
-    # `solo` vacío = todas las redes; si trae una red, solo esa.
-    do_linkedin = solo in ("", "linkedin")
-    do_instagram = solo in ("", "instagram")
-    do_facebook = solo in ("", "facebook")
+    # Redes destino (default: las tres). Fuente única compartida con run_pipeline.
+    nets = active_networks(params)
+    do_linkedin = "linkedin" in nets
+    do_instagram = "instagram" in nets
+    do_facebook = "facebook" in nets
 
     li_text = posts.get("linkedin_text", "")
     ig_text = posts.get("instagram_text", "")

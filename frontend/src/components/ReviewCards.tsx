@@ -241,10 +241,14 @@ export default function ReviewCards({
   const [fbText, setFbText] = useState(initialPosts.facebook_text || "");
   const [saving, setSaving] = useState(false);
 
-  const solo = params.solo as string || "";
-  const doLinkedIn = solo === "" || solo === "linkedin";
-  const doInstagram = solo === "" || solo === "instagram";
-  const doFacebook = solo === "" || solo === "facebook";
+  // Redes destino: el campo nuevo `redes` (lista) manda; si falta, se respeta el
+  // `solo` legacy (una sola red) por compatibilidad.
+  const redes = Array.isArray(params.redes) ? (params.redes as string[]) : null;
+  const solo = (params.solo as string) || "";
+  const enabled = (n: string) => (redes ? redes.includes(n) : solo === "" || solo === n);
+  const doLinkedIn = enabled("linkedin");
+  const doInstagram = enabled("instagram");
+  const doFacebook = enabled("facebook");
   const networkCount = [doLinkedIn, doInstagram, doFacebook].filter(Boolean).length;
 
   const liImageUrl = images.has_li_hook ? `${apiUrl}/jobs/${jobId}/image/li-hook` : (liMediaUrls[0] || "");

@@ -3,13 +3,17 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 
 import sheets
+import cost_queries
+import cost_calc
+import db
 from config import load_config
 from job_runner import run_pipeline, make_job, publish_job_posts
+from networks import active_networks
 from batch_runner import run_batch, to_utc_iso
 
 app = FastAPI(title="repurpose-youtube-video API")
@@ -120,6 +124,7 @@ async def create_job(
     instagram_account_id: Annotated[str, Form()] = "",
     facebook_account_id: Annotated[str, Form()] = "",
     facebook_page_id: Annotated[str, Form()] = "",
+    redes: Annotated[str, Form()] = "",
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     publicar: Annotated[str, Form()] = "",
@@ -178,6 +183,9 @@ async def create_job(
         "instagram_account_id": instagram_account_id.strip(),
         "facebook_account_id": facebook_account_id.strip(),
         "facebook_page_id": facebook_page_id.strip(),
+        # Redes destino (checkboxes del form). `redes` manda; `solo` se conserva como
+        # alias legacy. Normalizado a la lista canónica (default: las tres).
+        "redes": active_networks({"redes": redes, "solo": solo}),
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
@@ -402,3 +410,70 @@ def get_batch(batch_id: str):
     if batch_id not in batches:
         raise HTTPException(status_code=404)
     return _batch_snapshot(batches[batch_id])
+
+
+# ── Dashboard de costos (lee usage_events de Mongo, best-effort) ──────────────────
+#
+# Las agregaciones viven en cost_queries.py; aquí solo se exponen como endpoints.
+# Si Mongo no está configurado/disponible, las consultas devuelven estructuras
+# vacías (sin datos) en vez de fallar — el dashboard sigue cargando.
+
+@app.get("/costs/summary")
+async def costs_summary(period: str):
+    """Totales del mes (`YYYY-MM`) o año (`YYYY`): variable por servicio + fijos + total."""
+    try:
+        return await cost_queries.summary(period)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/costs/timeseries")
+async def costs_timeseries(
+    from_: Annotated[str, Query(alias="from")] = "",
+    to: str = "",
+    granularity: str = "day",
+):
+    """Serie temporal por servicio. `from`/`to` son `YYYY-MM-DD`; granularity `day|month`."""
+    try:
+        return await cost_queries.timeseries(from_, to, granularity)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/costs/by-job")
+async def costs_by_job(
+    from_: Annotated[str, Query(alias="from")] = "",
+    to: str = "",
+):
+    """Costo por job (gasto por uso) en el rango, con desglose por servicio."""
+    try:
+        return await cost_queries.by_job(from_, to)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/costs/events")
+async def costs_events(service: str = "", limit: int = 50, skip: int = 0):
+    """Eventos crudos paginados para auditoría (más recientes primero)."""
+    return await cost_queries.events(service=service, limit=limit, skip=skip)
+
+
+@app.get("/costs/status")
+async def costs_status():
+    """Estado del tracking de costos: si Mongo está configurado/accesible y versión de pricing."""
+    configured = db.is_configured()
+    reachable = False
+    if configured:
+        try:
+            coll = await db.get_usage_events()
+            reachable = coll is not None
+        except Exception:
+            reachable = False
+    pricing = cost_calc.load_pricing()
+    return {
+        "mongo_configured": configured,
+        "mongo_reachable": reachable,
+        "pricing_version": cost_calc.pricing_version(pricing),
+        "pricing_currency": pricing.get("display_currency", "USD"),
+        "pricing_fx_rate": pricing.get("fx_rate", 1.0),
+    }

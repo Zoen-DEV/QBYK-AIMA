@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Tarifas reales del dashboard de costos (commitear solo pricing.example.json)
+pricing.json
+
 # Python
 __pycache__/
 *.py[cod]

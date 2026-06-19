@@ -3,7 +3,10 @@ import type { APIRoute } from "astro";
 const API_URL = import.meta.env.API_URL || "http://127.0.0.1:8000";
 
 async function proxy(request: Request, path: string): Promise<Response> {
-  const upstream = `${API_URL}/${path}`;
+  // Preserve the query string — endpoints like /costs/summary?period=YYYY-MM
+  // depend on it. Without this, FastAPI sees the param missing and returns 422.
+  const search = new URL(request.url).search;
+  const upstream = `${API_URL}/${path}${search}`;
 
   const headers = new Headers(request.headers);
   headers.delete("host");
