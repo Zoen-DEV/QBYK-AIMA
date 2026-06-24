@@ -4,9 +4,11 @@ Image generation provider facade.
 Picks the image backend based on available credentials and exposes a uniform
 interface to job_runner so the pipeline stays provider-agnostic:
 
-  generate_base(prompt) -> src         Blocking. The shared square base image
-                                       (reused by LinkedIn, IG single, carousel
-                                       slide 0). Raises only if generation fails
+  generate_base(prompt, *, aspect_ratio="1:1") -> src
+                                       Blocking. The shared base image (reused by
+                                       LinkedIn, IG single, carousel slide 0).
+                                       `aspect_ratio` lets a caller request 9:16
+                                       (IG Story). Raises only if generation fails
                                        with no usable fallback.
   prewarm_extras(prompts) -> handles   Start generating the extra carousel slides
                                        (info slides + credits). Returns opaque
@@ -99,8 +101,10 @@ class TemplateProvider:
         self._warnings = []
         return w
 
-    def generate_base(self, prompt: str) -> str:
-        # Base / hook slide always uses template-1.
+    def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
+        # Base / hook slide always uses template-1. Las plantillas locales son 1:1;
+        # el aspect solicitado (p. ej. 9:16 para historia) lo aplica el overlay al
+        # hacer center-crop, así que aquí se ignora.
         return _template_path(_TEMPLATE_BASE)
 
     def prewarm_extras(self, prompts: list[str]) -> list:
@@ -144,11 +148,11 @@ class HiggsfieldProvider:
         self._warnings = []
         return w
 
-    def generate_base(self, prompt: str) -> str:
+    def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
         try:
             url = hf.generate_image(
                 prompt, api_key=self._key, api_secret=self._secret,
-                aspect_ratio="1:1", resolution=self._resolution, model=self._model,
+                aspect_ratio=aspect_ratio, resolution=self._resolution, model=self._model,
             )[0]
             self._hf_generations += 1
             return url
@@ -156,7 +160,7 @@ class HiggsfieldProvider:
             reason = _short_reason(e)
             self._warnings.append(reason)
             print(f"   [aviso] Higgsfield (imagen base) falló: {e}. Fallback a plantilla local.")
-            return self._fallback.generate_base(prompt)
+            return self._fallback.generate_base(prompt, aspect_ratio=aspect_ratio)
 
     def prewarm_extras(self, prompts: list[str]) -> list:
         n = len(prompts)

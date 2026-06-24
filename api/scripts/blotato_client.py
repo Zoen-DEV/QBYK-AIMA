@@ -275,6 +275,8 @@ def publish_post(
     schedule_time: str | None = None,
     share_to_feed: bool = True,
     page_id: str | None = None,
+    media_type: str | None = None,
+    cover_image_url: str | None = None,
 ) -> dict:
     """
     Publish or schedule a post.
@@ -285,6 +287,9 @@ def publish_post(
     page_id: LinkedIn Company Page (or Facebook Page) id from get_subaccounts(); when
              set, the post targets that page instead of the personal profile. Omit/None
              posts to the personal profile.
+    media_type: Instagram-only. "reel" or "story" set the IG `target.mediaType` so the
+                media publishes as a Reel or Story instead of a feed post. None/omitted =
+                normal feed post (image/carousel/video). Reels accept a `cover_image_url`.
     Returns Blotato response with 'postSubmissionId'.
     """
     if platform == "instagram":
@@ -295,13 +300,18 @@ def publish_post(
     target: dict = {"targetType": platform}
     if page_id:
         target["pageId"] = page_id
+    if platform == "instagram" and media_type in ("reel", "story"):
+        target["mediaType"] = media_type
+        if media_type == "reel" and cover_image_url:
+            target["coverImageUrl"] = cover_image_url
 
     post_body: dict = {
         "accountId": account_id,
         "content": content,
         "target": target,
     }
-    if platform == "instagram" and share_to_feed:
+    # shareToFeed solo aplica a feed posts y reels; las stories no lo usan.
+    if platform == "instagram" and share_to_feed and media_type != "story":
         post_body["shareToFeed"] = True
     if schedule_time:
         post_body["scheduledAt"] = schedule_time

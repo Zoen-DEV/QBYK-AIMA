@@ -26,11 +26,13 @@ COLUMNS = [
     "formato_instagram",
     "carrusel_slides",
     "idioma",
-    "redes",
+    "linkedin",
+    "instagram",
+    "facebook",
     "fecha_hora",
 ]
 
-MAX_ROWS = 6
+MAX_ROWS = 12
 
 # Valores permitidos por columna enum (el vacío siempre vale = default/auto).
 ALLOWED = {
@@ -40,8 +42,12 @@ ALLOWED = {
     "fuente_imagen": {"higgsfield", "template"},
     "formato_instagram": {"imagen-unica", "carrusel"},
     "idioma": {"auto", "es", "en"},
-    # `redes` no es enum simple (admite varias separadas por coma) → se parsea aparte.
+    # linkedin/instagram/facebook son sí/no por red → se parsean aparte (_net_yes).
 }
+
+# Valores que se interpretan como "sí" / "no" en las columnas de red (case-insensitive).
+NET_YES = {"sí", "si", "s", "yes", "y", "true", "1", "x", "✓"}
+NET_NO = {"no", "n", "false", "0"}
 
 # Opciones (ordenadas) que se muestran como lista desplegable en la plantilla.
 # Deben mantenerse en sincronía con ALLOWED (sin el vacío: ese se deja en blanco).
@@ -54,6 +60,9 @@ DROPDOWN_OPTIONS = {
     "formato_instagram": ["imagen-unica", "carrusel"],
     "idioma": ["auto", "es", "en"],
     "carrusel_slides": ["3", "4", "5", "6"],
+    "linkedin": ["sí", "no"],
+    "instagram": ["sí", "no"],
+    "facebook": ["sí", "no"],
 }
 
 DEFAULTS = {
@@ -64,6 +73,9 @@ DEFAULTS = {
     "formato_instagram": "imagen-unica",
     "idioma": "auto",
     "carrusel_slides": 3,
+    "linkedin": "sí",
+    "instagram": "sí",
+    "facebook": "sí",
 }
 
 # Descripción legible de valores válidos: va en los comentarios de celda y en la
@@ -78,7 +90,9 @@ COLUMN_HELP = {
     "formato_instagram": "imagen-unica | carrusel",
     "carrusel_slides": "Número de 3 a 6 (solo aplica si formato_instagram = carrusel)",
     "idioma": "auto | es | en",
-    "redes": "Redes a publicar separadas por coma: linkedin, instagram, facebook. Vacío = las tres.",
+    "linkedin": "¿Publicar en LinkedIn? sí | no (vacío = sí)",
+    "instagram": "¿Publicar en Instagram? sí | no (vacío = sí)",
+    "facebook": "¿Publicar en Facebook? sí | no (vacío = sí)",
     "fecha_hora": "Programar el post, formato AAAA-MM-DD HH:MM. Vacío = publicar ahora.",
 }
 
@@ -93,7 +107,9 @@ COLUMN_WIDTHS = {
     "formato_instagram": 22,
     "carrusel_slides": 18,
     "idioma": 14,
-    "redes": 30,
+    "linkedin": 12,
+    "instagram": 12,
+    "facebook": 12,
     "fecha_hora": 22,
 }
 
@@ -108,7 +124,9 @@ EXAMPLE_ROWS = [
         "formato_instagram": "carrusel",
         "carrusel_slides": 4,
         "idioma": "auto",
-        "redes": "",
+        "linkedin": "sí",
+        "instagram": "sí",
+        "facebook": "sí",
         "fecha_hora": "2026-06-20 09:00",
     },
     {
@@ -121,7 +139,9 @@ EXAMPLE_ROWS = [
         "formato_instagram": "imagen-unica",
         "carrusel_slides": 3,
         "idioma": "es",
-        "redes": "linkedin, facebook",
+        "linkedin": "sí",
+        "instagram": "no",
+        "facebook": "sí",
         "fecha_hora": "",
     },
 ]
@@ -220,6 +240,7 @@ def build_template_xlsx() -> bytes:
         (f"• Cada fila = un post. Máximo {MAX_ROWS} filas (las demás se ignoran).", False),
         ("• Por fila llena 'youtube_url' O 'texto' (una sola fuente).", False),
         ("• 'fecha_hora' programa el post (AAAA-MM-DD HH:MM). Vacío = publicar ahora.", False),
+        ("• Redes: pon sí/no en las columnas linkedin, instagram y facebook. Vacío = sí (se publica en las tres por defecto).", False),
         ("• Las columnas con lista desplegable solo aceptan los valores de la lista.", False),
         ("• No borres ni renombres la fila de encabezados (fila 1).", False),
         ("• Las cuentas de LinkedIn/Instagram/Facebook se eligen en la app, no en el sheet.", False),
@@ -356,7 +377,7 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
         "fuente_imagen": _enum(g.get("fuente_imagen"), "fuente_imagen", w, idx),
         "idioma": _enum(g.get("idioma"), "idioma", w, idx),
         "modelo_perplexity": "sonar-pro",
-        "redes": _parse_redes(g.get("redes"), w, idx),
+        "redes": _parse_net_flags(g, w, idx),
         "publicar": "",
     }
 
@@ -400,20 +421,28 @@ def _enum(value, col: str, w: list[str], idx: int) -> str:
     return DEFAULTS[col]
 
 
-def _parse_redes(value, w: list[str], idx: int) -> list[str]:
-    """Celda 'redes' (lista separada por coma) → lista canónica. Vacío = las tres."""
-    s = _clean(value)
-    if not s:
+def _net_yes(value, net: str, w: list[str], idx: int) -> bool:
+    """Celda sí/no de una columna de red → bool. Vacío = sí (publicar por defecto)."""
+    v = _clean(value).lower()
+    if v == "" or v in NET_YES:
+        return True
+    if v in NET_NO:
+        return False
+    w.append(f"Fila {idx}: valor de '{net}' no reconocido ('{_clean(value)}'); se incluye la red.")
+    return True
+
+
+def _parse_net_flags(g: dict, w: list[str], idx: int) -> list[str]:
+    """Columnas linkedin/instagram/facebook (sí/no) → lista canónica de redes.
+
+    Por defecto (todas vacías) se publican las tres. Si el usuario pone 'no' en las
+    tres, se avisa y se vuelve al default para no dejar el post sin destino.
+    """
+    chosen = [net for net in networks.NETWORKS if _net_yes(g.get(net), net, w, idx)]
+    if not chosen:
+        w.append(f"Fila {idx}: no se eligió ninguna red (todas en 'no'); se publican las tres.")
         return list(networks.NETWORKS)
-    given = {t.strip().lower() for t in s.replace(";", ",").split(",") if t.strip()}
-    unknown = given - set(networks.NETWORKS)
-    nets = networks.normalize_networks(s)
-    if unknown:
-        w.append(
-            f"Fila {idx}: redes no reconocidas ({', '.join(sorted(unknown))}); "
-            f"se publican {', '.join(nets)}."
-        )
-    return nets
+    return chosen
 
 
 def _parse_slides(value, w: list[str], idx: int) -> int:

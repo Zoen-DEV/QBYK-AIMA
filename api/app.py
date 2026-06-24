@@ -14,7 +14,7 @@ import db
 from config import load_config
 from job_runner import run_pipeline, make_job, publish_job_posts
 from networks import active_networks
-from batch_runner import run_batch, to_utc_iso
+from batch_runner import run_batch, publish_batch, to_utc_iso
 
 app = FastAPI(title="repurpose-youtube-video API")
 
@@ -105,6 +105,7 @@ async def create_job(
     youtube_url: Annotated[str, Form()] = "",
     manual_text: Annotated[str, Form()] = "",
     media_file: Annotated[UploadFile | None, File()] = None,
+    final_media_file: Annotated[UploadFile | None, File()] = None,
     tono: Annotated[str, Form()] = "",
     tono_linkedin: Annotated[str, Form()] = "",
     tono_instagram: Annotated[str, Form()] = "",
@@ -116,6 +117,9 @@ async def create_job(
     formato_instagram: Annotated[str, Form()] = "imagen-unica",
     carrusel_slides: Annotated[int, Form()] = 3,
     tipo_medio: Annotated[str, Form()] = "imagen",
+    tipo_post: Annotated[str, Form()] = "post",
+    media_origin: Annotated[str, Form()] = "generar",
+    historia_formato: Annotated[str, Form()] = "imagen",
     fuente_imagen: Annotated[str, Form()] = "higgsfield",
     idioma: Annotated[str, Form()] = "auto",
     modelo_perplexity: Annotated[str, Form()] = "sonar-pro",
@@ -134,6 +138,21 @@ async def create_job(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Tipo de publicación de IG: "post" (feed) | "reel" | "historia". Reel e historia
+    # son flujos solo-Instagram. media_origin: "generar" (pipeline) | "subir" (medio propio).
+    tipo_post = (tipo_post or "post").strip().lower()
+    if tipo_post not in ("post", "reel", "historia"):
+        tipo_post = "post"
+    media_origin = (media_origin or "generar").strip().lower()
+    if media_origin not in ("generar", "subir"):
+        media_origin = "generar"
+    historia_formato = (historia_formato or "imagen").strip().lower()
+    if historia_formato not in ("imagen", "video"):
+        historia_formato = "imagen"
+    # El modo "subir" solo aplica a reel/historia (en post siempre se genera).
+    if tipo_post == "post":
+        media_origin = "generar"
+
     # Resolve the content source. "youtube" needs a URL; "audio"/"texto" need an
     # uploaded file whose bytes we read now (the UploadFile is tied to this request,
     # but the pipeline runs asynchronously after we return).
@@ -144,7 +163,21 @@ async def create_job(
 
     upload_bytes = b""
     upload_filename = ""
-    if source_type == "youtube":
+    final_media_bytes = b""
+    final_media_filename = ""
+    if media_origin == "subir":
+        # El medio final (video/imagen ya hecho) se publica tal cual; el caption se
+        # escribe en manual_text y pasa por el writer (source_type se fuerza a "manual").
+        source_type = "manual"
+        if not manual_text.strip():
+            raise HTTPException(status_code=400, detail="Falta el texto/caption del post")
+        if final_media_file is None:
+            raise HTTPException(status_code=400, detail="Falta el archivo (video/imagen) a publicar")
+        final_media_bytes = await final_media_file.read()
+        if not final_media_bytes:
+            raise HTTPException(status_code=400, detail="El archivo a publicar está vacío")
+        final_media_filename = final_media_file.filename or "media.mp4"
+    elif source_type == "youtube":
         if not youtube_url.strip():
             raise HTTPException(status_code=400, detail="Falta la URL de YouTube")
     elif source_type == "manual":
@@ -175,6 +208,9 @@ async def create_job(
         "formato_instagram": formato_instagram,
         "carrusel_slides": max(3, min(6, carrusel_slides)),
         "tipo_medio": tipo_medio,
+        "tipo_post": tipo_post,
+        "media_origin": media_origin,
+        "historia_formato": historia_formato,
         "fuente_imagen": fuente_imagen if fuente_imagen in ("higgsfield", "template") else "higgsfield",
         "idioma": idioma,
         "modelo_perplexity": modelo_perplexity,
@@ -184,13 +220,14 @@ async def create_job(
         "facebook_account_id": facebook_account_id.strip(),
         "facebook_page_id": facebook_page_id.strip(),
         # Redes destino (checkboxes del form). `redes` manda; `solo` se conserva como
-        # alias legacy. Normalizado a la lista canónica (default: las tres).
-        "redes": active_networks({"redes": redes, "solo": solo}),
+        # alias legacy. Reel/historia son solo-Instagram → se fuerza esa red.
+        "redes": ["instagram"] if tipo_post in ("reel", "historia") else active_networks({"redes": redes, "solo": solo}),
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
     }
-    job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename)
+    job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename,
+                   final_media_bytes=final_media_bytes, final_media_filename=final_media_filename)
     jobs[job["id"]] = job
     asyncio.create_task(run_pipeline(job))
     return {"job_id": job["id"]}
@@ -221,12 +258,12 @@ async def stream_job(job_id: str):
     )
 
 
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(status_code=404)
-    job = jobs[job_id]
-    # Serializable snapshot (exclude queue, config, raw bytes)
+def _job_snapshot(job: dict) -> dict:
+    """Vista serializable de un job (sin la cola, la config ni los bytes crudos).
+
+    Fuente única usada por el endpoint /jobs/{id} y por el preview de cada fila del
+    lote, para que la revisión muestre exactamente lo mismo en ambos flujos.
+    """
     return {
         "id": job["id"],
         "status": job["status"],
@@ -250,6 +287,13 @@ def get_job(job_id: str):
         "result": job["result"],
         "error_msg": job["error_msg"],
     }
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    return _job_snapshot(jobs[job_id])
 
 
 @app.post("/jobs/{job_id}/edit")
@@ -382,26 +426,33 @@ async def create_sheet_batch(
 
 
 def _batch_snapshot(batch: dict) -> dict:
-    """Vista serializable del batch (sin el spec interno ni la config)."""
+    """Vista serializable del batch (sin el spec interno ni la config).
+
+    Cada fila incluye `preview` (el snapshot del job generado) para que la pantalla
+    de revisión muestre el contenido completo —texto, imágenes/video— de cada post
+    antes de aprobar la publicación. `preview` es None mientras la fila no se generó.
+    """
+    rows = []
+    for r in batch["rows"]:
+        job = jobs.get(r.get("job_id"))
+        rows.append({
+            "index": r["index"],
+            "source": r["source"],
+            "label": r["label"],
+            "title": r.get("title") or r["label"],
+            "schedule": r["schedule"],
+            "status": r["status"],
+            "job_id": r["job_id"],
+            "result": r["result"],
+            "error": r["error"],
+            "preview": _job_snapshot(job) if job is not None else None,
+        })
     return {
         "id": batch["id"],
         "status": batch["status"],
         "warnings": batch["warnings"],
         "dry_run": batch["dry_run"],
-        "rows": [
-            {
-                "index": r["index"],
-                "source": r["source"],
-                "label": r["label"],
-                "title": r.get("title") or r["label"],
-                "schedule": r["schedule"],
-                "status": r["status"],
-                "job_id": r["job_id"],
-                "result": r["result"],
-                "error": r["error"],
-            }
-            for r in batch["rows"]
-        ],
+        "rows": rows,
     }
 
 
@@ -410,6 +461,26 @@ def get_batch(batch_id: str):
     if batch_id not in batches:
         raise HTTPException(status_code=404)
     return _batch_snapshot(batches[batch_id])
+
+
+@app.post("/sheets/batches/{batch_id}/publish")
+async def publish_sheet_batch(batch_id: str):
+    """Aprueba el lote: publica/programa todas las filas generadas (fase 2).
+
+    Solo válido cuando el lote está en "review" (terminó de generar). Lanza la
+    publicación en segundo plano; el frontend sigue el avance con el polling normal.
+    """
+    if batch_id not in batches:
+        raise HTTPException(status_code=404)
+    batch = batches[batch_id]
+    if batch["status"] != "review":
+        raise HTTPException(
+            status_code=409,
+            detail="El lote no está listo para publicar (aún genera contenido o ya se publicó).",
+        )
+    batch["status"] = "publishing"
+    asyncio.create_task(publish_batch(batch, jobs))
+    return {"batch_id": batch_id, "status": "publishing"}
 
 
 # ── Dashboard de costos (lee usage_events de Mongo, best-effort) ──────────────────

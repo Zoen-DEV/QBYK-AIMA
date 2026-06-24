@@ -8,7 +8,7 @@ import BackLink from "../components/BackLink.astro";
     <div class="mb-8">
       <BackLink href="/" />
       <h1 class="text-3xl font-bold text-white mt-3 mb-2">Crear varios posts con un sheet</h1>
-      <p class="text-gray-400">Descarga la plantilla, llena una fila por post (máximo 6) con su fecha y hora, súbela y se generará y programará cada post automáticamente.</p>
+      <p class="text-gray-400">Descarga la plantilla, llena una fila por post (máximo 12) con sus redes y su fecha y hora, súbela y se generará el contenido. Antes de publicar verás un preview de todos los posts para aprobarlos.</p>
     </div>
 
     <form id="bulk-form" class="space-y-6">
@@ -19,7 +19,7 @@ import BackLink from "../components/BackLink.astro";
           <div class="flex-1">
             <h2 class="text-sm font-semibold text-gray-200 mb-1">Descarga la plantilla</h2>
             <p class="text-xs text-gray-500 mb-4 leading-relaxed">
-              Ábrela en Excel o Google Sheets. Cada fila es un post; llena <strong class="text-gray-400">youtube_url</strong> o <strong class="text-gray-400">texto</strong> (una sola por fila) y la columna <strong class="text-gray-400">fecha_hora</strong> para programarlo (vacío = publicar ahora). La hoja "Instrucciones" tiene los valores válidos.
+              Ábrela en Excel o Google Sheets. Cada fila es un post; llena <strong class="text-gray-400">youtube_url</strong> o <strong class="text-gray-400">texto</strong> (una sola por fila), elige las redes con <strong class="text-gray-400">linkedin</strong>/<strong class="text-gray-400">instagram</strong>/<strong class="text-gray-400">facebook</strong> (sí/no, vacío = sí) y usa <strong class="text-gray-400">fecha_hora</strong> para programarlo (vacío = publicar ahora). La hoja "Instrucciones" tiene los valores válidos.
             </p>
             <a
               href="/api/sheets/template"

@@ -1,11 +1,14 @@
-"""Orquestador de la creación en lote.
+"""Orquestador de la creación en lote (en dos fases, con aprobación intermedia).
 
-Por cada fila parseada del sheet: construye un job normal (`make_job`), corre el
-pipeline completo (`run_pipeline`) y luego publica/programa el resultado en Blotato
-(`publish_job_posts`) usando la fecha/hora de la fila. Las filas se procesan de a
-una (secuencial) para no chocar con el rate-limit de subida de medios de Blotato
-(10 req/min). Cada fila queda registrada como un job individual en el store global,
-así puede inspeccionarse con las páginas /jobs/{id} existentes.
+1. `run_batch` GENERA el contenido de cada fila (`make_job` → `run_pipeline`) pero
+   NO publica: al terminar deja el batch en estado "review" para que el usuario vea
+   un preview de todos los posts.
+2. Tras la aprobación del usuario, `publish_batch` PUBLICA/PROGRAMA en Blotato
+   (`publish_job_posts`) usando la fecha/hora de cada fila.
+
+Las filas se procesan de a una (secuencial) para no chocar con el rate-limit de
+subida de medios de Blotato (10 req/min). Cada fila queda registrada como un job
+individual en el store global, así puede inspeccionarse con las páginas /jobs/{id}.
 """
 from datetime import datetime, timedelta
 
@@ -42,9 +45,12 @@ def _row_status_from_result(result: dict, schedule_iso: str | None, dry_run: boo
 
 
 async def run_batch(batch: dict, jobs: dict) -> None:
-    """Procesa todas las filas del batch en orden y actualiza su estado in-place."""
+    """Fase 1 — genera el contenido de todas las filas (sin publicar).
+
+    Al terminar deja el batch en "review": el usuario revisa el preview de cada post
+    y aprueba antes de que `publish_batch` los publique/programe.
+    """
     cfg = batch["_cfg"]
-    tz_offset = batch.get("tz_offset", 0)
 
     for row in batch["rows"]:
         spec = row["_spec"]
@@ -73,7 +79,34 @@ async def run_batch(batch: dict, jobs: dict) -> None:
 
             # El título ya está disponible tras el pipeline.
             row["title"] = (job.get("content") or {}).get("title") or row.get("label")
+            # Generado y a la espera de aprobación del usuario.
+            row["status"] = "ready"
+        except Exception as e:  # noqa: BLE001 - una fila no debe tumbar el batch
+            row["status"] = "error"
+            row["error"] = str(e)
 
+    batch["status"] = "review"
+
+
+async def publish_batch(batch: dict, jobs: dict) -> None:
+    """Fase 2 — publica/programa las filas ya generadas tras la aprobación.
+
+    Solo procesa filas en estado "ready" (generadas con éxito); las que fallaron en
+    la generación se dejan como están. Idempotente respecto a esas filas.
+    """
+    tz_offset = batch.get("tz_offset", 0)
+
+    for row in batch["rows"]:
+        if row["status"] != "ready":
+            continue
+        job = jobs.get(row.get("job_id"))
+        if job is None:
+            row["status"] = "error"
+            row["error"] = "El contenido del post ya no está disponible (¿se reinició el servidor?)."
+            continue
+
+        spec = row["_spec"]
+        try:
             row["status"] = "publishing"
             schedule_iso = to_utc_iso(spec["schedule_dt"], tz_offset)
             result = await publish_job_posts(job, schedule_iso)

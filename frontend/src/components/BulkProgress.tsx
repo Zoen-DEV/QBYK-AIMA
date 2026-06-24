@@ -6,6 +6,23 @@ interface RowResult {
   error?: string;
 }
 
+// Snapshot del job generado (mismo shape que /jobs/{id}) usado para el preview.
+interface RowPreviewData {
+  posts: { linkedin_text?: string; instagram_text?: string; facebook_text?: string };
+  images: {
+    has_li_hook: boolean;
+    has_fb_hook: boolean;
+    has_ig_single: boolean;
+    ig_slides: string[];
+    blotato_urls: { linkedin?: string; instagram?: string[]; facebook?: string };
+  };
+  video?: { url?: string };
+  params: Record<string, unknown>;
+  li_media_urls: string[];
+  ig_media_urls: string[];
+  fb_media_urls: string[];
+}
+
 interface Row {
   index: number;
   source: string;
@@ -16,11 +33,12 @@ interface Row {
   job_id: string | null;
   result: { linkedin?: RowResult; instagram?: RowResult; facebook?: RowResult; dry_run?: boolean };
   error: string | null;
+  preview: RowPreviewData | null;
 }
 
 interface Batch {
   id: string;
-  status: string;
+  status: string; // running | review | publishing | done
   warnings: string[];
   dry_run: boolean;
   rows: Row[];
@@ -28,8 +46,10 @@ interface Batch {
 
 const POLL_MS = 2500;
 
-// Filas que llegaron a un estado final (para el contador de progreso).
-const TERMINAL = new Set(["scheduled", "published", "partial", "dry-run", "error", "done"]);
+// Filas que terminaron de GENERAR (listas para revisar, o con error de generación).
+const GEN_DONE = new Set(["ready", "scheduled", "published", "partial", "dry-run", "error", "done"]);
+// Filas que terminaron la fase de PUBLICACIÓN.
+const PUB_DONE = new Set(["scheduled", "published", "partial", "dry-run", "error", "done"]);
 // Filas terminadas que requieren atención del usuario.
 const NEEDS_ATTENTION = new Set(["error", "partial"]);
 
@@ -78,6 +98,32 @@ function StatusIcon({ status, className = "w-5 h-5" }: { status: StepStatus; cla
   return <div className={`${className} rounded-full border-2 border-gray-700`} />;
 }
 
+// ── Logos de red (mismos que ReviewCards) ───────────────────────────────────
+
+function LinkedInLogo() {
+  return (
+    <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+    </svg>
+  );
+}
+
+function InstagramLogo() {
+  return (
+    <svg className="w-4 h-4 text-pink-400" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
+    </svg>
+  );
+}
+
+function FacebookLogo() {
+  return (
+    <svg className="w-4 h-4 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+    </svg>
+  );
+}
+
 // ── Mapeos de estado ────────────────────────────────────────────────────────
 
 function statusMeta(status: string): { label: string; classes: string } {
@@ -86,6 +132,8 @@ function statusMeta(status: string): { label: string; classes: string } {
       return { label: "En cola", classes: "bg-gray-700/40 text-gray-300" };
     case "generating":
       return { label: "Generando", classes: "bg-brand-500/15 text-brand-500" };
+    case "ready":
+      return { label: "Listo para revisar", classes: "bg-blue-900/40 text-blue-300" };
     case "publishing":
       return { label: "Publicando", classes: "bg-brand-500/15 text-brand-500" };
     case "scheduled":
@@ -115,6 +163,9 @@ function rowSteps(row: Row): { label: string; status: StepStatus }[] {
   switch (row.status) {
     case "generating":
       gen = "running";
+      break;
+    case "ready":
+      gen = "done";
       break;
     case "publishing":
       gen = "done";
@@ -169,6 +220,83 @@ function NetworkResult({ name, res }: { name: string; res?: RowResult }) {
   return null;
 }
 
+// ── Preview de una red (texto + medio), solo lectura ────────────────────────
+
+function NetworkPreview({
+  logo,
+  name,
+  text,
+  images,
+  videoUrl,
+}: {
+  logo: React.ReactNode;
+  name: string;
+  text: string;
+  images: string[];
+  videoUrl?: string;
+}) {
+  return (
+    <div className="bg-gray-950/60 rounded-xl border border-gray-800 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-gray-800 flex items-center gap-2">
+        {logo}
+        <span className="text-sm font-medium text-gray-200">{name}</span>
+      </div>
+      {videoUrl ? (
+        <video src={videoUrl} controls playsInline className="w-full max-h-72 bg-black" />
+      ) : images.length > 0 ? (
+        <div className="flex gap-1.5 overflow-x-auto bg-gray-950 p-2">
+          {images.map((url, i) => (
+            <img
+              key={i}
+              src={url}
+              alt={`${name} ${i + 1}`}
+              className="h-40 w-auto rounded-md object-cover flex-shrink-0"
+            />
+          ))}
+        </div>
+      ) : null}
+      <p className="p-4 text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{text}</p>
+    </div>
+  );
+}
+
+// Resuelve los datos de preview de una fila a las redes/medios/textos a mostrar.
+function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
+  const p = row.preview;
+  if (!p || !row.job_id) return null;
+
+  const redes = Array.isArray(p.params.redes) ? (p.params.redes as string[]) : ["linkedin", "instagram", "facebook"];
+  const has = (n: string) => redes.includes(n);
+  const videoUrl = p.video?.url || "";
+  const isCarousel = p.params.formato_instagram === "carrusel";
+
+  const liImg = p.images.has_li_hook ? `${apiUrl}/jobs/${row.job_id}/image/li-hook` : p.li_media_urls[0] || "";
+  const fbImg = p.images.has_fb_hook ? `${apiUrl}/jobs/${row.job_id}/image/fb-hook` : p.fb_media_urls[0] || "";
+  const igSingle = p.images.has_ig_single ? `${apiUrl}/jobs/${row.job_id}/image/ig-single` : p.ig_media_urls[0] || "";
+  const igSlides =
+    p.images.ig_slides.length > 0
+      ? p.images.ig_slides.map((k) => `${apiUrl}/jobs/${row.job_id}/image/${k}`)
+      : p.ig_media_urls;
+
+  const liImages = videoUrl ? [] : liImg ? [liImg] : [];
+  const fbImages = videoUrl ? [] : fbImg ? [fbImg] : [];
+  const igImages = videoUrl ? [] : isCarousel ? igSlides : igSingle ? [igSingle] : [];
+
+  return (
+    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      {has("linkedin") && (
+        <NetworkPreview logo={<LinkedInLogo />} name="LinkedIn" text={p.posts.linkedin_text || ""} images={liImages} videoUrl={videoUrl || undefined} />
+      )}
+      {has("instagram") && (
+        <NetworkPreview logo={<InstagramLogo />} name="Instagram" text={p.posts.instagram_text || ""} images={igImages} videoUrl={videoUrl || undefined} />
+      )}
+      {has("facebook") && (
+        <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} />
+      )}
+    </div>
+  );
+}
+
 // ── Cabecera (dinámica según el estado del lote) ────────────────────────────
 
 function Header({ title, subtitle }: { title: string; subtitle: string }) {
@@ -214,6 +342,10 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
   const [connError, setConnError] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  // Cambia para reanudar el polling tras aprobar (el efecto depende de él).
+  const [pollKey, setPollKey] = useState(0);
   const startRef = useRef(Date.now());
 
   useEffect(() => {
@@ -232,7 +364,10 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
         if (!active) return;
         setBatch(data);
         setConnError(null);
-        if (data.status !== "done") timer = setTimeout(poll, POLL_MS);
+        // En "review" se detiene el polling (espera al usuario); approveAndPublish lo
+        // reanuda vía pollKey una vez que el POST dejó el lote en "publishing". En
+        // "done" termina. En el resto, sigue sondeando.
+        if (data.status !== "done" && data.status !== "review") timer = setTimeout(poll, POLL_MS);
       } catch (e) {
         if (!active) return;
         setConnError(e instanceof Error ? e.message : String(e));
@@ -245,16 +380,38 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
       active = false;
       if (timer) clearTimeout(timer);
     };
-  }, [batchId, apiUrl]);
+  }, [batchId, apiUrl, pollKey]);
 
-  const isDone = batch?.status === "done";
+  const phase = batch?.status; // running | review | publishing | done
+  const isReview = phase === "review";
+  const isDone = phase === "done";
+  const isGenerating = phase === "running";
 
-  // Cronómetro vivo mientras el lote corre: deja claro que NO está congelado.
+  // Cronómetro vivo mientras el lote trabaja (genera o publica). En "review" se
+  // detiene: la pelota está en el usuario.
   useEffect(() => {
-    if (isDone || fatal) return;
+    if (isDone || isReview || fatal) return;
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
     return () => clearInterval(t);
-  }, [isDone, fatal]);
+  }, [isDone, isReview, fatal]);
+
+  async function approveAndPublish() {
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      const res = await fetch(`${apiUrl}/sheets/batches/${batchId}/publish`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      startRef.current = Date.now(); // reinicia el cronómetro para la fase de publicación
+      // El POST ya dejó el lote en "publishing"; reanuda el polling para seguirla.
+      setPollKey((k) => k + 1);
+    } catch (e) {
+      setPublishError(e instanceof Error ? e.message : String(e));
+      setPublishing(false);
+    }
+  }
 
   // Estado fatal: el lote no existe / no se puede recuperar.
   if (fatal) {
@@ -290,32 +447,53 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
   }
 
   const total = batch.rows.length;
-  const done = batch.rows.filter((r) => TERMINAL.has(r.status)).length;
+  // El progreso del hero depende de la fase: generación vs. publicación.
+  const genDone = batch.rows.filter((r) => GEN_DONE.has(r.status)).length;
+  const pubDone = batch.rows.filter((r) => PUB_DONE.has(r.status)).length;
+  const done = isGenerating ? genDone : pubDone;
   const errors = batch.rows.filter((r) => NEEDS_ATTENTION.has(r.status)).length;
-  const percent = total ? Math.round((done / total) * 100) : 0;
+  const readyRows = batch.rows.filter((r) => r.status === "ready");
+  const genErrors = batch.rows.filter((r) => r.status === "error").length;
+  const percent = isReview ? 100 : total ? Math.round((done / total) * 100) : 0;
   const active = batch.rows.find((r) => r.status === "generating" || r.status === "publishing");
 
-  const title = !isDone
+  const title = isGenerating
     ? "Creando tus posts"
+    : isReview
+    ? "Revisa y aprueba tus posts"
+    : phase === "publishing"
+    ? "Publicando tus posts"
     : errors > 0
     ? "Lote completado con avisos"
     : batch.dry_run
     ? "Simulación completada"
     : "¡Listo! Tus posts están programados";
 
-  const subtitle = !isDone
-    ? "Generamos y programamos cada post automáticamente. Puede tomar varios minutos — puedes dejar esta pestaña abierta."
+  const subtitle = isGenerating
+    ? "Generamos el contenido de cada post. Puede tomar varios minutos — puedes dejar esta pestaña abierta."
+    : isReview
+    ? "Generamos todo. Revisa el contenido de cada post abajo y publícalo cuando estés conforme."
+    : phase === "publishing"
+    ? "Estamos publicando y programando cada post. No cierres esta pestaña."
     : errors > 0
     ? "Algunos posts necesitan tu atención. Revisa el detalle abajo."
     : batch.dry_run
-    ? "Todo se generó sin publicar. Revisa cada post antes de lanzarlo de verdad."
+    ? "Todo se generó sin publicar (dry-run)."
     : "Cada post quedó programado en su fecha y hora. Ya puedes cerrar esta pestaña.";
 
-  const heroIcon = !isDone ? "running" : errors > 0 ? "warn" : "done";
-  const heroLabel = !isDone ? "Procesando lote…" : errors > 0 ? "Completado con avisos" : "Lote completado";
+  const heroIcon = isReview ? "done" : !isDone ? "running" : errors > 0 ? "warn" : "done";
+  const heroLabel = isGenerating
+    ? "Generando contenido…"
+    : isReview
+    ? "Contenido generado — pendiente de aprobación"
+    : phase === "publishing"
+    ? "Publicando lote…"
+    : errors > 0
+    ? "Completado con avisos"
+    : "Lote completado";
   const activity = active
     ? `${active.status === "publishing" ? "Publicando y programando" : "Generando contenido para"} el post #${active.index}`
-    : !isDone && done < total
+    : !isDone && !isReview && done < total
     ? "Preparando el siguiente post…"
     : null;
 
@@ -345,13 +523,17 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
               )}
             </div>
             <div className="text-sm text-gray-400">
-              {done} de {total} posts listos
+              {isGenerating
+                ? `${done} de ${total} posts generados`
+                : isReview
+                ? `${readyRows.length} de ${total} posts listos para publicar`
+                : `${done} de ${total} posts procesados`}
               {errors > 0 && <span className="text-amber-400"> · {errors} con avisos</span>}
             </div>
           </div>
           <div className="ml-auto text-right flex-shrink-0">
             <div className="text-3xl font-bold text-white tabular-nums leading-none">{percent}%</div>
-            {!isDone && (
+            {!isDone && !isReview && (
               <div className="text-xs text-gray-500 tabular-nums mt-1 flex items-center justify-end gap-1">
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -368,7 +550,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
             className="h-full bg-brand-500 rounded-full transition-all duration-700"
             style={{ width: `${percent}%` }}
           />
-          {!isDone && (
+          {!isDone && !isReview && (
             <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/20 to-transparent" />
           )}
         </div>
@@ -377,6 +559,51 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
           <div className="mt-3 text-sm text-brand-500 flex items-center gap-2">
             <Spinner className="w-3.5 h-3.5" />
             {activity}
+          </div>
+        )}
+
+        {/* Aprobación: aparece cuando el lote terminó de generar y espera al usuario */}
+        {isReview && (
+          <div className="mt-5 border-t border-gray-800 pt-5">
+            {genErrors > 0 && (
+              <p className="text-xs text-amber-400 mb-3">
+                {genErrors} post(s) no se generaron y se omitirán al publicar.
+              </p>
+            )}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                onClick={approveAndPublish}
+                disabled={publishing || readyRows.length === 0}
+                className={`inline-flex items-center justify-center gap-2 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  batch.dry_run ? "bg-amber-600 hover:bg-amber-700" : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
+                {publishing ? (
+                  <>
+                    <Spinner className="w-4 h-4" />
+                    {batch.dry_run ? "Simulando…" : "Publicando…"}
+                  </>
+                ) : batch.dry_run ? (
+                  <>Confirmar (dry-run)</>
+                ) : (
+                  <>Publicar y programar {readyRows.length} post{readyRows.length === 1 ? "" : "s"}</>
+                )}
+              </button>
+              <a
+                href="/bulk"
+                className="inline-flex items-center justify-center text-sm text-gray-400 hover:text-gray-200 px-4 py-2.5 rounded-lg border border-gray-800 hover:border-gray-700 transition-colors"
+              >
+                Cancelar
+              </a>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Cada post se programa según la columna fecha_hora de su fila (vacío = se publica de inmediato).
+            </p>
+            {publishError && (
+              <div className="mt-3 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2.5 text-red-300 text-sm">
+                {publishError}
+              </div>
+            )}
           </div>
         )}
 
@@ -486,6 +713,11 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
                 <div className="mt-3 relative h-1 overflow-hidden rounded-full bg-gray-800">
                   <div className="absolute inset-y-0 left-0 w-2/5 rounded-full bg-brand-500 animate-indeterminate" />
                 </div>
+              )}
+
+              {/* Preview del contenido generado (en revisión y mientras se publica) */}
+              {(isReview || phase === "publishing") && row.preview && row.status !== "error" && (
+                <RowPreview row={row} apiUrl={apiUrl} />
               )}
 
               {/* Resultados / error / link al detalle */}

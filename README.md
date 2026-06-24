@@ -12,9 +12,18 @@ Interfaz web para el skill `repurpose-youtube-video`. Convierte contenido en pos
 La app ofrece dos formas de crear contenido. **Ambos comparten exactamente el mismo pipeline de generación y publicación** (`make_job` → `run_pipeline` → `publish_job_posts` en `api/job_runner.py`), así que cualquier mejora del pipeline (extracción, escritura, imágenes/video, publicación) aplica a los dos sin duplicar lógica.
 
 1. **Post individual** (`/individual`) — un formulario por post. El usuario elige fuente, tono, objetivo, formato, medio, idioma y cuentas, ve el progreso en tiempo real (SSE), edita los textos y aprueba antes de publicar. Es el flujo interactivo, de un solo post.
-2. **Creación en lote (bulk)** (`/bulk`) — el usuario descarga una plantilla `.xlsx`, llena una fila por post (máximo 6) con su fecha/hora de programación, elige las cuentas **una sola vez** y sube el sheet. El backend parsea cada fila a un job normal, corre el pipeline completo y publica/programa el resultado en Blotato fila por fila (secuencial, por el rate-limit de Blotato). El avance del lote se sigue en `/batches/:id`.
+2. **Creación en lote (bulk)** (`/bulk`) — el usuario descarga una plantilla `.xlsx`, llena una fila por post (máximo 12) con sus redes y su fecha/hora de programación, elige las cuentas **una sola vez** y sube el sheet. El backend genera el contenido de cada fila y se detiene en un **preview** para que el usuario apruebe; al confirmar, publica/programa el resultado en Blotato fila por fila (secuencial, por el rate-limit de Blotato). El avance del lote se sigue en `/batches/:id`.
 
 > **Regla para implementaciones nuevas:** toda funcionalidad nueva debe contemplar **los dos flujos**. Ver [`CLAUDE.md`](CLAUDE.md).
+
+### Flujos solo-individuales: Reel e Historia de Instagram
+
+Además de los dos flujos anteriores, hay dos flujos **solo-individuales** (no están en el bulk, por decisión de producto) que comparten el mismo núcleo (`make_job` → `run_pipeline` → `publish_job_posts`) pero publican **solo en Instagram** con un medio vertical 9:16:
+
+3. **Reel de Instagram** (`/reel` → `tipo_post=reel`) — publica un Reel vertical. El video puede **generarse** desde una fuente (YouTube, nota de voz, documento o texto) con el pipeline text-to-video de Higgsfield, o el usuario puede **subir** su propio video; el caption lo redacta el LLM.
+4. **Historia de Instagram** (`/historia` → `tipo_post=historia`) — publica una Historia vertical, como **imagen** o **video**. Igual que el Reel, el medio se genera desde una fuente o se sube ya hecho.
+
+Ambos aceptan dos orígenes de medio vía `media_origin`: `generar` (pipeline Higgsfield) o `subir` (el usuario sube el archivo final, se publica tal cual). El tipo de publicación de IG (`reel`/`story`/feed) se decide en `publish_job_posts` mapeando `tipo_post` → `target.mediaType` de Blotato. Ver el detalle y las implicaciones en [`CLAUDE.md`](CLAUDE.md).
 
 ## Estructura
 
@@ -23,7 +32,7 @@ web/
 ├── api/                    # FastAPI — pipeline de generación y publicación
 │   ├── app.py              # Endpoints (single + bulk) y stores en memoria
 │   ├── job_runner.py       # make_job, run_pipeline y publish_job_posts (núcleo compartido)
-│   ├── batch_runner.py     # Orquestación del lote: por fila → job → pipeline → publish
+│   ├── batch_runner.py     # Orquestación del lote en 2 fases: run_batch (genera) + publish_batch (publica tras aprobar)
 │   ├── sheets.py           # Plantilla .xlsx descargable y parseo del sheet subido
 │   ├── post_writer.py      # Redacción de los posts (Anthropic / Perplexity)
 │   ├── cost_calc.py        # Dashboard de costos: fórmula pura USD desde pricing.json
@@ -33,11 +42,13 @@ web/
 │   └── scripts/            # Clientes externos (Blotato, Higgsfield, transcripción, overlay)
 └── frontend/               # Astro + React + Tailwind — UI
     └── src/pages/
-        ├── index.astro       # Landing: elige flujo (individual o bulk)
+        ├── index.astro       # Landing: elige flujo (4 cards: individual, bulk, reel, historia)
         ├── individual.astro  # Flujo 1: formulario de un post
         ├── bulk.astro        # Flujo 2: descarga plantilla + sube sheet
+        ├── reel.astro        # Reel de IG (solo-individual): genera o sube video 9:16
+        ├── historia.astro    # Historia de IG (solo-individual): imagen o video 9:16
         ├── dashboard.astro   # Dashboard de costos (CostDashboard.tsx)
-        └── batches/[id].astro# Progreso del lote (BulkProgress.tsx)
+        └── batches/[id].astro# Progreso + preview/aprobación del lote (BulkProgress.tsx)
 ```
 
 ## Requisitos
@@ -121,7 +132,7 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 
 ## Flujo de la aplicación
 
-> Lo que sigue describe el **flujo individual** (`/individual`). El **flujo bulk** (`/bulk`) reutiliza los mismos pasos 2 (extracción → cuentas → escritura → imágenes/video) y 5 (publicación), pero por cada fila del sheet y sin pantalla de revisión: ver [Creación en lote](#creación-en-lote-bulk).
+> Lo que sigue describe el **flujo individual** (`/individual`). El **flujo bulk** (`/bulk`) reutiliza los mismos pasos 2 (extracción → cuentas → escritura → imágenes/video) y 5 (publicación), pero por cada fila del sheet y con una pantalla de **revisión por lote** (genera todas las filas, las muestra en un preview y publica al aprobar): ver [Creación en lote](#creación-en-lote-bulk). Los flujos **Reel** (`/reel`) e **Historia** (`/historia`) usan el mismo pipeline pero publican solo en Instagram con medio vertical 9:16 y permiten subir el medio ya hecho (`media_origin=subir`); ver [Los dos flujos de creación](#los-dos-flujos-de-creación).
 
 1. El usuario elige la **fuente del contenido** (link de YouTube, audio, archivo de texto o **texto escrito manualmente**) y configura tono, objetivo, formato (incluido el **número de slides del carrusel**, 3–6), tipo de medio (imagen o video), **fuente de las imágenes** (`higgsfield` con respaldo en plantillas, o `template` para omitir Higgsfield), idioma, **en qué redes publicar** (LinkedIn/Instagram/Facebook, activables de forma independiente; por defecto las tres) y, opcionalmente, **qué cuenta** de cada red usar (y la **Company Page** de LinkedIn o la **Página** de Facebook) eligiéndola en los selectores que el formulario carga vía `GET /accounts`.
 2. La API arranca un job asíncrono con las siguientes fases:
@@ -138,10 +149,11 @@ El frontend espera la API en `http://127.0.0.1:8000` por defecto. Para cambiarlo
 
 El flujo bulk genera y programa varios posts de una sola subida:
 
-1. El usuario descarga la plantilla `.xlsx` desde `/bulk` (`GET /sheets/template`). Cada **fila = un post**; columnas: `youtube_url` **o** `texto` (una sola fuente por fila), `tono`, `objetivo`, `tipo_medio`, `fuente_imagen`, `formato_instagram`, `carrusel_slides`, `idioma`, `redes` (redes a publicar separadas por coma: `linkedin`, `instagram`, `facebook`; vacío = las tres) y `fecha_hora` (programación; vacío = publicar ahora). Máximo **6 filas**. La plantilla trae listas desplegables, comentarios de ayuda y una hoja "Instrucciones".
+1. El usuario descarga la plantilla `.xlsx` desde `/bulk` (`GET /sheets/template`). Cada **fila = un post**; columnas: `youtube_url` **o** `texto` (una sola fuente por fila), `tono`, `objetivo`, `tipo_medio`, `fuente_imagen`, `formato_instagram`, `carrusel_slides`, `idioma`, `linkedin`/`instagram`/`facebook` (¿publicar en esa red? `sí`/`no`, vacío = `sí`; por defecto se publica en las tres) y `fecha_hora` (programación; vacío = publicar ahora). Máximo **12 filas**. La plantilla trae listas desplegables, comentarios de ayuda y una hoja "Instrucciones".
 2. Las **cuentas** de LinkedIn/Instagram/Facebook (y la Company Page de LinkedIn o la Página de Facebook) y el **dry-run** se eligen una sola vez en la UI, **no** en el sheet, y se inyectan por fila.
-3. Al subir el sheet (`POST /sheets/jobs`), `sheets.parse_sheet` valida cada fila y la convierte al mismo `params` que consume el pipeline. Se crea un **batch** en memoria y `batch_runner.run_batch` procesa las filas **secuencialmente** (para respetar el rate-limit de subida de medios de Blotato, 10 req/min): por cada fila construye un job normal (`make_job`), corre `run_pipeline` y publica/programa con `publish_job_posts` usando la `fecha_hora` convertida a UTC (`tz_offset` del navegador).
-4. Cada fila queda registrada como un **job individual** en el mismo store, así puede inspeccionarse en `/jobs/:id`. El progreso del lote completo se sigue en `/batches/:id` (componente `BulkProgress`, que hace polling a `GET /sheets/batches/:id`).
+3. Al subir el sheet (`POST /sheets/jobs`), `sheets.parse_sheet` valida cada fila y la convierte al mismo `params` que consume el pipeline. Se crea un **batch** en memoria y `batch_runner.run_batch` **genera** el contenido de las filas **secuencialmente** (para respetar el rate-limit de subida de medios de Blotato, 10 req/min): por cada fila construye un job normal (`make_job`) y corre `run_pipeline` — **sin publicar**. Al terminar, el lote queda en estado **`review`**.
+4. El usuario revisa en `/batches/:id` el **preview** completo (texto + imágenes/video) de cada post y aprueba con un botón. Eso llama a `POST /sheets/batches/:id/publish`, que dispara `batch_runner.publish_batch`: publica/programa cada fila ya generada con `publish_job_posts` usando la `fecha_hora` convertida a UTC (`tz_offset` del navegador).
+5. Cada fila queda registrada como un **job individual** en el mismo store, así puede inspeccionarse en `/jobs/:id`. El progreso del lote completo se sigue en `/batches/:id` (componente `BulkProgress`, que hace polling a `GET /sheets/batches/:id`).
 
 ## Dashboard de costos
 
@@ -161,11 +173,12 @@ Mide cuánto cuesta producir contenido y a qué servicio se va el dinero. **Cubr
 | `GET` | `/jobs/:id` | Estado del job |
 | `GET` | `/jobs/:id/stream` | Progreso en tiempo real (SSE) |
 | `POST` | `/jobs/:id/edit` | Edita los textos antes de publicar |
-| `GET` | `/jobs/:id/image/:key` | Sirve la imagen generada (`li-hook`, `fb-hook`, `ig-single`, `ig-0`…`ig-N`) |
+| `GET` | `/jobs/:id/image/:key` | Sirve la imagen generada (`li-hook`, `fb-hook`, `ig-single`, `ig-story`, `ig-0`…`ig-N`) |
 | `POST` | `/jobs/:id/publish` | Publica en las redes configuradas (la respuesta incluye el permalink de cada post) |
 | `GET` | `/sheets/template` | Descarga la plantilla `.xlsx` para la creación en lote |
-| `POST` | `/sheets/jobs` | Sube el sheet llenado, crea un batch y lanza la generación + programación por fila |
-| `GET` | `/sheets/batches/:id` | Estado del batch (filas, jobs y resultados de publicación) |
+| `POST` | `/sheets/jobs` | Sube el sheet llenado, crea un batch y lanza la **generación** por fila (sin publicar; deja el lote en `review`) |
+| `GET` | `/sheets/batches/:id` | Estado del batch (filas, jobs, preview de cada post y resultados de publicación) |
+| `POST` | `/sheets/batches/:id/publish` | Aprueba el lote: publica/programa todas las filas ya generadas (solo si está en `review`) |
 | `GET` | `/costs/summary?period=YYYY-MM\|YYYY` | Totales del mes/año: variable por servicio + fijos prorrateados + total + promedio por post |
 | `GET` | `/costs/timeseries?from=&to=&granularity=day\|month` | Serie temporal de gasto por servicio para las gráficas |
 | `GET` | `/costs/by-job?from=&to=` | Costo por job (gasto por uso) con desglose por servicio |

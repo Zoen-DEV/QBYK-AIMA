@@ -1,0 +1,308 @@
+---
+import Base from "../layouts/Base.astro";
+import BackLink from "../components/BackLink.astro";
+---
+
+<Base title="Nueva Historia">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-8">
+      <BackLink href="/" />
+      <h1 class="text-3xl font-bold text-white mt-3 mb-2">Historia de Instagram</h1>
+      <p class="text-gray-400">Publica una Historia vertical (9:16) en Instagram, como imagen o video. Genérala desde una fuente o sube tu propio archivo.</p>
+    </div>
+
+    <form method="POST" action="/api/jobs" id="job-form" class="space-y-6" enctype="multipart/form-data">
+      <input type="hidden" name="tipo_post" value="historia" />
+
+      <!-- Formato de la historia -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+        <label class="block">
+          <span class="text-sm font-medium text-gray-300 mb-2 block">Formato de la historia</span>
+          <select name="historia_formato" id="historia-formato" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="imagen">Imagen vertical (9:16)</option>
+            <option value="video">Video (9:16)</option>
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-sm font-medium text-gray-300 mb-2 block">¿Cómo quieres el medio?</span>
+          <select name="media_origin" id="media-origin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="generar">Generarlo desde una fuente (Higgsfield)</option>
+            <option value="subir">Subir mi propio archivo</option>
+          </select>
+        </label>
+
+        <!-- Modo GENERAR: fuente del contenido -->
+        <div id="mode-generar" class="space-y-4">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Fuente del contenido</span>
+            <select name="source_type" id="source-type" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="youtube">Link de YouTube</option>
+              <option value="audio">Audio — nota de voz (WhatsApp)</option>
+              <option value="texto">Documento (texto, PDF o Word)</option>
+              <option value="manual">Manual — escribir texto</option>
+            </select>
+          </label>
+
+          <label class="block" id="src-youtube">
+            <span class="text-xs text-gray-400 mb-1 block">URL de YouTube</span>
+            <input type="url" name="youtube_url" id="youtube-url" placeholder="https://www.youtube.com/watch?v=..."
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500 transition" />
+          </label>
+
+          <label class="block hidden" id="src-file">
+            <span class="text-xs text-gray-400 mb-1 block" id="file-label">Archivo</span>
+            <input type="file" name="media_file" id="media-file"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition" />
+            <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="file-hint"></span>
+          </label>
+
+          <label class="block hidden" id="src-manual">
+            <span class="text-xs text-gray-400 mb-1 block">Texto</span>
+            <textarea name="manual_text" id="manual-text" rows="6" placeholder="Escribe o pega aquí el texto base para la historia y el caption..."
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
+          </label>
+
+          <!-- Fuente de la imagen (solo aplica a formato = imagen) -->
+          <label class="block" id="fuente-imagen-wrap">
+            <span class="text-xs text-gray-400 mb-1 block">Fuente de la imagen</span>
+            <select name="fuente_imagen" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="higgsfield">Higgsfield (con respaldo en plantillas)</option>
+              <option value="template">Plantillas directamente</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Modo SUBIR: archivo propio + caption -->
+        <div id="mode-subir" class="space-y-4 hidden">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Tu imagen o video (vertical 9:16 recomendado)</span>
+            <input type="file" name="final_media_file" id="final-media-file" accept="video/*,image/*"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition" />
+            <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Imagen (JPG/PNG) o video (MP4/MOV). Se publica tal cual como Historia.</span>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Caption</span>
+            <textarea name="manual_text" id="caption-text" rows="5" placeholder="Escribe el caption de la historia (lo puliremos con el tono elegido)..."
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
+          </label>
+        </div>
+      </div>
+
+      <!-- Configuración -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Configuración</h2>
+
+        <div class="grid grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Tono</span>
+            <select name="tono_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Auto</option>
+              <option value="educativo">Educativo / insights</option>
+              <option value="inspiracional">Inspiracional</option>
+              <option value="personal">Personal / storytelling</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Objetivo</span>
+            <select name="objetivo_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Auto</option>
+              <option value="engagement">Engagement (comentarios)</option>
+              <option value="awareness">Awareness (alcance)</option>
+              <option value="trafico">Tráfico</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="block">
+          <span class="text-xs text-gray-400 mb-1 block">Cuenta de Instagram</span>
+          <select name="instagram_account_id" id="instagram-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Cargando cuentas...</option>
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="text-xs text-gray-400 mb-1 block">Idioma</span>
+          <select name="idioma" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="auto">Auto-detectar</option>
+            <option value="es">Español</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+
+        <details class="group">
+          <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition list-none flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+            Opciones avanzadas
+          </summary>
+          <div class="mt-4 space-y-4">
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Programar publicación</span>
+              <input type="datetime-local" name="publicar"
+                class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" name="dry_run" value="true" class="w-4 h-4 rounded bg-gray-800 border-gray-600 text-brand-500 focus:ring-brand-500" />
+              <span class="text-sm text-gray-400">Dry-run (generar todo pero no publicar)</span>
+            </label>
+          </div>
+        </details>
+      </div>
+
+      <button type="submit" id="submit-btn"
+        class="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3.5 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="9" stroke-dasharray="3 2.5" stroke-linecap="round" />
+          <circle cx="12" cy="12" r="3.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Crear Historia
+      </button>
+    </form>
+  </div>
+</Base>
+
+<script>
+  const form = document.getElementById("job-form") as HTMLFormElement;
+  const btn = document.getElementById("submit-btn") as HTMLButtonElement;
+
+  const historiaFormato = document.getElementById("historia-formato") as HTMLSelectElement;
+  const fuenteImagenWrap = document.getElementById("fuente-imagen-wrap") as HTMLElement;
+
+  // ── Modo: generar vs subir ────────────────────────────────────────────────────
+  const mediaOrigin = document.getElementById("media-origin") as HTMLSelectElement;
+  const modeGenerar = document.getElementById("mode-generar") as HTMLElement;
+  const modeSubir = document.getElementById("mode-subir") as HTMLElement;
+  const finalMediaFile = document.getElementById("final-media-file") as HTMLInputElement;
+  const captionText = document.getElementById("caption-text") as HTMLTextAreaElement;
+
+  // ── Fuente del contenido (modo generar) ──────────────────────────────────────
+  const sourceType = document.getElementById("source-type") as HTMLSelectElement;
+  const srcYoutube = document.getElementById("src-youtube") as HTMLElement;
+  const srcFile = document.getElementById("src-file") as HTMLElement;
+  const srcManual = document.getElementById("src-manual") as HTMLElement;
+  const youtubeUrl = document.getElementById("youtube-url") as HTMLInputElement;
+  const mediaFile = document.getElementById("media-file") as HTMLInputElement;
+  const manualText = document.getElementById("manual-text") as HTMLTextAreaElement;
+  const fileLabel = document.getElementById("file-label") as HTMLElement;
+  const fileHint = document.getElementById("file-hint") as HTMLElement;
+
+  const FILE_CONFIG: Record<string, { label: string; accept: string; hint: string }> = {
+    audio: {
+      label: "Audio (.ogg / .opus / .m4a / .mp3 / .wav)",
+      accept: "audio/*,.ogg,.opus,.m4a,.mp3,.wav",
+      hint: "Sube tu nota de voz de WhatsApp. Se transcribe automáticamente y de ahí se genera el contenido.",
+    },
+    texto: {
+      label: "Documento (.pdf / .docx / .txt / .md)",
+      accept: ".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown",
+      hint: "Sube un PDF, Word (.docx) o texto (.txt / .md); su contenido se usa como base.",
+    },
+  };
+
+  const syncSource = () => {
+    const v = sourceType.value;
+    const isYoutube = v === "youtube";
+    const isManual = v === "manual";
+    const isFile = !isYoutube && !isManual;
+    srcYoutube.classList.toggle("hidden", !isYoutube);
+    srcFile.classList.toggle("hidden", !isFile);
+    srcManual.classList.toggle("hidden", !isManual);
+    youtubeUrl.disabled = !isYoutube;
+    youtubeUrl.required = isYoutube;
+    mediaFile.disabled = !isFile;
+    mediaFile.required = isFile;
+    manualText.disabled = !isManual;
+    manualText.required = isManual;
+    if (isFile) {
+      const cfg = FILE_CONFIG[v];
+      mediaFile.accept = cfg.accept;
+      fileLabel.textContent = cfg.label;
+      fileHint.textContent = cfg.hint;
+      mediaFile.value = "";
+    }
+  };
+  sourceType.addEventListener("change", syncSource);
+
+  // La fuente de imagen solo aplica a formato = imagen (en video no hay imagen base).
+  const syncFormato = () => {
+    const isImagen = historiaFormato.value === "imagen";
+    fuenteImagenWrap.classList.toggle("opacity-40", !isImagen);
+    fuenteImagenWrap.classList.toggle("pointer-events-none", !isImagen);
+  };
+  historiaFormato.addEventListener("change", syncFormato);
+
+  const syncMode = () => {
+    const subir = mediaOrigin.value === "subir";
+    modeGenerar.classList.toggle("hidden", subir);
+    modeSubir.classList.toggle("hidden", !subir);
+    sourceType.disabled = subir;
+    finalMediaFile.disabled = !subir;
+    finalMediaFile.required = subir;
+    captionText.disabled = !subir;
+    captionText.required = subir;
+    if (subir) {
+      youtubeUrl.disabled = true;
+      mediaFile.disabled = true;
+      manualText.disabled = true;
+    } else {
+      syncSource();
+    }
+  };
+  mediaOrigin.addEventListener("change", syncMode);
+  syncMode();
+  syncFormato();
+
+  // ── Cuenta de Instagram ───────────────────────────────────────────────────────
+  type Account = { id: string; label: string };
+  const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+
+  function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
+    sel.innerHTML = "";
+    if (!accounts || accounts.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = errorMsg ? `Sin cuentas (${errorMsg})` : "No hay cuentas conectadas";
+      sel.appendChild(opt);
+      return;
+    }
+    for (const a of accounts) {
+      const opt = document.createElement("option");
+      opt.value = a.id;
+      opt.textContent = a.label;
+      sel.appendChild(opt);
+    }
+  }
+
+  (async () => {
+    try {
+      const res = await fetch("/api/accounts");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      fillSelect(igAccount, data.instagram, data.instagram_error);
+    } catch (e) {
+      fillSelect(igAccount, [], String(e));
+    }
+  })();
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Procesando...`;
+
+    const data = new FormData(form);
+    if (!data.get("dry_run")) data.delete("dry_run");
+
+    const res = await fetch("/api/jobs", { method: "POST", body: data });
+    if (res.ok) {
+      const { job_id } = await res.json();
+      window.location.href = `/jobs/${job_id}`;
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.detail || JSON.stringify(err)}`);
+      btn.disabled = false;
+      btn.innerHTML = "Crear Historia";
+    }
+  });
+</script>

@@ -57,6 +57,7 @@ async def _track(job: dict, *, service: str, operation: str, units: dict,
 
 
 def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: str = "",
+             final_media_bytes: bytes = b"", final_media_filename: str = "",
              flow: str = "individual", batch_id: str | None = None) -> dict:
     """Build a fresh in-memory job from an already-normalized `params` dict.
 
@@ -64,6 +65,8 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
     both produce the exact same job shape the pipeline expects. `params` must already
     be normalized by the caller (clamped slide count, stripped account ids, etc.).
     For non-YouTube sources, pass the source bytes via `upload_bytes`/`upload_filename`.
+    Para reel/historia en modo "subir", el medio final (video/imagen ya hecho) va en
+    `final_media_bytes`/`final_media_filename`: se publica tal cual, sin generación.
     `flow`/`batch_id` etiquetan el origen del job para el tracking de costos
     ("individual" por defecto; el bulk pasa "bulk" + el id del batch).
     """
@@ -87,6 +90,10 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "_fb_media_urls": [],
         "_upload_bytes": upload_bytes,
         "_upload_filename": upload_filename,
+        # Medio final subido por el usuario (modo "subir" de reel/historia): se publica
+        # tal cual, sin generación. Vacío en el modo "generar" y en el flujo normal.
+        "_final_media_bytes": final_media_bytes,
+        "_final_media_filename": final_media_filename,
     }
 
 
@@ -102,6 +109,20 @@ def _save_image(job_id: str, key: str, png: bytes) -> None:
 async def _run(fn, *args, **kwargs):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
+def _media_mime(filename: str) -> str:
+    """MIME type para subir un medio a Blotato según la extensión del archivo.
+
+    Cubre los formatos comunes de video/imagen que el usuario puede subir para un
+    reel o una historia. Default: video/mp4 (el caso más común en reels/historias).
+    """
+    ext = Path(filename or "").suffix.lower()
+    return {
+        ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+        ".m4v": "video/x-m4v", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+    }.get(ext, "video/mp4")
 
 
 def _is_local_src(src: str) -> bool:
@@ -156,6 +177,12 @@ async def run_pipeline(job: dict):
     url: str = params.get("youtube_url", "")
     dry_run: bool = params.get("dry_run", False)
     formato_ig: str = params.get("formato_instagram", "imagen-unica")
+
+    # Tipo de publicación de Instagram: "post" (feed, default) | "reel" | "historia".
+    # Reel e historia fuerzan redes=["instagram"] y un solo medio 9:16.
+    tipo_post: str = params.get("tipo_post", "post")
+    media_origin: str = params.get("media_origin", "generar")
+    historia_formato: str = params.get("historia_formato", "imagen")
 
     # Redes destino elegidas en el form/sheet (default: las tres). Fuente única: networks.
     nets = active_networks(params)
@@ -337,10 +364,47 @@ async def run_pipeline(job: dict):
             await _track(job, service=writer_usage["service"], operation="post_writing",
                          units=writer_usage["units"], model=writer_usage["model"])
 
+        # ── Media: medio final subido por el usuario (reel/historia, modo "subir") ──
+        # El video/imagen ya está hecho: se sube tal cual a Blotato y se publica sin
+        # generación. Solo aplica a Instagram (reel/historia fuerzan redes=["instagram"]).
+        if media_origin == "subir":
+            await _push(q, {"step": "images", "status": "running", "msg": "Subiendo tu archivo a Blotato..."})
+            fbytes = job.get("_final_media_bytes") or b""
+            fname = job.get("_final_media_filename") or "media"
+            if not fbytes:
+                raise RuntimeError("No se recibió el archivo a publicar (modo subir).")
+            mime = _media_mime(fname)
+            try:
+                url_media = await _run(bc.upload_media_local, fbytes, fname, api_key=cfg.blotato_api_key, mime=mime)
+            except Exception as e:
+                raise RuntimeError(f"No se pudo subir el archivo a Blotato: {e}")
+            job["_ig_media_urls"] = [url_media] if do_instagram else []
+            job["images"]["blotato_urls"]["instagram"] = [url_media] if do_instagram else []
+            # Si es video, refléjalo también en job["video"] para que la revisión lo muestre.
+            if mime.startswith("video/"):
+                job["video"]["provider"] = "subido"
+                job["video"]["url"] = url_media
+            await _push(q, {"step": "images", "status": "done", "msg": "Archivo listo"})
+            job["status"] = "review"
+            await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
+            return
+
         # ── Media decision: video (text-to-video) OR images ─────────────────
         tipo_medio = params.get("tipo_medio", "imagen")
-        want_video = tipo_medio == "video"
+        # Reel y historia-video siempre son video vertical 9:16 (text-to-video).
+        is_reel = tipo_post == "reel"
+        is_historia_video = tipo_post == "historia" and historia_formato == "video"
+        is_historia_imagen = tipo_post == "historia" and historia_formato == "imagen"
+        want_video = tipo_medio == "video" or is_reel or is_historia_video
+        # Aspect del clip: 9:16 para reel/historia-video; el default de feed en lo demás.
+        video_aspect = "9:16" if (is_reel or is_historia_video) else cfg.higgsfield_video_aspect
         if want_video and not cfg.video_available:
+            if is_reel or is_historia_video:
+                # En reel/historia-video el video es obligatorio: no hay fallback a imagen.
+                raise RuntimeError(
+                    "Este formato requiere video, pero Higgsfield no está configurado. "
+                    "Define las credenciales de Higgsfield o sube tu propio video."
+                )
             want_video = False
             await _push(q, {"step": "video", "status": "warn",
                             "msg": "Video solicitado pero Higgsfield no está configurado — se generan imágenes."})
@@ -360,7 +424,7 @@ async def run_pipeline(job: dict):
                 video_url = await _run(
                     hf.generate_video, video_prompt,
                     api_key=cfg.higgsfield_api_key, api_secret=cfg.higgsfield_api_secret,
-                    aspect_ratio=cfg.higgsfield_video_aspect,
+                    aspect_ratio=video_aspect,
                     duration=(cfg.higgsfield_video_duration or None),
                     model=cfg.higgsfield_video_model,
                 )
@@ -398,6 +462,57 @@ async def run_pipeline(job: dict):
                 job["_ig_media_urls"] = []
                 job["_fb_media_urls"] = []
 
+            job["status"] = "review"
+            await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
+            return
+
+        # ── Media: historia-imagen (una sola imagen vertical 9:16 con overlay) ──
+        if is_historia_imagen:
+            await _push(q, {"step": "images", "status": "init", "subkeys": ["ig-story"]})
+            await _push(q, {"step": "images", "status": "running", "msg": "Generando imagen vertical para la historia..."})
+            force_template = params.get("fuente_imagen", "higgsfield") == "template"
+            provider = improv.make_provider(
+                hf_key=cfg.higgsfield_api_key, hf_secret=cfg.higgsfield_api_secret,
+                hf_model=cfg.higgsfield_model, hf_resolution=cfg.higgsfield_resolution,
+                force_template=force_template,
+            )
+            topic = content.get("title", "professional topic")
+            base_prompt = (
+                f"Editorial vertical photography about: {topic}. "
+                "Clean composition, soft natural lighting, muted professional palette, "
+                "9:16 vertical framing with negative space at the bottom for overlay text. "
+                "No text, no typography, no logos, no watermarks."
+            )
+            # Hook de portada: el image_text del modelo si vino; si no, la 1ª línea del caption.
+            image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
+            story_hook = ((image_text or {}).get("hook", "").strip()
+                          or _extract_hook(posts.get("instagram_text", ""), max_words=12))
+            story_url = ""
+            try:
+                base_url = await _run(provider.generate_base, base_prompt, aspect_ratio="9:16")
+                if _HAS_OVERLAY:
+                    png = await _run(ov.render_story, base_url, story_hook, lang=lang, tone=tono_ig)
+                    _save_image(job["id"], "ig-story", png)
+                    job["images"]["bytes"]["ig-story"] = png
+                    story_url = await _run(bc.upload_media_local, png, "ig-story.png", api_key=cfg.blotato_api_key)
+                else:
+                    # Sin Pillow: publica la base tal cual (URL o plantilla local subida).
+                    story_url = await _run(_publishable_media, base_url, "ig-story.png", api_key=cfg.blotato_api_key)
+            except Exception as e:
+                await _push(q, {"step": "images", "status": "warn", "subkey": "ig-story", "msg": str(e)})
+            # Tracking de costos: generación HF real (si cayó a plantilla local, es gratis).
+            job["images"]["provider"] = provider.name
+            hf_gens = getattr(provider, "hf_generations", 0)
+            if hf_gens:
+                await _track(job, service="higgsfield", operation="image_generation",
+                             units={"generations": hf_gens}, model=cfg.higgsfield_model)
+            if story_url:
+                job["_ig_media_urls"] = [story_url]
+                job["images"]["blotato_urls"]["instagram"] = [story_url]
+                await _push(q, {"step": "images", "status": "done", "subkey": "ig-story"})
+                await _push(q, {"step": "images", "status": "done", "msg": "Imagen lista"})
+            else:
+                await _push(q, {"step": "images", "status": "warn", "msg": "No se pudo generar la imagen de la historia. Puedes reintentar."})
             job["status"] = "review"
             await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
             return
@@ -811,9 +926,12 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
             result["linkedin"] = {"error": str(e)}
 
     if not dry_run and do_instagram and accounts.get("instagram_id") and ig_text:
+        # tipo_post → mediaType de IG: reel/historia publican como Reel/Story; post = feed.
+        ig_media_type = {"reel": "reel", "historia": "story"}.get(params.get("tipo_post", "post"))
         try:
             resp = await _run(bc.publish_post, accounts["instagram_id"], "instagram", ig_text, ig_media,
-                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True)
+                              api_key=cfg.blotato_api_key, schedule_time=scheduled_at, share_to_feed=True,
+                              media_type=ig_media_type)
             status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
             result["instagram"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
         except Exception as e:

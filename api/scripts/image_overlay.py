@@ -28,6 +28,7 @@ Public API (all accept an optional `tone` that selects the typeface):
   render_credits(base_url, channel, video_title, *, lang="es", tone="educativo") -> bytes  (IG carousel slide 3, 1080x1080)
   render_single(base_url, title, *, lang="es", tone="inspiracional") -> bytes              (IG single image, 1080x1080)
   render_linkedin_hook(base_url, title, *, lang="es", tone="educativo") -> bytes           (LinkedIn 4:5, 1080x1350)
+  render_story(base_url, title, *, lang="es", tone="inspiracional") -> bytes               (IG Story 9:16, 1080x1920)
 
 All renderers return PNG bytes. Pass them to bc.upload_media_local() to get a
 Blotato-hosted public URL usable in mediaUrls.
@@ -475,5 +476,38 @@ def render_linkedin_hook(base_url: str, title: str, *, lang: str = "es", tone: s
     total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 14
     start_y = _LI_H - _MARGIN - total_h - 20
     _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=14, align="left", max_width=_LI_INNER_W)
+
+    return _to_png_bytes(img)
+
+
+# ── Instagram Story renderer (1080x1920, 9:16) ─────────────────────────────────
+
+_STORY_W = 1080
+_STORY_H = 1920
+_STORY_INNER_W = _STORY_W - 2 * _MARGIN  # 920
+
+
+def render_story(base_url: str, title: str, *, lang: str = "es", tone: str = "inspiracional") -> bytes:
+    """Instagram Story (9:16) with a hook overlay over a full gradient.
+
+    The 9:16 canvas is taller than a feed image; the title sits in the lower third
+    (above the safe area for IG's UI) with a strong gradient for contrast.
+    """
+    img = _fetch_base(base_url, target_size=(_STORY_W, _STORY_H))
+    img = _add_gradient(img, position="bottom", strength=215)
+    draw = ImageDraw.Draw(img)
+
+    font_size = 80
+    title_font = _load_font(font_size, bold=True, tone=tone)
+    title_lines = _wrap(title, title_font, _STORY_INNER_W, draw)
+    while len(title_lines) > 5 and font_size > 50:
+        font_size -= 4
+        title_font = _load_font(font_size, bold=True, tone=tone)
+        title_lines = _wrap(title, title_font, _STORY_INNER_W, draw)
+
+    total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 16
+    # Lower third, leaving ~300px safe margin from the bottom (IG story UI / CTA).
+    start_y = _STORY_H - 320 - total_h
+    _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=16, align="left", max_width=_STORY_INNER_W)
 
     return _to_png_bytes(img)
