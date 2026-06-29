@@ -9,7 +9,7 @@ Guía para trabajar en este repositorio con Claude Code. Ver también [`README.m
 La app tiene dos maneras de crear contenido y **comparten el mismo pipeline**. Antes de dar por terminada cualquier funcionalidad nueva (un campo de formulario, una opción de generación, un cambio en publicación, etc.), verifica que funcione en ambos:
 
 1. **Post individual** (`/individual` → `POST /jobs`) — un formulario por post, con progreso en vivo (SSE) y revisión/edición antes de publicar.
-2. **Creación en lote / bulk** (`/bulk` → `POST /sheets/jobs`) — una plantilla `.xlsx` con una fila por post (máx. 6); se genera y programa cada fila automáticamente; el avance se ve en `/batches/:id`.
+2. **Creación en lote / bulk** (`/bulk` → `POST /sheets/jobs`) — una plantilla `.xlsx` con una fila por post (máx. 12); se genera y programa cada fila automáticamente; el avance se ve en `/batches/:id`.
 
 **Cómo aplicarla en la práctica:**
 

@@ -65,6 +65,7 @@ function PostCard({
   extraImageUrls,
   videoUrl,
   wordRange,
+  verticalMedia,
 }: {
   platform: string;
   logo: React.ReactNode;
@@ -76,11 +77,96 @@ function PostCard({
   extraImageUrls?: string[];
   videoUrl?: string;
   wordRange: [number, number];
+  // Medio vertical 9:16 (reel/historia): el medio va en una columna y el caption
+  // en otra (dos columnas en md+), en vez del layout apilado a ancho completo.
+  verticalMedia?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [slideIdx, setSlideIdx] = useState(0);
 
   const allImages = imageUrl ? [imageUrl, ...(extraImageUrls || [])] : extraImageUrls || [];
+
+  // El bloque de texto (vista + edición) es idéntico en ambos layouts.
+  const textBlock = editing ? (
+    <div className="space-y-3">
+      <textarea
+        value={text}
+        onChange={(e) => onTextChange(e.target.value)}
+        rows={12}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y font-mono leading-relaxed"
+      />
+      <div className="flex items-center justify-between">
+        <CharCount text={text} min={wordRange[0]} max={wordRange[1]} />
+        <div className="flex gap-2">
+          <button
+            onClick={() => setEditing(false)}
+            className="text-sm text-gray-500 hover:text-gray-300 transition px-3 py-1.5 rounded-lg"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => { onSave(); setEditing(false); }}
+            disabled={saving}
+            className="text-sm bg-brand-500 hover:bg-brand-600 text-white px-4 py-1.5 rounded-lg transition disabled:opacity-50"
+          >
+            {saving ? "Guardando..." : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{text}</p>
+      <div className="flex items-center justify-between pt-1">
+        <CharCount text={text} min={wordRange[0]} max={wordRange[1]} />
+        <button
+          onClick={() => setEditing(true)}
+          className="text-xs text-gray-500 hover:text-gray-300 transition flex items-center gap-1"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Editar
+        </button>
+      </div>
+    </div>
+  );
+
+  // Layout de dos columnas para medios verticales (reel/historia de IG): el
+  // medio 9:16 a la izquierda y el caption a la derecha (apilado en móvil).
+  if (verticalMedia) {
+    return (
+      <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-800 flex items-center gap-2">
+          {logo}
+          <span className="font-semibold text-white">{platform}</span>
+        </div>
+        <div className="md:flex md:items-stretch">
+          {(videoUrl || allImages.length > 0) && (
+            <div className="bg-gray-950 flex items-center justify-center p-4 md:w-72 md:flex-shrink-0">
+              {videoUrl ? (
+                <video
+                  src={videoUrl}
+                  controls
+                  playsInline
+                  className="w-full max-h-[30rem] rounded-xl bg-black"
+                />
+              ) : (
+                <img
+                  src={allImages[0]}
+                  alt={`Visual ${platform}`}
+                  className="w-full max-h-[30rem] rounded-xl object-contain bg-black"
+                />
+              )}
+            </div>
+          )}
+          <div className="p-5 border-t border-gray-800 md:flex-1 md:border-t-0 md:border-l">
+            {textBlock}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden">
@@ -174,52 +260,7 @@ function PostCard({
       )}
 
       {/* Text */}
-      <div className="p-5">
-        {editing ? (
-          <div className="space-y-3">
-            <textarea
-              value={text}
-              onChange={(e) => onTextChange(e.target.value)}
-              rows={12}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y font-mono leading-relaxed"
-            />
-            <div className="flex items-center justify-between">
-              <CharCount text={text} min={wordRange[0]} max={wordRange[1]} />
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setEditing(false)}
-                  className="text-sm text-gray-500 hover:text-gray-300 transition px-3 py-1.5 rounded-lg"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={() => { onSave(); setEditing(false); }}
-                  disabled={saving}
-                  className="text-sm bg-brand-500 hover:bg-brand-600 text-white px-4 py-1.5 rounded-lg transition disabled:opacity-50"
-                >
-                  {saving ? "Guardando..." : "Guardar"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{text}</p>
-            <div className="flex items-center justify-between pt-1">
-              <CharCount text={text} min={wordRange[0]} max={wordRange[1]} />
-              <button
-                onClick={() => setEditing(true)}
-                className="text-xs text-gray-500 hover:text-gray-300 transition flex items-center gap-1"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-                Editar
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      <div className="p-5">{textBlock}</div>
     </div>
   );
 }
@@ -260,6 +301,10 @@ export default function ReviewCards({
 
   const isCarousel = params.formato_instagram === "carrusel";
 
+  // Reel e Historia de IG usan medio vertical 9:16 → preview en dos columnas.
+  const tipoPost = (params.tipo_post as string) || "post";
+  const isVerticalIg = tipoPost === "reel" || tipoPost === "historia";
+
   async function savePost(field: "linkedin_text" | "instagram_text" | "facebook_text", value: string) {
     setSaving(true);
     const form = new FormData();
@@ -295,6 +340,7 @@ export default function ReviewCards({
             imageUrl={videoUrl ? undefined : (isCarousel ? undefined : igSingleUrl)}
             extraImageUrls={videoUrl ? undefined : (isCarousel ? igSlideUrls : undefined)}
             videoUrl={videoUrl || undefined}
+            verticalMedia={isVerticalIg}
             wordRange={[80, 150]}
           />
         )}

@@ -645,7 +645,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
           const steps = rowSteps(row);
           const meta = statusMeta(row.status);
           const hasFooter = Boolean(
-            row.error || row.result?.linkedin || row.result?.instagram || row.result?.facebook || (row.job_id && row.status !== "error")
+            row.error || row.result?.linkedin || row.result?.instagram || row.result?.facebook
           );
 
           return (
@@ -727,11 +727,6 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
                   <NetworkResult name="LinkedIn" res={row.result?.linkedin} />
                   <NetworkResult name="Instagram" res={row.result?.instagram} />
                   <NetworkResult name="Facebook" res={row.result?.facebook} />
-                  {row.job_id && row.status !== "error" && (
-                    <a href={`/jobs/${row.job_id}/result`} className="text-xs text-gray-500 hover:text-gray-300 ml-auto">
-                      Ver detalle →
-                    </a>
-                  )}
                 </div>
               )}
             </div>

@@ -320,9 +320,19 @@ async def run_pipeline(job: dict):
                 await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta Facebook: {e}"})
 
         # LinkedIn page id (a "subaccount") is optional — empty means personal profile.
-        # Facebook posts always target a Page (its pageId is a subaccount too).
+        # Facebook posts always target a Page (its pageId is a subaccount too): Blotato
+        # rechaza el post sin pageId ("body.post.target must have required property
+        # 'pageId'"). Si el form/sheet no eligió una Página, auto-resolvemos la primera
+        # de la cuenta (igual que con los account_id de arriba).
         li_page_id = params.get("linkedin_page_id") or ""
         fb_page_id = params.get("facebook_page_id") or ""
+        if do_facebook and fb_account_id and not fb_page_id:
+            try:
+                subs = await _run(bc.get_subaccounts, fb_account_id, api_key=cfg.blotato_api_key)
+                if subs:
+                    fb_page_id = str(subs[0].get("id", "")) or fb_page_id
+            except Exception as e:
+                await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener la Página de Facebook: {e}"})
         job["accounts"] = {
             "linkedin_id": li_account_id, "linkedin_page_id": li_page_id,
             "instagram_id": ig_account_id,
