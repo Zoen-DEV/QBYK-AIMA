@@ -37,7 +37,12 @@ if (job.status === "error") {
       <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
       </svg>
-      {job.video.notice}
+      <span>
+        {job.video.notice}
+        {/Higgsfield/i.test(job.video.notice) && (
+          <a href="/conexiones" class="ml-1 underline underline-offset-2 hover:text-amber-200">Revisar conexión →</a>
+        )}
+      </span>
     </div>
   )}
 
@@ -46,7 +51,12 @@ if (job.status === "error") {
       <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
       </svg>
-      {job.images.notice}
+      <span>
+        {job.images.notice}
+        {/Higgsfield/i.test(job.images.notice) && (
+          <a href="/conexiones" class="ml-1 underline underline-offset-2 hover:text-amber-200">Revisar conexión →</a>
+        )}
+      </span>
     </div>
   )}
 

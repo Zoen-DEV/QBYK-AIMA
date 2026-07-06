@@ -19,11 +19,12 @@ import networks
 COLUMNS = [
     "youtube_url",
     "texto",
+    "archivo_url",
     "tono",
     "objetivo",
     "tipo_medio",
     "fuente_imagen",
-    "formato_instagram",
+    "formato",
     "carrusel_slides",
     "idioma",
     "linkedin",
@@ -35,12 +36,14 @@ COLUMNS = [
 MAX_ROWS = 12
 
 # Valores permitidos por columna enum (el vacío siempre vale = default/auto).
+# `formato` aplica a TODAS las redes de la fila: una red que no soporta el formato
+# se omite con warning (historia/reel no existen en LinkedIn — ver networks.py).
 ALLOWED = {
     "tono": {"", "educativo", "inspiracional", "personal"},
     "objetivo": {"", "engagement", "awareness", "trafico"},
     "tipo_medio": {"imagen", "video"},
     "fuente_imagen": {"higgsfield", "template"},
-    "formato_instagram": {"imagen-unica", "carrusel"},
+    "formato": {"imagen-unica", "carrusel", "historia", "reel"},
     "idioma": {"auto", "es", "en"},
     # linkedin/instagram/facebook son sí/no por red → se parsean aparte (_net_yes).
 }
@@ -57,7 +60,7 @@ DROPDOWN_OPTIONS = {
     "objetivo": ["engagement", "awareness", "trafico"],
     "tipo_medio": ["imagen", "video"],
     "fuente_imagen": ["higgsfield", "template"],
-    "formato_instagram": ["imagen-unica", "carrusel"],
+    "formato": ["imagen-unica", "carrusel", "historia", "reel"],
     "idioma": ["auto", "es", "en"],
     "carrusel_slides": ["3", "4", "5", "6"],
     "linkedin": ["sí", "no"],
@@ -70,7 +73,7 @@ DEFAULTS = {
     "objetivo": "",
     "tipo_medio": "imagen",
     "fuente_imagen": "higgsfield",
-    "formato_instagram": "imagen-unica",
+    "formato": "imagen-unica",
     "idioma": "auto",
     "carrusel_slides": 3,
     "linkedin": "sí",
@@ -81,14 +84,15 @@ DEFAULTS = {
 # Descripción legible de valores válidos: va en los comentarios de celda y en la
 # hoja "Instrucciones" de la plantilla.
 COLUMN_HELP = {
-    "youtube_url": "URL de YouTube. Llena ESTA o 'texto' (una sola fuente por fila).",
-    "texto": "Texto libre (guion, notas). Llena ESTA o 'youtube_url' (una sola por fila).",
+    "youtube_url": "URL de YouTube. Llena ESTA, 'texto' o 'archivo_url' (una sola fuente por fila).",
+    "texto": "Texto libre (guion, notas). Llena ESTA, 'youtube_url' o 'archivo_url' (una sola por fila).",
+    "archivo_url": "URL pública de un audio (.ogg/.opus/.m4a/.mp3/.wav) o documento (.pdf/.docx/.txt/.md). Acepta links compartidos de Google Drive/Dropbox. Llena ESTA, 'youtube_url' o 'texto' (una sola por fila).",
     "tono": "Vacío (auto) | educativo | inspiracional | personal",
     "objetivo": "Vacío (auto) | engagement | awareness | trafico",
-    "tipo_medio": "imagen | video",
+    "tipo_medio": "imagen | video. En formato = historia elige si la historia es imagen o video; en formato = reel se ignora (un reel siempre es video).",
     "fuente_imagen": "higgsfield (IA, con respaldo en plantillas) | template (solo plantillas). Solo aplica si tipo_medio = imagen.",
-    "formato_instagram": "imagen-unica | carrusel",
-    "carrusel_slides": "Número de 3 a 6 (solo aplica si formato_instagram = carrusel)",
+    "formato": "imagen-unica | carrusel | historia | reel. Aplica a todas las redes de la fila; si una red no soporta el formato se omite esa red (historia y reel no existen en LinkedIn). reel siempre genera video (requiere Higgsfield).",
+    "carrusel_slides": "Número de 3 a 6 (solo aplica si formato = carrusel)",
     "idioma": "auto | es | en",
     "linkedin": "¿Publicar en LinkedIn? sí | no (vacío = sí)",
     "instagram": "¿Publicar en Instagram? sí | no (vacío = sí)",
@@ -100,11 +104,12 @@ COLUMN_HELP = {
 COLUMN_WIDTHS = {
     "youtube_url": 44,
     "texto": 52,
+    "archivo_url": 44,
     "tono": 18,
     "objetivo": 18,
     "tipo_medio": 16,
     "fuente_imagen": 18,
-    "formato_instagram": 22,
+    "formato": 18,
     "carrusel_slides": 18,
     "idioma": 14,
     "linkedin": 12,
@@ -117,11 +122,12 @@ EXAMPLE_ROWS = [
     {
         "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "texto": "",
+        "archivo_url": "",
         "tono": "educativo",
         "objetivo": "engagement",
         "tipo_medio": "imagen",
         "fuente_imagen": "higgsfield",
-        "formato_instagram": "carrusel",
+        "formato": "carrusel",
         "carrusel_slides": 4,
         "idioma": "auto",
         "linkedin": "sí",
@@ -132,15 +138,32 @@ EXAMPLE_ROWS = [
     {
         "youtube_url": "",
         "texto": "Hoy quiero compartir 3 aprendizajes sobre productividad que cambiaron mi forma de trabajar...",
+        "archivo_url": "",
         "tono": "personal",
         "objetivo": "awareness",
         "tipo_medio": "imagen",
         "fuente_imagen": "template",
-        "formato_instagram": "imagen-unica",
+        "formato": "imagen-unica",
         "carrusel_slides": 3,
         "idioma": "es",
         "linkedin": "sí",
         "instagram": "no",
+        "facebook": "sí",
+        "fecha_hora": "",
+    },
+    {
+        "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "texto": "",
+        "archivo_url": "",
+        "tono": "inspiracional",
+        "objetivo": "awareness",
+        "tipo_medio": "video",
+        "fuente_imagen": "higgsfield",
+        "formato": "reel",
+        "carrusel_slides": 3,
+        "idioma": "auto",
+        "linkedin": "no",
+        "instagram": "sí",
         "facebook": "sí",
         "fecha_hora": "",
     },
@@ -238,9 +261,10 @@ def build_template_xlsx() -> bytes:
         ("Cómo usar esta plantilla", True),
         ("", False),
         (f"• Cada fila = un post. Máximo {MAX_ROWS} filas (las demás se ignoran).", False),
-        ("• Por fila llena 'youtube_url' O 'texto' (una sola fuente).", False),
+        ("• Por fila llena UNA fuente: 'youtube_url', 'texto' o 'archivo_url' (audio o documento por URL pública).", False),
         ("• 'fecha_hora' programa el post (AAAA-MM-DD HH:MM). Vacío = publicar ahora.", False),
         ("• Redes: pon sí/no en las columnas linkedin, instagram y facebook. Vacío = sí (se publica en las tres por defecto).", False),
+        ("• 'formato' aplica a todas las redes de la fila. historia y reel no existen en LinkedIn: esa red se omite y se publica en las demás.", False),
         ("• Las columnas con lista desplegable solo aceptan los valores de la lista.", False),
         ("• No borres ni renombres la fila de encabezados (fila 1).", False),
         ("• Las cuentas de LinkedIn/Instagram/Facebook se eligen en la app, no en el sheet.", False),
@@ -344,24 +368,59 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
 
     youtube_url = _clean(g.get("youtube_url"))
     texto = _clean(g.get("texto"))
+    archivo_url = _clean(g.get("archivo_url"))
 
-    if youtube_url and texto:
-        w.append(f"Fila {idx}: tiene 'youtube_url' y 'texto'; se usa 'youtube_url'.")
-        texto = ""
-    if not youtube_url and not texto:
-        w.append(f"Fila {idx}: sin 'youtube_url' ni 'texto'; se omite.")
+    filled = [c for c, v in (("youtube_url", youtube_url), ("texto", texto), ("archivo_url", archivo_url)) if v]
+    if len(filled) > 1:
+        w.append(f"Fila {idx}: tiene {', '.join(filled)}; se usa '{filled[0]}'.")
+        if filled[0] != "texto":
+            texto = ""
+        if filled[0] != "archivo_url":
+            archivo_url = ""
+    if not filled:
+        w.append(f"Fila {idx}: sin 'youtube_url', 'texto' ni 'archivo_url'; se omite.")
         return None, w
 
-    source = "youtube" if youtube_url else "texto"
+    # "archivo" = audio/documento por URL: se descarga y clasifica en run_pipeline
+    # (mismo camino que un archivo subido en el flujo individual).
+    source = "youtube" if youtube_url else ("texto" if texto else "archivo")
     upload_bytes = b""
     upload_filename = ""
     if source == "texto":
         upload_bytes = texto.encode("utf-8")
         upload_filename = "texto.txt"
 
+    # `formato` aplica a todas las redes (se acepta el encabezado viejo
+    # 'formato_instagram' por compatibilidad con plantillas ya descargadas).
+    formato_cell = g.get("formato")
+    if _clean(formato_cell) == "" and _clean(g.get("formato_instagram")):
+        formato_cell = g.get("formato_instagram")
+    formato = _enum(formato_cell, "formato", w, idx)
+    tipo_medio = _enum(g.get("tipo_medio"), "tipo_medio", w, idx)
+
+    # historia/reel se modelan como tipo_post (el mismo discriminador del flujo
+    # individual); el formato de feed que consume el pipeline queda en
+    # formato_instagram. reel siempre es video; historia usa tipo_medio.
+    tipo_post = formato if formato in ("historia", "reel") else "post"
+    historia_formato = "video" if (formato == "historia" and tipo_medio == "video") else "imagen"
+
+    redes = _parse_net_flags(g, w, idx)
+    redes_ok = networks.networks_for_format(formato, redes)
+    if not redes_ok:
+        w.append(
+            f"Fila {idx}: el formato '{formato}' no aplica a ninguna de las redes elegidas; se omite la fila."
+        )
+        return None, w
+    dropped = [n for n in redes if n not in redes_ok]
+    if dropped:
+        w.append(
+            f"Fila {idx}: el formato '{formato}' no existe en {', '.join(dropped)}; esa red se omite."
+        )
+
     params = {
         "source_type": source,
         "youtube_url": youtube_url,
+        "archivo_url": archivo_url,
         "upload_filename": upload_filename,
         "tono": _enum(g.get("tono"), "tono", w, idx),
         "tono_linkedin": "",
@@ -371,18 +430,27 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
         "objetivo_linkedin": "",
         "objetivo_instagram": "",
         "objetivo_facebook": "",
-        "formato_instagram": _enum(g.get("formato_instagram"), "formato_instagram", w, idx),
+        "formato": formato,
+        "formato_instagram": "carrusel" if formato == "carrusel" else "imagen-unica",
+        "tipo_post": tipo_post,
+        "media_origin": "generar",
+        "historia_formato": historia_formato,
         "carrusel_slides": _parse_slides(g.get("carrusel_slides"), w, idx),
-        "tipo_medio": _enum(g.get("tipo_medio"), "tipo_medio", w, idx),
+        "tipo_medio": tipo_medio,
         "fuente_imagen": _enum(g.get("fuente_imagen"), "fuente_imagen", w, idx),
         "idioma": _enum(g.get("idioma"), "idioma", w, idx),
         "modelo_perplexity": "sonar-pro",
-        "redes": _parse_net_flags(g, w, idx),
+        "redes": redes_ok,
         "publicar": "",
     }
 
     schedule_dt = _parse_datetime(g.get("fecha_hora"), w, idx)
-    label = youtube_url if source == "youtube" else (texto[:80] + ("…" if len(texto) > 80 else ""))
+    if source == "youtube":
+        label = youtube_url
+    elif source == "archivo":
+        label = archivo_url
+    else:
+        label = texto[:80] + ("…" if len(texto) > 80 else "")
 
     spec = {
         "params": params,

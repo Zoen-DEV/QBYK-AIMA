@@ -1,20 +1,28 @@
 import asyncio
+import html
 import json
+import os
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 
 import sheets
 import cost_queries
 import cost_calc
 import db
 from config import load_config
-from job_runner import run_pipeline, make_job, publish_job_posts
-from networks import active_networks
+from job_runner import run_pipeline, make_job, publish_job_posts, _media_mime
+from networks import active_networks, networks_for_format, FORMATS
 from batch_runner import run_batch, publish_batch, to_utc_iso
+from higgsfield_client import _USER_AGENT as _BROWSER_UA  # scripts/ ya está en sys.path (lo agrega job_runner)
+import higgsfield_mcp
 
 app = FastAPI(title="repurpose-youtube-video API")
 
@@ -99,6 +107,99 @@ def list_accounts():
     return out
 
 
+# ── Conexiones (OAuth del MCP de Higgsfield desde la UI) ──────────────────────
+#
+# La página /conexiones del frontend consulta el estado y dispara el flujo OAuth
+# sin pasar por la terminal: start devuelve la URL de autorización (el navegador
+# se redirige allá), Higgsfield vuelve al callback con el `code`, y la API cierra
+# el intercambio de tokens. Endpoints síncronos (def): FastAPI los corre en su
+# threadpool, así el bloqueo del flujo no frena el event loop de los jobs.
+
+@app.get("/connections")
+def connections_status(check: bool = True):
+    """Estado de las conexiones externas. `check` verifica Higgsfield en vivo.
+
+    La verificación en vivo (balance, gratis) es la única que detecta el token
+    muerto — el MCP lo reporta in-band con HTTP 200, nunca con 401 — y de paso
+    dispara el refresh proactivo si el refresh token sigue vivo.
+    """
+    try:
+        cfg = load_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    llm = "anthropic" if cfg.anthropic_api_key else ("perplexity" if cfg.perplexity_api_key else "")
+    return {
+        "higgsfield": higgsfield_mcp.connection_status(live=check),
+        "blotato": {"configured": bool(cfg.blotato_api_key)},
+        "llm": {"provider": llm},
+        "image_provider": cfg.image_provider,
+    }
+
+
+def _hf_redirect_uri(request: Request) -> str:
+    """redirect_uri del flujo OAuth: el callback de esta API vía el proxy del front.
+
+    Higgsfield redirige el NAVEGADOR del usuario, así que la URL se arma sobre el
+    origen desde el que la página hizo el fetch (no sobre el host interno de la
+    API). Override explícito: HIGGSFIELD_OAUTH_REDIRECT en .env.
+    """
+    env = os.environ.get("HIGGSFIELD_OAUTH_REDIRECT", "").strip()
+    if env:
+        return env
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        m = re.match(r"(https?://[^/]+)", request.headers.get("referer") or "")
+        origin = m.group(1) if m else ""
+    return f"{origin or 'http://localhost:4321'}/api/connections/higgsfield/callback"
+
+
+@app.post("/connections/higgsfield/start")
+def higgsfield_connect_start(request: Request):
+    """Arranca el consentimiento OAuth; devuelve la URL a la que redirigir el navegador."""
+    try:
+        url = higgsfield_mcp.start_web_auth(_hf_redirect_uri(request))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo iniciar la conexión con Higgsfield: {e}")
+    return {"authorize_url": url}
+
+
+def _callback_page(ok: bool, detail: str = "") -> HTMLResponse:
+    """Mini-página que devuelve el navegador a /conexiones con el resultado.
+
+    Redirección por meta refresh y no por 307: el proxy del frontend sigue los
+    redirects del upstream, así que un Location relativo terminaría resuelto
+    contra la API (404) en vez del frontend.
+    """
+    if ok:
+        target, msg = "/conexiones?hf=ok", "Conexión completada. Volviendo…"
+    else:
+        target = "/conexiones?hf=error&msg=" + urllib.parse.quote(detail[:500])
+        msg = f"No se pudo conectar: {html.escape(detail[:500])}"
+    return HTMLResponse(
+        f'<!doctype html><html lang="es"><head><meta charset="utf-8">'
+        f'<meta http-equiv="refresh" content="0;url={target}"><title>Conexiones</title></head>'
+        f'<body style="background:#030712;color:#e5e7eb;font-family:system-ui;display:grid;'
+        f'place-items:center;min-height:100vh;margin:0"><p>{msg} '
+        f'<a href="{target}" style="color:#818cf8">Continuar</a></p></body></html>'
+    )
+
+
+@app.get("/connections/higgsfield/callback")
+def higgsfield_connect_callback(
+    code: str = "", state: str = "", error: str = "", error_description: str = ""
+):
+    """Callback del navegador tras el consentimiento: cierra el intercambio de tokens."""
+    if error:
+        return _callback_page(ok=False, detail=error_description or error)
+    if not code:
+        return _callback_page(ok=False, detail="Higgsfield no devolvió el código de autorización.")
+    try:
+        higgsfield_mcp.finish_web_auth(code, state or None)
+    except Exception as e:
+        return _callback_page(ok=False, detail=str(e))
+    return _callback_page(ok=True)
+
+
 @app.post("/jobs")
 async def create_job(
     source_type: Annotated[str, Form()] = "youtube",
@@ -114,7 +215,8 @@ async def create_job(
     objetivo_linkedin: Annotated[str, Form()] = "",
     objetivo_instagram: Annotated[str, Form()] = "",
     objetivo_facebook: Annotated[str, Form()] = "",
-    formato_instagram: Annotated[str, Form()] = "imagen-unica",
+    formato: Annotated[str, Form()] = "",
+    formato_instagram: Annotated[str, Form()] = "",
     carrusel_slides: Annotated[int, Form()] = 3,
     tipo_medio: Annotated[str, Form()] = "imagen",
     tipo_post: Annotated[str, Form()] = "post",
@@ -138,11 +240,21 @@ async def create_job(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Tipo de publicación de IG: "post" (feed) | "reel" | "historia". Reel e historia
-    # son flujos solo-Instagram. media_origin: "generar" (pipeline) | "subir" (medio propio).
+    # `formato` (imagen-unica | carrusel | historia | reel) aplica a TODAS las redes
+    # del post; `formato_instagram` se acepta como alias legacy. historia/reel se
+    # modelan como tipo_post (las páginas /reel y /historia siguen mandando
+    # tipo_post directamente; el sheet manda formato). media_origin: "generar"
+    # (pipeline) | "subir" (medio propio, solo reel/historia).
+    formato = (formato or "").strip().lower() or (formato_instagram or "").strip().lower() or "imagen-unica"
+    if formato not in FORMATS:
+        formato = "imagen-unica"
     tipo_post = (tipo_post or "post").strip().lower()
     if tipo_post not in ("post", "reel", "historia"):
         tipo_post = "post"
+    if formato in ("historia", "reel"):
+        tipo_post = formato
+    elif tipo_post in ("reel", "historia"):
+        formato = tipo_post
     media_origin = (media_origin or "generar").strip().lower()
     if media_origin not in ("generar", "subir"):
         media_origin = "generar"
@@ -152,6 +264,15 @@ async def create_job(
     # El modo "subir" solo aplica a reel/historia (en post siempre se genera).
     if tipo_post == "post":
         media_origin = "generar"
+
+    # Redes destino filtradas por lo que el formato permite (historia/reel no
+    # existen en LinkedIn). Si no queda ninguna red, es un error del usuario.
+    redes_ok = networks_for_format(formato, active_networks({"redes": redes, "solo": solo}))
+    if not redes_ok:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El formato '{formato}' no aplica a ninguna de las redes elegidas.",
+        )
 
     # Resolve the content source. "youtube" needs a URL; "audio"/"texto" need an
     # uploaded file whose bytes we read now (the UploadFile is tied to this request,
@@ -205,7 +326,8 @@ async def create_job(
         "objetivo_linkedin": objetivo_linkedin,
         "objetivo_instagram": objetivo_instagram,
         "objetivo_facebook": objetivo_facebook,
-        "formato_instagram": formato_instagram,
+        "formato": formato,
+        "formato_instagram": "carrusel" if formato == "carrusel" else "imagen-unica",
         "carrusel_slides": max(3, min(6, carrusel_slides)),
         "tipo_medio": tipo_medio,
         "tipo_post": tipo_post,
@@ -219,9 +341,9 @@ async def create_job(
         "instagram_account_id": instagram_account_id.strip(),
         "facebook_account_id": facebook_account_id.strip(),
         "facebook_page_id": facebook_page_id.strip(),
-        # Redes destino (checkboxes del form). `redes` manda; `solo` se conserva como
-        # alias legacy. Reel/historia son solo-Instagram → se fuerza esa red.
-        "redes": ["instagram"] if tipo_post in ("reel", "historia") else active_networks({"redes": redes, "solo": solo}),
+        # Redes destino (checkboxes del form) ya filtradas por el formato: historia
+        # y reel solo existen en Instagram y Facebook (LinkedIn se omite).
+        "redes": redes_ok,
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
@@ -324,6 +446,57 @@ def serve_image(job_id: str, key: str):
     if not img_bytes:
         raise HTTPException(status_code=404)
     return Response(content=img_bytes, media_type="image/png")
+
+
+@app.get("/jobs/{job_id}/video")
+def serve_video(job_id: str, request: Request):
+    """Re-sirve el clip del job desde el mismo origen de la app.
+
+    El preview no puede hot-linkear la URL externa: Blotato sirve el mp4 como
+    application/octet-stream (Firefox/Safari se niegan a reproducir eso) y los
+    bloqueadores del navegador pueden cortar un fetch de media cross-origin.
+    Aquí se hace passthrough del Range (para el seek del player) y se responde
+    con el MIME real. La publicación sigue usando la URL de Blotato tal cual.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    src = (jobs[job_id].get("video") or {}).get("url", "")
+    if not src:
+        raise HTTPException(status_code=404, detail="El job no tiene video")
+
+    # UA de navegador: si el re-host en Blotato falló, `src` es la URL cruda del
+    # proveedor, que puede estar tras el Cloudflare que banea el UA de urllib.
+    upstream_headers = {"User-Agent": _BROWSER_UA}
+    if request.headers.get("range"):
+        upstream_headers["Range"] = request.headers["range"]
+    try:
+        upstream = urllib.request.urlopen(
+            urllib.request.Request(src, headers=upstream_headers), timeout=30
+        )
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"El origen del video respondió {e.code}")
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo leer el video: {e.reason}")
+
+    headers = {"Accept-Ranges": "bytes"}
+    for h in ("Content-Length", "Content-Range"):
+        if upstream.headers.get(h):
+            headers[h] = upstream.headers[h]
+
+    def chunks():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    # urlopen trata 206 (respuesta a un Range) como éxito, así que status llega intacto.
+    return StreamingResponse(
+        chunks(), status_code=upstream.status, media_type=_media_mime(src), headers=headers
+    )
 
 
 @app.post("/jobs/{job_id}/publish")

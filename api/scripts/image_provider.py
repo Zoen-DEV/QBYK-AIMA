@@ -37,7 +37,8 @@ a fallback carousel still looks varied):
 
 from pathlib import Path
 
-import higgsfield_client as hf
+import higgsfield_client as hf   # Cloud API (retirado como backend activo; se conserva por rollback)
+import higgsfield_mcp as hfmcp   # MCP oficial (OAuth) — backend activo, créditos de suscripción
 
 # Bundled fallback templates live next to the api package: api/assets/templates/.
 # scripts/ is api/scripts/, so go up one level to api/ then into assets/templates.
@@ -73,6 +74,8 @@ def _short_reason(exc: Exception) -> str:
         return "credenciales rechazadas"
     if "nsfw" in s:
         return "imagen marcada como NSFW"
+    if "reautenticación" in s or "reauth" in s:
+        return "reautenticación requerida (corré mcp_bootstrap.py)"
     if "timed out" in s or "timeout" in s:
         return "tardó demasiado (timeout)"
     msg = str(exc)
@@ -198,17 +201,83 @@ class HiggsfieldProvider:
         return self._fallback.resolve(handle)
 
 
-def make_provider(*, hf_key: str = "", hf_secret: str = "",
-                  hf_model: str = hf.DEFAULT_MODEL,
-                  hf_resolution: str = hf.DEFAULT_RESOLUTION,
-                  force_template: bool = False):
-    """Return a Higgsfield provider when both credentials are set, else templates.
+class MCPProvider:
+    """Backend activo: genera vía el MCP oficial de Higgsfield (OAuth).
 
-    `force_template=True` ignores Higgsfield entirely and serves bundled templates
-    directly (the user explicitly chose plantillas en el formulario / la hoja).
+    Consume los créditos de la SUSCRIPCIÓN (no el Cloud API). Misma interfaz que
+    HiggsfieldProvider — mismo submit/poll para el prewarm concurrente de slides,
+    mismo fallback por-imagen a plantilla local, mismo contador hf_generations para
+    el tracking. El puente sync↔async lo resuelve higgsfield_mcp.
+    """
+
+    name = "higgsfield-mcp"
+    label = "Higgsfield (MCP)"
+
+    def __init__(self, *, image_model: str = ""):
+        self._image_model = image_model
+        self._fallback = TemplateProvider()
+        self._warnings: list[str] = []
+        self._hf_generations = 0
+
+    @property
+    def hf_generations(self) -> int:
+        return self._hf_generations
+
+    def pop_warnings(self) -> list[str]:
+        w = self._warnings
+        self._warnings = []
+        return w
+
+    def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
+        try:
+            url = hfmcp.generate_image(prompt, aspect_ratio=aspect_ratio, model=self._image_model)[0]
+            self._hf_generations += 1
+            return url
+        except Exception as e:
+            self._warnings.append(_short_reason(e))
+            print(f"   [aviso] MCP (imagen base) falló: {e}. Fallback a plantilla local.")
+            return self._fallback.generate_base(prompt, aspect_ratio=aspect_ratio)
+
+    def prewarm_extras(self, prompts: list[str]) -> list:
+        n = len(prompts)
+        handles: list[dict] = []
+        for i, prompt in enumerate(prompts):
+            kind = "credits" if i == n - 1 else "info"
+            try:
+                handle = hfmcp.submit_image(prompt, aspect_ratio="1:1", model=self._image_model)
+                handle["template_kind"] = kind
+            except Exception as e:
+                print(f"   [aviso] MCP (envío slide {i + 2}) falló: {e}. Ese slide usará plantilla local.")
+                handle = {"fallback_template": True, "template_kind": kind, "fallback_reason": _short_reason(e)}
+            handles.append(handle)
+        return handles
+
+    def resolve(self, handle: dict) -> str:
+        if handle.get("fallback_template"):
+            self._warnings.append(handle.get("fallback_reason", "no se pudo enviar al MCP"))
+            return self._fallback.resolve(handle)
+        try:
+            url = hfmcp.poll_image(handle)
+            self._hf_generations += 1
+            return url
+        except Exception as e:
+            self._warnings.append(_short_reason(e))
+            print(f"   [aviso] MCP (slide) falló: {e}. Fallback a plantilla local.")
+            return self._fallback.resolve(handle)
+
+
+def make_provider(*, force_template: bool = False, mcp_image_model: str = ""):
+    """Devuelve el backend de imágenes.
+
+    - force_template=True → plantillas locales directas (el usuario eligió plantillas).
+    - MCP configurado (existe el token store OAuth) → MCPProvider (créditos de suscripción).
+    - Si no → plantillas locales (backend offline siempre disponible).
+
+    El Cloud API (HiggsfieldProvider, key+secret) quedó retirado como backend activo;
+    se conserva la clase por si hay que hacer rollback.
     """
     if force_template:
         return TemplateProvider()
-    if hf_key and hf_secret:
-        return HiggsfieldProvider(hf_key, hf_secret, model=hf_model, resolution=hf_resolution)
+    if hfmcp.is_configured():
+        return MCPProvider(image_model=mcp_image_model)
     return TemplateProvider()

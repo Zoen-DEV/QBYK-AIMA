@@ -287,9 +287,10 @@ def publish_post(
     page_id: LinkedIn Company Page (or Facebook Page) id from get_subaccounts(); when
              set, the post targets that page instead of the personal profile. Omit/None
              posts to the personal profile.
-    media_type: Instagram-only. "reel" or "story" set the IG `target.mediaType` so the
+    media_type: Instagram or Facebook. "reel" or "story" set `target.mediaType` so the
                 media publishes as a Reel or Story instead of a feed post. None/omitted =
-                normal feed post (image/carousel/video). Reels accept a `cover_image_url`.
+                normal feed post (image/carousel/video). IG reels accept a
+                `cover_image_url`. LinkedIn has no mediaType (no reels/stories).
     Returns Blotato response with 'postSubmissionId'.
     """
     if platform == "instagram":
@@ -300,9 +301,9 @@ def publish_post(
     target: dict = {"targetType": platform}
     if page_id:
         target["pageId"] = page_id
-    if platform == "instagram" and media_type in ("reel", "story"):
+    if platform in ("instagram", "facebook") and media_type in ("reel", "story"):
         target["mediaType"] = media_type
-        if media_type == "reel" and cover_image_url:
+        if platform == "instagram" and media_type == "reel" and cover_image_url:
             target["coverImageUrl"] = cover_image_url
 
     post_body: dict = {

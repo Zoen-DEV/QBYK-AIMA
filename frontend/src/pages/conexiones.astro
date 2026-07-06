@@ -1,0 +1,182 @@
+---
+import Base from "../layouts/Base.astro";
+import BackLink from "../components/BackLink.astro";
+---
+
+<Base title="Conexiones">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-6">
+      <BackLink href="/" label="Inicio" />
+      <h1 class="text-2xl font-bold text-white mt-3 mb-1">Conexiones</h1>
+      <p class="text-gray-400 text-sm">
+        Servicios externos que usa la app. La sesión de Higgsfield dura 24 horas: si vence, reconéctala desde aquí.
+      </p>
+    </div>
+
+    <!-- Banner de resultado (viene del callback OAuth: ?hf=ok | ?hf=error&msg=...) -->
+    <div id="hf-banner" class="hidden mb-6 rounded-xl px-4 py-3 text-sm font-medium"></div>
+
+    <!-- Higgsfield -->
+    <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 mb-5">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2.5 mb-1">
+            <span id="hf-dot" class="w-2.5 h-2.5 rounded-full bg-gray-600 flex-shrink-0"></span>
+            <h2 class="text-lg font-semibold text-white">Higgsfield</h2>
+          </div>
+          <p class="text-sm text-gray-400">
+            Genera las imágenes y videos de los posts (créditos de tu suscripción, vía OAuth).
+            Sin conexión se usan las plantillas de respaldo y el video queda deshabilitado.
+          </p>
+          <p id="hf-status" class="text-sm text-gray-300 mt-3">Verificando la sesión…</p>
+          <p id="hf-detail" class="hidden text-xs text-gray-500 mt-1 break-words"></p>
+        </div>
+        <button
+          id="hf-connect"
+          class="hidden flex-shrink-0 px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Conectar
+        </button>
+      </div>
+    </div>
+
+    <!-- Servicios configurados por .env (solo lectura) -->
+    <div class="grid sm:grid-cols-2 gap-5">
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6">
+        <div class="flex items-center gap-2.5 mb-1">
+          <span id="blotato-dot" class="w-2.5 h-2.5 rounded-full bg-gray-600 flex-shrink-0"></span>
+          <h2 class="text-base font-semibold text-white">Blotato</h2>
+        </div>
+        <p class="text-sm text-gray-400">Publica en LinkedIn, Instagram y Facebook.</p>
+        <p id="blotato-status" class="text-sm text-gray-300 mt-3">Verificando…</p>
+      </div>
+
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6">
+        <div class="flex items-center gap-2.5 mb-1">
+          <span id="llm-dot" class="w-2.5 h-2.5 rounded-full bg-gray-600 flex-shrink-0"></span>
+          <h2 class="text-base font-semibold text-white">Redacción (LLM)</h2>
+        </div>
+        <p class="text-sm text-gray-400">Escribe los textos de los posts.</p>
+        <p id="llm-status" class="text-sm text-gray-300 mt-3">Verificando…</p>
+      </div>
+    </div>
+
+    <p class="text-xs text-gray-500 mt-6">
+      Blotato y el LLM se configuran con sus claves en el archivo <code class="text-gray-400">.env</code> del servidor.
+      La conexión de Higgsfield también puede renovarse por terminal con
+      <code class="text-gray-400">python scripts/mcp_bootstrap.py</code>.
+    </p>
+  </div>
+</Base>
+
+<script>
+  const $ = (id: string) => document.getElementById(id)!;
+
+  function setDot(id: string, color: "green" | "red" | "gray" | "amber") {
+    const cls = { green: "bg-emerald-500", red: "bg-red-500", gray: "bg-gray-600", amber: "bg-amber-500" }[color];
+    $(id).className = `w-2.5 h-2.5 rounded-full ${cls} flex-shrink-0`;
+  }
+
+  function showBanner(kind: "ok" | "error", text: string) {
+    const el = $("hf-banner");
+    el.textContent = text;
+    el.className =
+      kind === "ok"
+        ? "mb-6 rounded-xl px-4 py-3 text-sm font-medium bg-emerald-900/30 border border-emerald-700/50 text-emerald-300"
+        : "mb-6 rounded-xl px-4 py-3 text-sm font-medium bg-red-900/30 border border-red-700/50 text-red-300";
+  }
+
+  function hoursLeft(expiresAt: number | null): string {
+    if (!expiresAt) return "";
+    const mins = Math.round((expiresAt * 1000 - Date.now()) / 60000);
+    if (mins <= 0) return "token vencido";
+    if (mins < 90) return `el token vence en ${mins} min`;
+    return `el token vence en ${Math.round(mins / 60)} h`;
+  }
+
+  async function loadStatus() {
+    const btn = $("hf-connect") as HTMLButtonElement;
+    try {
+      const res = await fetch("/api/connections");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.detail || `HTTP ${res.status}`);
+      const data = await res.json();
+
+      // Higgsfield
+      const hf = data.higgsfield || {};
+      btn.classList.remove("hidden");
+      if (!hf.configured) {
+        setDot("hf-dot", "gray");
+        $("hf-status").textContent = "No conectada — las imágenes salen de las plantillas de respaldo.";
+        btn.textContent = "Conectar";
+      } else if (hf.alive) {
+        setDot("hf-dot", "green");
+        const plan = hf.plan ? ` · plan ${hf.plan}` : "";
+        const exp = hoursLeft(hf.expires_at);
+        $("hf-status").textContent =
+          `Conectada — ${hf.credits ?? "?"} créditos${plan}${exp ? ` · ${exp} (se renueva solo)` : ""}`;
+        btn.textContent = "Reconectar";
+      } else {
+        setDot("hf-dot", "red");
+        $("hf-status").textContent = "Sesión vencida — reconéctate para volver a generar con Higgsfield.";
+        if (hf.error) {
+          $("hf-detail").textContent = hf.error;
+          $("hf-detail").classList.remove("hidden");
+        }
+        btn.textContent = "Reconectar";
+      }
+
+      // Blotato / LLM (solo configuración)
+      if (data.blotato?.configured) {
+        setDot("blotato-dot", "green");
+        $("blotato-status").textContent = "API key configurada.";
+      } else {
+        setDot("blotato-dot", "red");
+        $("blotato-status").textContent = "Falta BLOTATO_API_KEY en .env.";
+      }
+      const llm = data.llm?.provider;
+      if (llm) {
+        setDot("llm-dot", "green");
+        $("llm-status").textContent = llm === "anthropic" ? "Anthropic (Claude)." : "Perplexity (Sonar).";
+      } else {
+        setDot("llm-dot", "red");
+        $("llm-status").textContent = "Falta ANTHROPIC_API_KEY o PERPLEXITY_API_KEY en .env.";
+      }
+    } catch (err) {
+      setDot("hf-dot", "amber");
+      $("hf-status").textContent = `No se pudo consultar el estado: ${err instanceof Error ? err.message : err}`;
+    }
+  }
+
+  async function connect() {
+    const btn = $("hf-connect") as HTMLButtonElement;
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = "Abriendo Higgsfield…";
+    try {
+      const res = await fetch("/api/connections/higgsfield/start", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.authorize_url) throw new Error(data?.detail || `HTTP ${res.status}`);
+      // Redirigimos la pestaña al consentimiento; Higgsfield vuelve al callback
+      // de la API, que cierra el intercambio y nos devuelve a /conexiones?hf=ok.
+      window.location.href = data.authorize_url;
+    } catch (err) {
+      showBanner("error", `No se pudo iniciar la conexión: ${err instanceof Error ? err.message : err}`);
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+
+  $("hf-connect").addEventListener("click", connect);
+
+  // Resultado del callback OAuth (y limpiar la URL para que un F5 no lo repita).
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("hf") === "ok") {
+    showBanner("ok", "Higgsfield conectado. Los próximos posts vuelven a generar imágenes y video con IA.");
+    history.replaceState(null, "", "/conexiones");
+  } else if (params.get("hf") === "error") {
+    showBanner("error", `La conexión falló: ${params.get("msg") || "sin detalle"}`);
+    history.replaceState(null, "", "/conexiones");
+  }
+
+  loadStatus();
+</script>

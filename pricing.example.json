@@ -33,6 +33,14 @@
     "video_per_generation": 0
   },
 
+  "higgsfield_mcp": {
+    "usd_per_credit": 0,
+    "image_credits_per_generation": { "default": 2, "nano_banana_pro": 2 },
+    "video_credits_per_second": { "default": 1.5, "kling3_0_turbo": 1.5 },
+    "video_default_seconds": 5,
+    "note": "creditos de la suscripcion, medidos con el preflight get_cost del MCP (jul 2026). El consumo se registra en creditos; usd_per_credit > 0 lo valoriza en USD — en ese caso deja fixed_monthly.higgsfield en 0 para no contar doble."
+  },
+
   "whisper": {
     "whisper-1": { "per_minute": null }
   },

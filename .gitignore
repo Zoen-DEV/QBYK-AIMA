@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# Higgsfield MCP: token store OAuth (SECRETOS — nunca commitear) + dump del spike
+api/.hf_oauth.json
+api/.hf_oauth.tmp
+api/scripts/mcp_tools.json
+
 # Tarifas reales del dashboard de costos (commitear solo pricing.example.json)
 pricing.json
 

@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 
 // ── Tipos del API ───────────────────────────────────────────────────────────
 
-interface ServiceCost { service: string; cost_usd: number; events?: number }
+interface ServiceCost { service: string; cost_usd: number; events?: number; credits?: number }
 interface FixedItem { service: string; monthly_usd: number; prorated_usd: number; note?: string }
 
 interface Summary {
@@ -22,6 +22,7 @@ interface Summary {
   events_count: number;
   jobs_count: number;
   avg_cost_per_job_usd: number;
+  higgsfield_credits?: number;
 }
 
 interface Timeseries {
@@ -38,6 +39,7 @@ interface JobRow {
   source_type: string | null;
   ts: string | null;
   cost_usd: number;
+  credits?: number;
   by_service: ServiceCost[];
 }
 interface ByJob { jobs: JobRow[]; count: number }
@@ -48,14 +50,21 @@ const SERVICE_LABELS: Record<string, string> = {
   anthropic: "Claude",
   perplexity: "Perplexity",
   higgsfield: "Higgsfield",
+  higgsfield_mcp: "Higgsfield",
   whisper: "Whisper",
 };
 const SERVICE_COLORS: Record<string, string> = {
   anthropic: "#4f6ef7",
   perplexity: "#22c55e",
   higgsfield: "#f59e0b",
+  higgsfield_mcp: "#f59e0b",
   whisper: "#a855f7",
 };
+
+// Créditos de la suscripción de Higgsfield (consumo, no USD) — formato corto.
+function fmtCredits(n: number): string {
+  return `${Number.isInteger(n) ? n : n.toFixed(1)} cr`;
+}
 const FALLBACK_COLORS = ["#ec4899", "#14b8a6", "#ef4444", "#64748b"];
 
 function serviceLabel(s: string): string {
@@ -328,14 +337,18 @@ function PeriodPicker({
 // ── KPIs ────────────────────────────────────────────────────────────────────
 
 function Kpis({ summary, fmt }: { summary: Summary; fmt: (n: number, d?: number) => string }) {
+  const hfCredits = summary.higgsfield_credits || 0;
   const cards = [
     { label: "Total del período", value: fmt(summary.total_usd), hint: `${summary.kind === "month" ? "Mensual" : "Anual"} · variable + fijo` },
     { label: "Variable (por uso)", value: fmt(summary.variable.total_usd), hint: `${summary.events_count} evento(s)` },
     { label: "Fijo (prorrateado)", value: fmt(summary.fixed.total_usd), hint: `${summary.months} mes(es)` },
     { label: "Promedio por post", value: fmt(summary.avg_cost_per_job_usd, 4), hint: `${summary.jobs_count} job(s)` },
   ];
+  if (hfCredits > 0) {
+    cards.push({ label: "Créditos Higgsfield", value: fmtCredits(hfCredits), hint: "consumo de la suscripción" });
+  }
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className={`grid grid-cols-2 gap-4 ${cards.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
       {cards.map((c) => (
         <div key={c.label} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
           <div className="text-xs text-gray-400">{c.label}</div>
@@ -562,7 +575,10 @@ function ServiceBreakdown({ rows, total, fmt }: { rows: ServiceCost[]; total: nu
         <div key={r.service}>
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="text-gray-300">{serviceLabel(r.service)}</span>
-            <span className="text-gray-400 tabular-nums">{fmt(r.cost_usd, 4)}</span>
+            <span className="text-gray-400 tabular-nums">
+              {fmt(r.cost_usd, 4)}
+              {(r.credits || 0) > 0 && <span className="text-amber-400/90 ml-2">{fmtCredits(r.credits!)}</span>}
+            </span>
           </div>
           <div className="h-2 rounded-full bg-gray-800 overflow-hidden">
             <div className="h-full rounded-full" style={{ width: `${(r.cost_usd / max) * 100}%`, background: serviceColor(r.service, i) }} />
@@ -633,7 +649,11 @@ function JobsTable({ rows, fmt }: { rows: JobRow[]; fmt: (n: number, d?: number)
               </td>
               <td className="py-2 pr-3 text-gray-300">{sourceLabel(r.source_type)}</td>
               <td className="py-2 pr-3 text-gray-400 text-xs">
-                {r.by_service.map((s) => `${serviceLabel(s.service)} ${fmt(s.cost_usd, 4)}`).join(" · ")}
+                {r.by_service.map((s) => {
+                  // Higgsfield con usd_per_credit=0 cuesta $0: los créditos son la medida útil.
+                  const credits = (s.credits || 0) > 0 ? ` (${fmtCredits(s.credits!)})` : "";
+                  return `${serviceLabel(s.service)} ${fmt(s.cost_usd, 4)}${credits}`;
+                }).join(" · ")}
               </td>
               <td className="py-2 pl-3 text-right text-white font-medium tabular-nums whitespace-nowrap">{fmt(r.cost_usd, 4)}</td>
             </tr>
@@ -678,6 +698,8 @@ function unitsLabel(units: Record<string, number>): string {
   if (units.cache_creation_input_tokens) parts.push(`${units.cache_creation_input_tokens.toLocaleString()} cache+`);
   if (units.cache_read_input_tokens) parts.push(`${units.cache_read_input_tokens.toLocaleString()} cache-`);
   if (units.generations != null) parts.push(`${units.generations} gen`);
+  if (units.seconds != null) parts.push(`${units.seconds}s`);
+  if (units.credits != null) parts.push(fmtCredits(units.credits));
   if (units.minutes != null) parts.push(`${units.minutes.toFixed(2)} min`);
   if (units.requests != null && units.input_tokens == null) parts.push(`${units.requests} req`);
   return parts.length ? parts.join(" · ") : "—";
@@ -751,7 +773,7 @@ function EventsPanel({ apiUrl, fmt }: { apiUrl: string; fmt: (n: number, d?: num
           {/* Filtro por servicio */}
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-500">Filtrar:</span>
-            {["", "anthropic", "perplexity", "higgsfield", "whisper"].map((s) => (
+            {["", "anthropic", "perplexity", "higgsfield_mcp", "whisper"].map((s) => (
               <button
                 key={s}
                 onClick={() => handleFilter(s)}

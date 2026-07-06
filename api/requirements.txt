@@ -13,6 +13,8 @@ python-docx
 openpyxl
 # Transcripción local gratuita (solo si TRANSCRIPTION_ENGINE=local)
 faster-whisper
+# Cliente del MCP oficial de Higgsfield (backend de generación por OAuth)
+mcp
 # Persistencia del dashboard de costos (driver async de MongoDB)
 motor
 # Tests (dashboard de costos): pytest + pytest-asyncio

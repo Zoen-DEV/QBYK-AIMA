@@ -7,8 +7,8 @@ import BackLink from "../components/BackLink.astro";
   <div class="max-w-2xl mx-auto">
     <div class="mb-8">
       <BackLink href="/" />
-      <h1 class="text-3xl font-bold text-white mt-3 mb-2">Historia de Instagram</h1>
-      <p class="text-gray-400">Publica una Historia vertical (9:16) en Instagram, como imagen o video. Genérala desde una fuente o sube tu propio archivo.</p>
+      <h1 class="text-3xl font-bold text-white mt-3 mb-2">Historia</h1>
+      <p class="text-gray-400">Publica una Historia vertical (9:16) en Instagram y/o Facebook, como imagen o video. Genérala desde una fuente o sube tu propio archivo. (LinkedIn no tiene historias.)</p>
     </div>
 
     <form method="POST" action="/api/jobs" id="job-form" class="space-y-6" enctype="multipart/form-data">
@@ -89,6 +89,29 @@ import BackLink from "../components/BackLink.astro";
         </div>
       </div>
 
+      <!-- Redes donde publicar (las historias existen en Instagram y Facebook) -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+        <div>
+          <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Redes donde publicar</h2>
+          <p class="text-[11px] text-gray-500 mt-1">Las historias existen en Instagram y Facebook. LinkedIn no las soporta.</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="cursor-pointer">
+            <input type="checkbox" class="red-toggle peer sr-only" value="instagram" checked />
+            <span class="flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-medium text-gray-400 transition peer-checked:border-brand-500 peer-checked:bg-brand-500/10 peer-checked:text-white">
+              Instagram
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="checkbox" class="red-toggle peer sr-only" value="facebook" checked />
+            <span class="flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-medium text-gray-400 transition peer-checked:border-brand-500 peer-checked:bg-brand-500/10 peer-checked:text-white">
+              Facebook
+            </span>
+          </label>
+        </div>
+        <p class="text-[11px] text-amber-400/80 hidden" id="redes-error">Selecciona al menos una red.</p>
+      </div>
+
       <!-- Configuración -->
       <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
         <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Configuración</h2>
@@ -96,7 +119,7 @@ import BackLink from "../components/BackLink.astro";
         <div class="grid grid-cols-2 gap-4">
           <label class="block">
             <span class="text-xs text-gray-400 mb-1 block">Tono</span>
-            <select name="tono_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <select name="tono" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
               <option value="">Auto</option>
               <option value="educativo">Educativo / insights</option>
               <option value="inspiracional">Inspiracional</option>
@@ -105,7 +128,7 @@ import BackLink from "../components/BackLink.astro";
           </label>
           <label class="block">
             <span class="text-xs text-gray-400 mb-1 block">Objetivo</span>
-            <select name="objetivo_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <select name="objetivo" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
               <option value="">Auto</option>
               <option value="engagement">Engagement (comentarios)</option>
               <option value="awareness">Awareness (alcance)</option>
@@ -114,10 +137,26 @@ import BackLink from "../components/BackLink.astro";
           </label>
         </div>
 
-        <label class="block">
-          <span class="text-xs text-gray-400 mb-1 block">Cuenta de Instagram</span>
-          <select name="instagram_account_id" id="instagram-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-            <option value="">Cargando cuentas...</option>
+        <div class="grid grid-cols-2 gap-4">
+          <label class="block" id="instagram-account-wrap">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Instagram</span>
+            <select name="instagram_account_id" id="instagram-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+          <label class="block" id="facebook-account-wrap">
+            <span class="text-xs text-gray-400 mb-1 block">Cuenta de Facebook</span>
+            <select name="facebook_account_id" id="facebook-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Cargando cuentas...</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Página de Facebook (Facebook publica siempre en una Página) -->
+        <label class="block hidden" id="facebook-page-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Página de Facebook</span>
+          <select name="facebook_page_id" id="facebook-page" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Página por defecto</option>
           </select>
         </label>
 
@@ -254,9 +293,17 @@ import BackLink from "../components/BackLink.astro";
   syncMode();
   syncFormato();
 
-  // ── Cuenta de Instagram ───────────────────────────────────────────────────────
-  type Account = { id: string; label: string };
+  // ── Cuentas (Instagram + Facebook) ────────────────────────────────────────────
+  type FbPage = { id: string; name: string };
+  type Account = { id: string; label: string; pages?: FbPage[] };
   const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
+  const fbAccount = document.getElementById("facebook-account") as HTMLSelectElement;
+  const fbPage = document.getElementById("facebook-page") as HTMLSelectElement;
+  const fbPageWrap = document.getElementById("facebook-page-wrap") as HTMLLabelElement;
+  const igAccountWrap = document.getElementById("instagram-account-wrap") as HTMLElement;
+  const fbAccountWrap = document.getElementById("facebook-account-wrap") as HTMLElement;
+
+  let fbAccounts: Account[] = [];
 
   function fillSelect(sel: HTMLSelectElement, accounts: Account[], errorMsg?: string) {
     sel.innerHTML = "";
@@ -275,24 +322,83 @@ import BackLink from "../components/BackLink.astro";
     }
   }
 
+  // Facebook publica en una Página: se listan las de la cuenta elegida.
+  function updateFacebookPages() {
+    const acc = fbAccounts.find((a) => a.id === fbAccount.value);
+    const pages = acc?.pages ?? [];
+    fbPage.innerHTML = "";
+    if (pages.length === 0) {
+      const def = document.createElement("option");
+      def.value = "";
+      def.textContent = "Página por defecto";
+      fbPage.appendChild(def);
+    }
+    for (const p of pages) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name || `Página ${p.id}`;
+      fbPage.appendChild(opt);
+    }
+    fbPageWrap.classList.toggle("hidden", pages.length === 0 || !isNetOn("facebook"));
+  }
+  fbAccount.addEventListener("change", updateFacebookPages);
+
+  // ── Redes destino (Instagram / Facebook) ──────────────────────────────────────
+  const redToggles = Array.from(document.querySelectorAll<HTMLInputElement>(".red-toggle"));
+  const redesError = document.getElementById("redes-error") as HTMLElement;
+  const selectedNets = () => redToggles.filter((t) => t.checked).map((t) => t.value);
+  const isNetOn = (n: string) => selectedNets().includes(n);
+
+  function syncRedes() {
+    igAccountWrap.classList.toggle("opacity-40", !isNetOn("instagram"));
+    igAccountWrap.classList.toggle("pointer-events-none", !isNetOn("instagram"));
+    igAccount.disabled = !isNetOn("instagram");
+    fbAccountWrap.classList.toggle("opacity-40", !isNetOn("facebook"));
+    fbAccountWrap.classList.toggle("pointer-events-none", !isNetOn("facebook"));
+    fbAccount.disabled = !isNetOn("facebook");
+    fbPage.disabled = !isNetOn("facebook");
+    updateFacebookPages();
+    if (selectedNets().length > 0) redesError.classList.add("hidden");
+  }
+  for (const t of redToggles) {
+    t.addEventListener("change", () => {
+      if (selectedNets().length === 0) {
+        t.checked = true;
+        redesError.classList.remove("hidden");
+      }
+      syncRedes();
+    });
+  }
+
   (async () => {
     try {
       const res = await fetch("/api/accounts");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      fbAccounts = data.facebook ?? [];
       fillSelect(igAccount, data.instagram, data.instagram_error);
+      fillSelect(fbAccount, fbAccounts, data.facebook_error);
+      syncRedes();
     } catch (e) {
       fillSelect(igAccount, [], String(e));
+      fillSelect(fbAccount, [], String(e));
     }
   })();
+  syncRedes();
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const nets = selectedNets();
+    if (nets.length === 0) {
+      redesError.classList.remove("hidden");
+      return;
+    }
     btn.disabled = true;
     btn.innerHTML = `<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Procesando...`;
 
     const data = new FormData(form);
     if (!data.get("dry_run")) data.delete("dry_run");
+    data.set("redes", nets.join(","));
 
     const res = await fetch("/api/jobs", { method: "POST", body: data });
     if (res.ok) {

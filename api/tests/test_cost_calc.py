@@ -38,6 +38,12 @@ PRICING = {
         "image_per_generation": 0.10,
         "video_per_generation": 0.50,
     },
+    "higgsfield_mcp": {
+        "usd_per_credit": 0.02,
+        "image_credits_per_generation": {"default": 2, "nano_banana_pro": 2, "z_image": 0.5},
+        "video_credits_per_second": {"default": 1.5, "kling3_0_turbo": 1.5},
+        "video_default_seconds": 5,
+    },
     "whisper": {
         "whisper-1": {"per_minute": 0.006},
     },
@@ -128,6 +134,67 @@ def test_higgsfield_video_per_generation():
 def test_higgsfield_null_rate_is_zero():
     pricing = {"higgsfield": {"image_per_generation": None, "video_per_generation": None}}
     assert cost_calc.cost_higgsfield_image({"generations": 10}, pricing) == 0.0
+
+
+# --------------------------- Higgsfield MCP (créditos) ------------------------
+
+def test_higgsfield_mcp_image_credits_by_model():
+    # 3 generaciones × 2 créditos (nano_banana_pro).
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 3}, PRICING, model="nano_banana_pro", operation="image_generation")
+    assert credits == approx(6.0)
+
+
+def test_higgsfield_mcp_image_unknown_model_uses_default():
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 1}, PRICING, model="modelo-nuevo", operation="image_generation")
+    assert credits == approx(2.0)  # default
+
+
+def test_higgsfield_mcp_video_credits_per_second():
+    # kling3_0_turbo cobra por segundo: 1 clip de 10s × 1.5 cr/s = 15 créditos.
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 1, "seconds": 10}, PRICING, model="kling3_0_turbo", operation="video_generation")
+    assert credits == approx(15.0)
+
+
+def test_higgsfield_mcp_video_without_seconds_uses_model_default_duration():
+    # Sin `seconds` en units → video_default_seconds (5s) → 7.5 créditos.
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 1}, PRICING, model="kling3_0_turbo", operation="video_generation")
+    assert credits == approx(7.5)
+
+
+def test_higgsfield_mcp_frozen_credits_take_precedence():
+    # Un evento con units.credits ya congelados no se recalcula.
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 99, "credits": 4.5}, PRICING, model="nano_banana_pro", operation="image_generation")
+    assert credits == approx(4.5)
+
+
+def test_higgsfield_mcp_cost_is_credits_times_usd_per_credit():
+    cost = cost_calc.cost_higgsfield_mcp(
+        {"generations": 3}, PRICING, model="nano_banana_pro", operation="image_generation")
+    assert cost == approx(6.0 * 0.02)
+
+
+def test_higgsfield_mcp_zero_usd_per_credit_means_free_but_counted():
+    # Suscripción (default): usd_per_credit=0 → costo $0 aunque haya consumo.
+    pricing = {"higgsfield_mcp": {"usd_per_credit": 0,
+                                  "image_credits_per_generation": {"default": 2}}}
+    assert cost_calc.cost_higgsfield_mcp(
+        {"generations": 5}, pricing, operation="image_generation") == 0.0
+    assert cost_calc.higgsfield_mcp_credits(
+        {"generations": 5}, pricing, operation="image_generation") == approx(10.0)
+
+
+def test_compute_cost_dispatch_higgsfield_mcp():
+    img = cost_calc.compute_cost("higgsfield_mcp", {"generations": 1}, PRICING,
+                                 model="nano_banana_pro", operation="image_generation")
+    vid = cost_calc.compute_cost("higgsfield_mcp", {"generations": 1, "seconds": 5}, PRICING,
+                                 model="kling3_0_turbo", operation="video_generation")
+    assert img == approx(2 * 0.02)
+    assert vid == approx(7.5 * 0.02)
 
 
 # -------------------------------- Whisper -------------------------------------

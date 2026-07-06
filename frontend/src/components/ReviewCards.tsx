@@ -276,7 +276,10 @@ export default function ReviewCards({
   igMediaUrls,
   fbMediaUrls,
 }: Props) {
-  const videoUrl = video?.url || "";
+  // El clip se sirve vía la API (same-origin) en vez de hot-linkear la URL de
+  // Blotato: su Content-Type (octet-stream) y los bloqueadores del navegador
+  // rompen el <video> con la URL externa.
+  const videoUrl = video?.url ? `${apiUrl}/jobs/${jobId}/video` : "";
   const [liText, setLiText] = useState(initialPosts.linkedin_text || "");
   const [igText, setIgText] = useState(initialPosts.instagram_text || "");
   const [fbText, setFbText] = useState(initialPosts.facebook_text || "");
@@ -295,15 +298,19 @@ export default function ReviewCards({
   const liImageUrl = images.has_li_hook ? `${apiUrl}/jobs/${jobId}/image/li-hook` : (liMediaUrls[0] || "");
   const fbImageUrl = images.has_fb_hook ? `${apiUrl}/jobs/${jobId}/image/fb-hook` : (fbMediaUrls[0] || "");
   const igSingleUrl = images.has_ig_single ? `${apiUrl}/jobs/${jobId}/image/ig-single` : (igMediaUrls[0] || "");
-  const igSlideUrls = images.ig_slides.length > 0
+  // Slides del carrusel: los comparten todas las redes (IG nativo, LinkedIn
+  // document carousel, Facebook multi-foto), así que sirven para las tres cards.
+  const slideUrls = images.ig_slides.length > 0
     ? images.ig_slides.map((k) => `${apiUrl}/jobs/${jobId}/image/${k}`)
-    : igMediaUrls;
+    : igMediaUrls.length > 1 ? igMediaUrls : (liMediaUrls.length > 1 ? liMediaUrls : fbMediaUrls);
 
-  const isCarousel = params.formato_instagram === "carrusel";
+  const isCarousel = params.formato === "carrusel" || params.formato_instagram === "carrusel";
 
-  // Reel e Historia de IG usan medio vertical 9:16 → preview en dos columnas.
+  // Reel e Historia usan medio vertical 9:16 → cada card va en dos columnas
+  // (medio | caption) y las cards se apilan una arriba de otra a ancho completo,
+  // para que el texto del caption tenga espacio de lectura.
   const tipoPost = (params.tipo_post as string) || "post";
-  const isVerticalIg = tipoPost === "reel" || tipoPost === "historia";
+  const isVertical = tipoPost === "reel" || tipoPost === "historia";
 
   async function savePost(field: "linkedin_text" | "instagram_text" | "facebook_text", value: string) {
     setSaving(true);
@@ -315,7 +322,7 @@ export default function ReviewCards({
 
   return (
     <div className="space-y-6">
-      <div className={`grid gap-6 ${networkCount > 1 ? "lg:grid-cols-2" : "grid-cols-1"}`}>
+      <div className={`grid gap-6 ${networkCount > 1 && !isVertical ? "lg:grid-cols-2" : "grid-cols-1"}`}>
         {doLinkedIn && (
           <PostCard
             platform="LinkedIn"
@@ -324,7 +331,8 @@ export default function ReviewCards({
             onTextChange={setLiText}
             onSave={() => savePost("linkedin_text", liText)}
             saving={saving}
-            imageUrl={videoUrl ? undefined : liImageUrl}
+            imageUrl={videoUrl || isCarousel ? undefined : liImageUrl}
+            extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
             videoUrl={videoUrl || undefined}
             wordRange={[150, 300]}
           />
@@ -337,10 +345,10 @@ export default function ReviewCards({
             onTextChange={setIgText}
             onSave={() => savePost("instagram_text", igText)}
             saving={saving}
-            imageUrl={videoUrl ? undefined : (isCarousel ? undefined : igSingleUrl)}
-            extraImageUrls={videoUrl ? undefined : (isCarousel ? igSlideUrls : undefined)}
+            imageUrl={videoUrl || isCarousel ? undefined : igSingleUrl}
+            extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
             videoUrl={videoUrl || undefined}
-            verticalMedia={isVerticalIg}
+            verticalMedia={isVertical}
             wordRange={[80, 150]}
           />
         )}
@@ -352,8 +360,10 @@ export default function ReviewCards({
             onTextChange={setFbText}
             onSave={() => savePost("facebook_text", fbText)}
             saving={saving}
-            imageUrl={videoUrl ? undefined : fbImageUrl}
+            imageUrl={videoUrl || isCarousel ? undefined : fbImageUrl}
+            extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
             videoUrl={videoUrl || undefined}
+            verticalMedia={isVertical}
             wordRange={[80, 180]}
           />
         )}

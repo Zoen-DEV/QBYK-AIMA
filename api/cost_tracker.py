@@ -45,8 +45,17 @@ def build_event(
     El costo se calcula aquí y queda "congelado" junto a las unidades: cambiar una
     tarifa después no recalcula el histórico. Se guarda `pricing_version` para
     trazabilidad. La forma del doc sigue §5 del doc de planificación.
+
+    Para `higgsfield_mcp` también se congelan los **créditos** de la suscripción en
+    `units.credits` (con la tarifa por modelo vigente), así el dashboard agrega el
+    consumo sin depender de la tabla de precios del momento de la consulta.
     """
     pricing = pricing if pricing is not None else cost_calc.load_pricing()
+    units = dict(units or {})
+    if (service or "").lower() == "higgsfield_mcp" and not units.get("credits"):
+        credits = cost_calc.higgsfield_mcp_credits(units, pricing, model=model, operation=operation)
+        if credits:
+            units["credits"] = round(float(credits), 4)
     cost = cost_calc.compute_cost(service, units, pricing, model=model, operation=operation)
     return {
         "ts": datetime.now(timezone.utc),

@@ -51,6 +51,8 @@ Dos naturalezas de gasto, tratadas distinto:
 | **Whisper** (OpenAI/Groq) | [`scripts/transcribe.py`](../api/scripts/transcribe.py) | por minuto de audio | Duración del audio (de la respuesta verbose o del archivo). Motor `local` (faster-whisper) = **$0** |
 
 > **Higgsfield es suscripción (decisión tomada):** sus generaciones se siguen **contando** (útil para medir volumen), pero su `*_per_generation` está en **0** porque el costo real es la suscripción mensual/anual, tratada como **fijo** en §3.2. Si algún día el plan pasa a pago por generación, basta con poner la tarifa en `pricing.json`.
+>
+> **Actualización (2026-07-03) — consumo en créditos vía MCP:** desde la migración al MCP las generaciones salen de los **créditos de la suscripción**, así que ahora el consumo también se mide en **créditos** y se congela en `units.credits` de cada evento (`service = higgsfield_mcp`). Tarifas medidas con el preflight `get_cost` del MCP y guardadas en `pricing.json → higgsfield_mcp`: imagen por generación según modelo (`nano_banana_pro` = **2 cr/img**), video **por segundo** según modelo (`kling3_0_turbo` = **1.5 cr/s**; sin duración configurada se asume `video_default_seconds` = 5s). `usd_per_credit` (default 0) permite valorizar los créditos en USD — en ese caso `fixed_monthly.higgsfield` debe quedar en 0 para no contar doble. El dashboard expone el total como `higgsfield_credits` en `/costs/summary` (KPI «Créditos Higgsfield») y los créditos por servicio/job.
 
 ### 3.2 Fijo / suscripción (monto mensual, no por uso)
 

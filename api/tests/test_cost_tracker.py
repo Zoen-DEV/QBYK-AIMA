@@ -66,6 +66,32 @@ def test_build_event_shape_and_frozen_cost():
     assert ev["ts"].tzinfo == timezone.utc
 
 
+def test_build_event_freezes_higgsfield_mcp_credits_in_units():
+    # Los créditos de la suscripción quedan congelados en units.credits al escribir
+    # el evento (con la tarifa por modelo vigente), para agregarlos en el dashboard.
+    pricing = {
+        "version": "test-1",
+        "higgsfield_mcp": {
+            "usd_per_credit": 0,
+            "image_credits_per_generation": {"default": 2, "nano_banana_pro": 2},
+            "video_credits_per_second": {"default": 1.5},
+            "video_default_seconds": 5,
+        },
+    }
+    img = cost_tracker.build_event(
+        service="higgsfield_mcp", operation="image_generation",
+        units={"generations": 3}, model="nano_banana_pro", pricing=pricing,
+    )
+    assert img["units"]["credits"] == pytest.approx(6.0)
+    assert img["cost_usd"] == 0.0  # usd_per_credit=0 → consumo sin costo variable
+
+    vid = cost_tracker.build_event(
+        service="higgsfield_mcp", operation="video_generation",
+        units={"generations": 1, "seconds": 10}, model="kling-x", pricing=pricing,
+    )
+    assert vid["units"]["credits"] == pytest.approx(15.0)
+
+
 def test_build_event_defaults():
     ev = cost_tracker.build_event(
         service="higgsfield",

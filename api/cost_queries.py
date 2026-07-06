@@ -138,10 +138,15 @@ def _match(start: datetime, end: datetime) -> dict:
 
 
 def pipeline_by_service(start: datetime, end: datetime) -> list[dict]:
-    """Variable por servicio en [start, end): costo total y nº de eventos."""
+    """Variable por servicio en [start, end): costo total, eventos y créditos HF."""
     return [
         _match(start, end),
-        {"$group": {"_id": "$service", "cost_usd": {"$sum": "$cost_usd"}, "events": {"$sum": 1}}},
+        {"$group": {
+            "_id": "$service",
+            "cost_usd": {"$sum": "$cost_usd"},
+            "events": {"$sum": 1},
+            "credits": {"$sum": {"$ifNull": ["$units.credits", 0]}},
+        }},
         {"$sort": {"cost_usd": -1}},
     ]
 
@@ -174,6 +179,7 @@ def pipeline_by_job(start: datetime, end: datetime, limit: int = _BY_JOB_LIMIT) 
         {"$group": {
             "_id": {"job_id": "$job_id", "service": "$service"},
             "cost_usd": {"$sum": "$cost_usd"},
+            "credits": {"$sum": {"$ifNull": ["$units.credits", 0]}},
             "flow": {"$first": "$flow"},
             "batch_id": {"$first": "$batch_id"},
             "source_type": {"$first": "$source_type"},
@@ -182,7 +188,8 @@ def pipeline_by_job(start: datetime, end: datetime, limit: int = _BY_JOB_LIMIT) 
         {"$group": {
             "_id": "$_id.job_id",
             "cost_usd": {"$sum": "$cost_usd"},
-            "by_service": {"$push": {"service": "$_id.service", "cost_usd": "$cost_usd"}},
+            "credits": {"$sum": "$credits"},
+            "by_service": {"$push": {"service": "$_id.service", "cost_usd": "$cost_usd", "credits": "$credits"}},
             "flow": {"$first": "$flow"},
             "batch_id": {"$first": "$batch_id"},
             "source_type": {"$first": "$source_type"},
@@ -250,11 +257,13 @@ async def summary(period: str, *, pricing: Optional[dict] = None) -> dict:
 
     by_service = [
         {"service": r["_id"] or "desconocido", "cost_usd": round(_num(r.get("cost_usd")), 6),
-         "events": int(r.get("events", 0))}
+         "events": int(r.get("events", 0)), "credits": round(_num(r.get("credits")), 4)}
         for r in by_service_rows
     ]
     variable_total = round(sum(s["cost_usd"] for s in by_service), 6)
     events_count = sum(s["events"] for s in by_service)
+    # Consumo de la suscripción de Higgsfield (créditos, no USD) — KPI del dashboard.
+    hf_credits = round(sum(s["credits"] for s in by_service if s["service"].startswith("higgsfield")), 4)
 
     months = months_in_range(start, end)
     fixed_items = prorate_fixed(pricing, months)
@@ -274,6 +283,7 @@ async def summary(period: str, *, pricing: Optional[dict] = None) -> dict:
         "events_count": events_count,
         "jobs_count": jobs_count,
         "avg_cost_per_job_usd": avg_per_job,
+        "higgsfield_credits": hf_credits,
     }
 
 
@@ -315,8 +325,10 @@ async def by_job(date_from: str, date_to: str, *, pricing: Optional[dict] = None
             "source_type": r.get("source_type"),
             "ts": _iso(r.get("ts")),
             "cost_usd": round(_num(r.get("cost_usd")), 6),
+            "credits": round(_num(r.get("credits")), 4),
             "by_service": [
-                {"service": s.get("service") or "desconocido", "cost_usd": round(_num(s.get("cost_usd")), 6)}
+                {"service": s.get("service") or "desconocido", "cost_usd": round(_num(s.get("cost_usd")), 6),
+                 "credits": round(_num(s.get("credits")), 4)}
                 for s in (r.get("by_service") or [])
             ],
         })

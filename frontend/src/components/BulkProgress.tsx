@@ -228,13 +228,47 @@ function NetworkPreview({
   text,
   images,
   videoUrl,
+  verticalMedia,
 }: {
   logo: React.ReactNode;
   name: string;
   text: string;
   images: string[];
   videoUrl?: string;
+  // Medio vertical 9:16 (reel/historia): el medio va en una columna y el texto en
+  // otra (mismo layout que ReviewCards en el flujo individual), en vez del layout
+  // apilado a ancho completo.
+  verticalMedia?: boolean;
 }) {
+  if (verticalMedia) {
+    return (
+      <div className="bg-gray-950/60 rounded-xl border border-gray-800 overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-gray-800 flex items-center gap-2">
+          {logo}
+          <span className="text-sm font-medium text-gray-200">{name}</span>
+        </div>
+        <div className="md:flex md:items-stretch">
+          {(videoUrl || images.length > 0) && (
+            <div className="bg-gray-950 flex items-center justify-center p-4 md:w-72 md:flex-shrink-0">
+              {videoUrl ? (
+                <video src={videoUrl} controls playsInline className="w-full max-h-[30rem] rounded-xl bg-black" />
+              ) : (
+                <img
+                  src={images[0]}
+                  alt={`Visual ${name}`}
+                  className="w-full max-h-[30rem] rounded-xl object-contain bg-black"
+                />
+              )}
+            </div>
+          )}
+          <div className="p-4 border-t border-gray-800 md:flex-1 md:border-t-0 md:border-l">
+            <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{text}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-gray-950/60 rounded-xl border border-gray-800 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-gray-800 flex items-center gap-2">
@@ -267,31 +301,41 @@ function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
 
   const redes = Array.isArray(p.params.redes) ? (p.params.redes as string[]) : ["linkedin", "instagram", "facebook"];
   const has = (n: string) => redes.includes(n);
-  const videoUrl = p.video?.url || "";
-  const isCarousel = p.params.formato_instagram === "carrusel";
+  // Mismo criterio que en ReviewCards: el clip se sirve vía la API (same-origin)
+  // porque la URL externa de Blotato no es confiable dentro de un <video>.
+  const videoUrl = p.video?.url ? `${apiUrl}/jobs/${row.job_id}/video` : "";
+  const isCarousel = p.params.formato === "carrusel" || p.params.formato_instagram === "carrusel";
+  // Reel e Historia usan medio vertical 9:16 → cada card va en dos columnas
+  // (medio | texto) y las cards se apilan a ancho completo, igual que en la
+  // revisión del flujo individual (ReviewCards).
+  const tipoPost = (p.params.tipo_post as string) || "post";
+  const isVertical = tipoPost === "reel" || tipoPost === "historia";
 
   const liImg = p.images.has_li_hook ? `${apiUrl}/jobs/${row.job_id}/image/li-hook` : p.li_media_urls[0] || "";
   const fbImg = p.images.has_fb_hook ? `${apiUrl}/jobs/${row.job_id}/image/fb-hook` : p.fb_media_urls[0] || "";
   const igSingle = p.images.has_ig_single ? `${apiUrl}/jobs/${row.job_id}/image/ig-single` : p.ig_media_urls[0] || "";
-  const igSlides =
+  // Slides del carrusel: compartidos por todas las redes activas de la fila.
+  const slides =
     p.images.ig_slides.length > 0
       ? p.images.ig_slides.map((k) => `${apiUrl}/jobs/${row.job_id}/image/${k}`)
-      : p.ig_media_urls;
+      : p.ig_media_urls.length > 1 ? p.ig_media_urls
+      : p.li_media_urls.length > 1 ? p.li_media_urls
+      : p.fb_media_urls;
 
-  const liImages = videoUrl ? [] : liImg ? [liImg] : [];
-  const fbImages = videoUrl ? [] : fbImg ? [fbImg] : [];
-  const igImages = videoUrl ? [] : isCarousel ? igSlides : igSingle ? [igSingle] : [];
+  const liImages = videoUrl ? [] : isCarousel ? slides : liImg ? [liImg] : [];
+  const fbImages = videoUrl ? [] : isCarousel ? slides : fbImg ? [fbImg] : [];
+  const igImages = videoUrl ? [] : isCarousel ? slides : igSingle ? [igSingle] : [];
 
   return (
-    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+    <div className={`mt-3 grid gap-3 ${isVertical ? "" : "sm:grid-cols-2"}`}>
       {has("linkedin") && (
-        <NetworkPreview logo={<LinkedInLogo />} name="LinkedIn" text={p.posts.linkedin_text || ""} images={liImages} videoUrl={videoUrl || undefined} />
+        <NetworkPreview logo={<LinkedInLogo />} name="LinkedIn" text={p.posts.linkedin_text || ""} images={liImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
       )}
       {has("instagram") && (
-        <NetworkPreview logo={<InstagramLogo />} name="Instagram" text={p.posts.instagram_text || ""} images={igImages} videoUrl={videoUrl || undefined} />
+        <NetworkPreview logo={<InstagramLogo />} name="Instagram" text={p.posts.instagram_text || ""} images={igImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
       )}
       {has("facebook") && (
-        <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} />
+        <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
       )}
     </div>
   );

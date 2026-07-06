@@ -23,6 +23,12 @@ class Config:
     higgsfield_video_model: str = "higgsfield-ai/text2video/turbo"
     higgsfield_video_aspect: str = "9:16"
     higgsfield_video_duration: int = 0  # 0 = don't send duration (let model default)
+    # Higgsfield MCP (backend de generación por OAuth — consume créditos de la
+    # SUSCRIPCIÓN, no del Cloud API). El consentimiento se hace una vez con
+    # scripts/mcp_bootstrap.py, que deja el token store en api/.hf_oauth.json.
+    higgsfield_mcp_token_store: str = ""
+    higgsfield_mcp_image_model: str = "nano_banana_pro"
+    higgsfield_mcp_video_model: str = "kling3_0_turbo"
     # Speech-to-text (for the "audio" source). Two engines:
     #   "api"   — OpenAI-compatible Whisper endpoint (OpenAI default, or Groq).
     #   "local" — faster-whisper running on this machine (free, offline, no key).
@@ -55,15 +61,22 @@ class Config:
 
     @property
     def image_provider(self) -> str:
-        """'higgsfield' if both key and secret are set, else 'template' (local fallback)."""
-        if self.higgsfield_api_key and self.higgsfield_api_secret:
-            return "higgsfield"
-        return "template"
+        """'mcp' (Higgsfield MCP, créditos de suscripción) si hay token store OAuth;
+        si no 'template' (plantillas locales offline)."""
+        return "mcp" if self._mcp_configured() else "template"
 
     @property
     def video_available(self) -> bool:
-        """Video generation needs Higgsfield (key+secret) — there is no free fallback."""
-        return bool(self.higgsfield_api_key and self.higgsfield_api_secret)
+        """El video usa el MCP de Higgsfield — sin token store no hay backend (y no
+        hay fallback gratis para video)."""
+        return self._mcp_configured()
+
+    def _mcp_configured(self) -> bool:
+        """True si existe el token store del MCP (lo genera scripts/mcp_bootstrap.py)."""
+        store = self.higgsfield_mcp_token_store or str(
+            Path(__file__).resolve().parent / ".hf_oauth.json"
+        )
+        return Path(store).exists()
 
 
 def load_config() -> Config:
@@ -84,6 +97,9 @@ def load_config() -> Config:
         higgsfield_video_model=os.environ.get("HIGGSFIELD_VIDEO_MODEL", "") or "higgsfield-ai/text2video/turbo",
         higgsfield_video_aspect=os.environ.get("HIGGSFIELD_VIDEO_ASPECT", "") or "9:16",
         higgsfield_video_duration=int(os.environ.get("HIGGSFIELD_VIDEO_DURATION", "") or "0"),
+        higgsfield_mcp_token_store=os.environ.get("HIGGSFIELD_MCP_TOKEN_STORE", ""),
+        higgsfield_mcp_image_model=os.environ.get("HIGGSFIELD_MCP_IMAGE_MODEL", "") or "nano_banana_pro",
+        higgsfield_mcp_video_model=os.environ.get("HIGGSFIELD_MCP_VIDEO_MODEL", "") or "kling3_0_turbo",
         # "local" uses faster-whisper offline; anything else (default) uses the
         # hosted OpenAI-compatible endpoint below.
         transcription_engine=(os.environ.get("TRANSCRIPTION_ENGINE", "") or "api").lower(),

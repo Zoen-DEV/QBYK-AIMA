@@ -220,6 +220,38 @@ async def test_summary_aggregates_when_available(monkeypatch):
     assert out["total_usd"] == 84.0
 
 
+async def test_summary_exposes_higgsfield_credits(monkeypatch):
+    class _Cursor:
+        def __init__(self, docs):
+            self._docs = docs
+        def __aiter__(self):
+            async def gen():
+                for d in self._docs:
+                    yield d
+            return gen()
+
+    class _Coll:
+        def aggregate(self, pipeline):
+            group_id = pipeline[1]["$group"]["_id"]
+            if group_id == "$service":
+                return _Cursor([
+                    {"_id": "anthropic", "cost_usd": 3.0, "events": 2, "credits": 0},
+                    {"_id": "higgsfield_mcp", "cost_usd": 0.0, "events": 2, "credits": 7.5},
+                ])
+            return _Cursor([{"jobs": 2}])
+
+    async def _coll():
+        return _Coll()
+
+    monkeypatch.setattr(db, "get_usage_events", _coll)
+    out = await cost_queries.summary("2026-06", pricing=PRICING)
+    # El consumo de la suscripción se expone como KPI aparte (créditos, no USD).
+    assert out["higgsfield_credits"] == 7.5
+    hf = next(s for s in out["variable"]["by_service"] if s["service"] == "higgsfield_mcp")
+    assert hf["credits"] == 7.5
+    assert hf["cost_usd"] == 0.0
+
+
 async def test_timeseries_empty_when_mongo_unavailable(monkeypatch):
     async def _none():
         return None

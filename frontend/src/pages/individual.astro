@@ -147,13 +147,14 @@ import BackLink from "../components/BackLink.astro";
         </label>
 
         <div class="grid grid-cols-2 gap-4">
-          <!-- Formato Instagram -->
+          <!-- Formato (aplica a todas las redes) -->
           <label class="block" id="formato-ig-wrap">
-            <span class="text-xs text-gray-400 mb-1 block">Formato Instagram</span>
-            <select name="formato_instagram" id="formato-instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <span class="text-xs text-gray-400 mb-1 block">Formato (todas las redes)</span>
+            <select name="formato" id="formato-instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
               <option value="imagen-unica">Imagen única</option>
               <option value="carrusel">Carrusel</option>
             </select>
+            <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">El carrusel se publica en las tres redes: Instagram nativo, LinkedIn como carrusel de documento y Facebook como multi-foto.</span>
           </label>
 
           <!-- Cantidad de slides del carrusel -->

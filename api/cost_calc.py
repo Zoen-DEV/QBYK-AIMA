@@ -15,10 +15,12 @@ Diseño:
   FastAPI / Anthropic / etc.
 
 Las unidades siguen el esquema de `usage_events` (ver §5 del doc):
-  anthropic  → {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
-  perplexity → {input_tokens, output_tokens, requests, searches}
-  higgsfield → {generations}            (operation distingue imagen vs video)
-  whisper    → {minutes}                (modelo "local" = $0)
+  anthropic      → {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
+  perplexity     → {input_tokens, output_tokens, requests, searches}
+  higgsfield     → {generations}            (Cloud API legacy; operation distingue imagen vs video)
+  higgsfield_mcp → {generations, seconds?, credits?}  (créditos de la suscripción; ver
+                   `higgsfield_mcp_credits` — imagen cobra por generación, video por segundo)
+  whisper        → {minutes}                (modelo "local" = $0)
 """
 
 import json
@@ -139,6 +141,69 @@ def cost_higgsfield_video(units: Mapping[str, Any], pricing: Mapping[str, Any]) 
     return _units(units, "generations") * _rate(rates, "video_per_generation")
 
 
+def _model_rate(table: Any, model: Optional[str]) -> float:
+    """Tarifa por modelo en un dict `{modelo: tarifa, "default": tarifa}` (0 si falta)."""
+    if not isinstance(table, Mapping):
+        return 0.0
+    value = table.get(model or "")
+    if value is None:
+        value = table.get("default")
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def higgsfield_mcp_credits(
+    units: Mapping[str, Any],
+    pricing: Mapping[str, Any],
+    *,
+    model: Optional[str] = None,
+    operation: Optional[str] = None,
+) -> float:
+    """Créditos de la suscripción consumidos por un evento del MCP de Higgsfield.
+
+    Si el evento ya trae `units.credits` (congelado al escribirse), se respeta tal
+    cual. Si no, se estima con las tarifas de `pricing.higgsfield_mcp` (medidas con
+    el preflight `get_cost` del MCP):
+      imagen → generations × image_credits_per_generation[modelo]
+      video  → generations × video_credits_per_second[modelo] × seconds
+               (sin `seconds` en units se usa `video_default_seconds`, la duración
+               por defecto del modelo cuando la app no manda `duration`)
+    """
+    frozen = _units(units, "credits")
+    if frozen:
+        return frozen
+    rates = pricing.get("higgsfield_mcp") or {}
+    generations = _units(units, "generations")
+    if (operation or "").lower() == "video_generation":
+        per_second = _model_rate(rates.get("video_credits_per_second"), model)
+        seconds = _units(units, "seconds") or _rate(rates, "video_default_seconds")
+        return generations * per_second * seconds
+    per_generation = _model_rate(rates.get("image_credits_per_generation"), model)
+    return generations * per_generation
+
+
+def cost_higgsfield_mcp(
+    units: Mapping[str, Any],
+    pricing: Mapping[str, Any],
+    *,
+    model: Optional[str] = None,
+    operation: Optional[str] = None,
+) -> float:
+    """Costo USD de una generación vía MCP: créditos × `usd_per_credit`.
+
+    Con `usd_per_credit = 0` (default) el consumo se mide solo en créditos y el
+    gasto real queda como fijo (`fixed_monthly.higgsfield`). Si se pone un valor
+    (> 0), dejar el fijo en 0 para no contar la suscripción dos veces.
+    """
+    rates = pricing.get("higgsfield_mcp") or {}
+    credits = higgsfield_mcp_credits(units, pricing, model=model, operation=operation)
+    return credits * _rate(rates, "usd_per_credit")
+
+
 def cost_whisper(model: str, units: Mapping[str, Any], pricing: Mapping[str, Any]) -> float:
     """Costo de transcripción Whisper: `minutes` × `per_minute`.
 
@@ -160,9 +225,9 @@ def compute_cost(
 ) -> float:
     """Despacha al cálculo del servicio correspondiente y devuelve el costo USD.
 
-    `service` ∈ {anthropic, perplexity, higgsfield, whisper}. Para higgsfield,
-    `operation` ("image_generation" vs "video_generation") elige la tarifa. Un
-    servicio desconocido devuelve 0.0 (best-effort, nunca lanza).
+    `service` ∈ {anthropic, perplexity, higgsfield, higgsfield_mcp, whisper}. Para
+    higgsfield/higgsfield_mcp, `operation` ("image_generation" vs "video_generation")
+    elige la tarifa. Un servicio desconocido devuelve 0.0 (best-effort, nunca lanza).
     """
     pricing = pricing if pricing is not None else load_pricing()
     service = (service or "").lower()
@@ -171,6 +236,8 @@ def compute_cost(
         return cost_anthropic(model or "", units, pricing)
     if service == "perplexity":
         return cost_perplexity(model or "", units, pricing)
+    if service == "higgsfield_mcp":
+        return cost_higgsfield_mcp(units, pricing, model=model, operation=operation)
     if service == "higgsfield":
         if (operation or "").lower() == "video_generation":
             return cost_higgsfield_video(units, pricing)

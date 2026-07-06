@@ -8,10 +8,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 import blotato_client as bc
 import image_provider as improv
-import higgsfield_client as hf
+import higgsfield_client as hf   # Cloud API (retirado; se conserva por rollback)
+import higgsfield_mcp as hfmcp   # MCP oficial (OAuth) — backend activo de video/imagen
 import transcribe as tr
 import transcribe_local as trl
 import document_text as doc
+import remote_file as rf
 
 try:
     import image_overlay as ov
@@ -199,6 +201,17 @@ async def run_pipeline(job: dict):
         forced_lang = params.get("idioma", "auto")
         lang_hint = forced_lang if forced_lang in ("es", "en") else None
 
+        # Trigger "archivo" (solo bulk): audio o documento referenciado por URL en el
+        # sheet. Se descarga, se clasifica (audio | texto) y sigue por el mismo camino
+        # que un archivo subido en el flujo individual.
+        if source_type == "archivo":
+            await _push(q, {"step": "extract", "status": "running", "msg": "Descargando archivo de la URL..."})
+            data, fname = await _run(rf.fetch_remote_file, params.get("archivo_url", ""))
+            source_type = rf.classify_source(fname, data)
+            job["_upload_bytes"] = data
+            job["_upload_filename"] = fname or ("audio.ogg" if source_type == "audio" else "documento.txt")
+            params["source_type"] = source_type
+
         if source_type == "audio":
             await _push(q, {"step": "extract", "status": "running", "msg": "Transcribiendo audio..."})
             if not cfg.transcription_available:
@@ -376,7 +389,7 @@ async def run_pipeline(job: dict):
 
         # ── Media: medio final subido por el usuario (reel/historia, modo "subir") ──
         # El video/imagen ya está hecho: se sube tal cual a Blotato y se publica sin
-        # generación. Solo aplica a Instagram (reel/historia fuerzan redes=["instagram"]).
+        # generación. Reel/historia aplican a Instagram y Facebook (LinkedIn se filtró).
         if media_origin == "subir":
             await _push(q, {"step": "images", "status": "running", "msg": "Subiendo tu archivo a Blotato..."})
             fbytes = job.get("_final_media_bytes") or b""
@@ -389,7 +402,9 @@ async def run_pipeline(job: dict):
             except Exception as e:
                 raise RuntimeError(f"No se pudo subir el archivo a Blotato: {e}")
             job["_ig_media_urls"] = [url_media] if do_instagram else []
+            job["_fb_media_urls"] = [url_media] if do_facebook else []
             job["images"]["blotato_urls"]["instagram"] = [url_media] if do_instagram else []
+            job["images"]["blotato_urls"]["facebook"] = url_media if do_facebook else ""
             # Si es video, refléjalo también en job["video"] para que la revisión lo muestre.
             if mime.startswith("video/"):
                 job["video"]["provider"] = "subido"
@@ -422,25 +437,38 @@ async def run_pipeline(job: dict):
         if want_video:
             # Single clean text-to-video clip (no text overlay) shared by both platforms.
             await _push(q, {"step": "video", "status": "running", "msg": "Generando video con Higgsfield..."})
-            topic = content.get("title", "professional topic")
+            # Guion del LLM (post_writer escribe `video_prompt` cuando el job genera
+            # video): una escena concreta ligada al contenido del trigger. Fallback:
+            # prompt genérico con el título. Las restricciones de "sin texto" se
+            # anexan siempre aquí para garantizarlas aunque el guion las omita.
+            scene = (posts.get("video_prompt") or "").strip()
+            if not scene:
+                topic = content.get("title", "professional topic")
+                scene = (
+                    f"Cinematic editorial video about: {topic}. "
+                    "Smooth subtle camera motion, soft natural lighting, muted professional palette, "
+                    "elegant minimal scene."
+                )
             video_prompt = (
-                f"Cinematic editorial video about: {topic}. "
-                "Smooth subtle camera motion, soft natural lighting, muted professional palette, "
-                "elegant minimal scene. No text, no captions, no typography, no logos, no watermarks."
+                f"{scene} No text, no captions, no typography, no logos, no watermarks."
             )
             video_url = ""
             play_url = ""
             try:
                 video_url = await _run(
-                    hf.generate_video, video_prompt,
-                    api_key=cfg.higgsfield_api_key, api_secret=cfg.higgsfield_api_secret,
+                    hfmcp.generate_video, video_prompt,
                     aspect_ratio=video_aspect,
                     duration=(cfg.higgsfield_video_duration or None),
-                    model=cfg.higgsfield_video_model,
+                    model=cfg.higgsfield_mcp_video_model,
                 )
-                # Tracking de costos: 1 clip generado en Higgsfield (éxito = hay URL).
-                await _track(job, service="higgsfield", operation="video_generation",
-                             units={"generations": 1}, model=cfg.higgsfield_video_model)
+                # Tracking de costos: 1 clip generado vía MCP (éxito = hay URL).
+                # El MCP cobra el video POR SEGUNDO; sin duración configurada se usa
+                # el default del modelo (pricing.json: video_default_seconds).
+                video_units: dict = {"generations": 1}
+                if cfg.higgsfield_video_duration:
+                    video_units["seconds"] = cfg.higgsfield_video_duration
+                await _track(job, service="higgsfield_mcp", operation="video_generation",
+                             units=video_units, model=cfg.higgsfield_mcp_video_model)
                 # Re-host on Blotato so the post is decoupled from Higgsfield's CDN.
                 # If that fails, fall back to the raw provider URL.
                 try:
@@ -454,7 +482,7 @@ async def run_pipeline(job: dict):
                 job["video"]["notice"] = f"No se pudo generar el video con Higgsfield: {e}"
                 await _push(q, {"step": "video", "status": "warn", "msg": job["video"]["notice"]})
 
-            job["video"]["provider"] = "higgsfield"
+            job["video"]["provider"] = "higgsfield-mcp"
             if play_url:
                 job["video"]["url"] = play_url
                 job["_li_media_urls"] = [play_url] if do_linkedin else []
@@ -477,14 +505,14 @@ async def run_pipeline(job: dict):
             return
 
         # ── Media: historia-imagen (una sola imagen vertical 9:16 con overlay) ──
+        # La misma imagen se comparte entre Instagram y Facebook (una Story acepta
+        # una imagen en ambas redes; LinkedIn quedó filtrado por el formato).
         if is_historia_imagen:
             await _push(q, {"step": "images", "status": "init", "subkeys": ["ig-story"]})
             await _push(q, {"step": "images", "status": "running", "msg": "Generando imagen vertical para la historia..."})
             force_template = params.get("fuente_imagen", "higgsfield") == "template"
             provider = improv.make_provider(
-                hf_key=cfg.higgsfield_api_key, hf_secret=cfg.higgsfield_api_secret,
-                hf_model=cfg.higgsfield_model, hf_resolution=cfg.higgsfield_resolution,
-                force_template=force_template,
+                force_template=force_template, mcp_image_model=cfg.higgsfield_mcp_image_model,
             )
             topic = content.get("title", "professional topic")
             base_prompt = (
@@ -514,11 +542,13 @@ async def run_pipeline(job: dict):
             job["images"]["provider"] = provider.name
             hf_gens = getattr(provider, "hf_generations", 0)
             if hf_gens:
-                await _track(job, service="higgsfield", operation="image_generation",
-                             units={"generations": hf_gens}, model=cfg.higgsfield_model)
+                await _track(job, service="higgsfield_mcp", operation="image_generation",
+                             units={"generations": hf_gens}, model=cfg.higgsfield_mcp_image_model)
             if story_url:
-                job["_ig_media_urls"] = [story_url]
-                job["images"]["blotato_urls"]["instagram"] = [story_url]
+                job["_ig_media_urls"] = [story_url] if do_instagram else []
+                job["_fb_media_urls"] = [story_url] if do_facebook else []
+                job["images"]["blotato_urls"]["instagram"] = [story_url] if do_instagram else []
+                job["images"]["blotato_urls"]["facebook"] = story_url if do_facebook else ""
                 await _push(q, {"step": "images", "status": "done", "subkey": "ig-story"})
                 await _push(q, {"step": "images", "status": "done", "msg": "Imagen lista"})
             else:
@@ -533,26 +563,28 @@ async def run_pipeline(job: dict):
         # the slides in between are info/argument slides.
         n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
 
+        # El formato aplica a TODAS las redes: en carrusel se genera UN solo juego de
+        # slides (subkeys ig-N, nombre histórico) y se comparte con LinkedIn (document
+        # carousel de Blotato) y Facebook (post multi-foto). En imagen única cada red
+        # recibe su hook con overlay propio (li-hook 4:5, fb-hook 4:5, ig-single 1:1).
+        is_carousel = formato_ig == "carrusel"
+
         expected_subkeys: list[str] = []
-        if do_linkedin:
-            expected_subkeys.append("li-hook")
-        if do_facebook:
-            expected_subkeys.append("fb-hook")
-        if do_instagram:
-            if formato_ig == "carrusel":
-                expected_subkeys.extend(f"ig-{i}" for i in range(n_slides))
-            else:
+        if is_carousel:
+            expected_subkeys.extend(f"ig-{i}" for i in range(n_slides))
+        else:
+            if do_linkedin:
+                expected_subkeys.append("li-hook")
+            if do_facebook:
+                expected_subkeys.append("fb-hook")
+            if do_instagram:
                 expected_subkeys.append("ig-single")
 
         # El usuario puede forzar plantillas locales (sin llamar a Higgsfield) o usar
         # el flujo normal (Higgsfield con fallback a plantilla). Default: higgsfield.
         force_template = params.get("fuente_imagen", "higgsfield") == "template"
         provider = improv.make_provider(
-            hf_key=cfg.higgsfield_api_key,
-            hf_secret=cfg.higgsfield_api_secret,
-            hf_model=cfg.higgsfield_model,
-            hf_resolution=cfg.higgsfield_resolution,
-            force_template=force_template,
+            force_template=force_template, mcp_image_model=cfg.higgsfield_mcp_image_model,
         )
 
         await _push(q, {"step": "images", "status": "init", "subkeys": expected_subkeys})
@@ -588,7 +620,7 @@ async def run_pipeline(job: dict):
         # The provider starts generating slides 1 & 2 while LinkedIn/IG-0 overlays run.
         extra_prompts: list[str] = []
         extra_handles: list = []
-        if do_instagram and formato_ig == "carrusel" and base_url:
+        if is_carousel and base_url:
             topic = content.get("title", "engaging topic")
             # Slides 1..n-1: (n_slides - 2) info slides + 1 closing/credits slide.
             n_info = n_slides - 2
@@ -615,7 +647,7 @@ async def run_pipeline(job: dict):
         channel = content.get("channel", "")
         title_str = content.get("title", "")
         # Number of info (argument) slides between the hook and the credits slide.
-        n_info = (n_slides - 2) if (do_instagram and formato_ig == "carrusel") else 1
+        n_info = (n_slides - 2) if is_carousel else 1
 
         image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
         llm_hook = (image_text or {}).get("hook", "").strip()
@@ -635,9 +667,8 @@ async def run_pipeline(job: dict):
 
         # Info slides: exactly one closed idea per slide. Use image_text.slides; if
         # short, pad from the heuristic body lines (NOT a generic "watch the video").
-        carousel = do_instagram and formato_ig == "carrusel"
         slide_texts: list[str] = []
-        if carousel:
+        if is_carousel:
             heur_lines = _extract_body_lines(posts.get("instagram_text", ""), max_lines=n_info)
             for i in range(n_info):
                 if i < len(llm_slides):
@@ -652,7 +683,9 @@ async def run_pipeline(job: dict):
                 )
 
         # ── 5c: LinkedIn overlay (uses base_url — emits done immediately) ────────
-        if do_linkedin:
+        # En carrusel no hay hook propio por red: LinkedIn/Facebook comparten los
+        # slides del carrusel (se suben una sola vez más abajo).
+        if do_linkedin and not is_carousel:
             if base_url:
                 raw_urls["li-hook"] = base_url
                 if _HAS_OVERLAY:
@@ -669,7 +702,7 @@ async def run_pipeline(job: dict):
                 await _push(q, {"step": "images", "status": "warn", "subkey": "li-hook", "msg": "Sin imagen base"})
 
         # ── 5c-bis: Facebook overlay (mismo formato 4:5 que LinkedIn — usa base_url) ──
-        if do_facebook:
+        if do_facebook and not is_carousel:
             if base_url:
                 raw_urls["fb-hook"] = base_url
                 if _HAS_OVERLAY:
@@ -685,70 +718,75 @@ async def run_pipeline(job: dict):
             else:
                 await _push(q, {"step": "images", "status": "warn", "subkey": "fb-hook", "msg": "Sin imagen base"})
 
-        # ── 5d: Instagram overlay ─────────────────────────────────────────────────
-        if do_instagram:
-            if formato_ig != "carrusel":
-                # Single image (uses base_url)
-                if base_url:
-                    raw_urls["ig-single"] = base_url
-                    if _HAS_OVERLAY:
-                        try:
-                            png = await _run(ov.render_single, base_url, ig_hook, lang=lang, tone=tono_ig)
-                            image_bytes["ig-single"] = png
-                            _save_image(job["id"], "ig-single", png)
-                            await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
-                        except Exception as e:
-                            await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": f"Overlay falló: {e}"})
-                    else:
-                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
-                else:
-                    await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": "Sin imagen base"})
-            else:
-                # Carousel slide 0 (uses base_url — no extra generation needed)
-                if base_url:
-                    raw_urls["ig-0"] = base_url
-                    if _HAS_OVERLAY:
-                        try:
-                            png = await _run(ov.render_hook, base_url, ig_hook, lang=lang, tone=tono_ig)
-                            image_bytes["ig-0"] = png
-                            _save_image(job["id"], "ig-0", png)
-                            await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
-                        except Exception as e:
-                            await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": f"Overlay falló: {e}"})
-                    else:
-                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
-                else:
-                    await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": "Sin imagen base"})
-
-                # Carousel slides 1..n-1: (n_info) info slides + 1 credits slide.
-                # ONE closed idea per info slide (from image_text.slides, padded
-                # from heuristics — never a generic "watch the video" filler).
-                extra_slide_defs = []
-                for s in range(n_info):
-                    idea = slide_texts[s] if s < len(slide_texts) else ""
-                    # Bind idea via default arg so each lambda captures its own text.
-                    extra_slide_defs.append((
-                        f"ig-{s + 1}",
-                        lambda u, t=idea: ov.render_info(u, t, lang=lang, tone=tono_ig),
-                    ))
-                extra_slide_defs.append(
-                    (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang, tone=tono_ig))
-                )
-                for i, (fname, render_fn) in enumerate(extra_slide_defs):
-                    if i >= len(extra_handles):
-                        await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": "Sin imagen base"})
-                        continue
+        # ── 5d: Instagram single / carrusel compartido ────────────────────────────
+        if do_instagram and not is_carousel:
+            # Single image (uses base_url)
+            if base_url:
+                raw_urls["ig-single"] = base_url
+                if _HAS_OVERLAY:
                     try:
-                        slide_url = await _run(provider.resolve, extra_handles[i])
-                        image_warnings.extend(provider.pop_warnings())
-                        raw_urls[fname] = slide_url
-                        if _HAS_OVERLAY:
-                            png = await _run(render_fn, slide_url)
-                            image_bytes[fname] = png
-                            _save_image(job["id"], fname, png)
-                        await _push(q, {"step": "images", "status": "done", "subkey": fname})
+                        png = await _run(ov.render_single, base_url, ig_hook, lang=lang, tone=tono_ig)
+                        image_bytes["ig-single"] = png
+                        _save_image(job["id"], "ig-single", png)
+                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
                     except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": str(e)})
+                        await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": f"Overlay falló: {e}"})
+                else:
+                    await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
+            else:
+                await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": "Sin imagen base"})
+
+        if is_carousel:
+            # El carrusel se genera una sola vez y lo comparten todas las redes
+            # activas (IG nativo, LinkedIn document carousel, Facebook multi-foto).
+            # Portada: hook de IG con respaldo en los de las otras redes (por si
+            # Instagram está desactivado y su caption vino vacío).
+            cover_hook = ig_hook or li_hook or fb_hook
+            # Carousel slide 0 (uses base_url — no extra generation needed)
+            if base_url:
+                raw_urls["ig-0"] = base_url
+                if _HAS_OVERLAY:
+                    try:
+                        png = await _run(ov.render_hook, base_url, cover_hook, lang=lang, tone=tono_ig)
+                        image_bytes["ig-0"] = png
+                        _save_image(job["id"], "ig-0", png)
+                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
+                    except Exception as e:
+                        await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": f"Overlay falló: {e}"})
+                else:
+                    await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
+            else:
+                await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": "Sin imagen base"})
+
+            # Carousel slides 1..n-1: (n_info) info slides + 1 credits slide.
+            # ONE closed idea per info slide (from image_text.slides, padded
+            # from heuristics — never a generic "watch the video" filler).
+            extra_slide_defs = []
+            for s in range(n_info):
+                idea = slide_texts[s] if s < len(slide_texts) else ""
+                # Bind idea via default arg so each lambda captures its own text.
+                extra_slide_defs.append((
+                    f"ig-{s + 1}",
+                    lambda u, t=idea: ov.render_info(u, t, lang=lang, tone=tono_ig),
+                ))
+            extra_slide_defs.append(
+                (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang, tone=tono_ig))
+            )
+            for i, (fname, render_fn) in enumerate(extra_slide_defs):
+                if i >= len(extra_handles):
+                    await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": "Sin imagen base"})
+                    continue
+                try:
+                    slide_url = await _run(provider.resolve, extra_handles[i])
+                    image_warnings.extend(provider.pop_warnings())
+                    raw_urls[fname] = slide_url
+                    if _HAS_OVERLAY:
+                        png = await _run(render_fn, slide_url)
+                        image_bytes[fname] = png
+                        _save_image(job["id"], fname, png)
+                    await _push(q, {"step": "images", "status": "done", "subkey": fname})
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": str(e)})
 
         # Catch-all: warn any expected subkey that never received a status event
         for key in expected_subkeys:
@@ -760,47 +798,60 @@ async def run_pipeline(job: dict):
         ig_media_urls: list[str] = []
         fb_media_urls: list[str] = []
 
-        if do_linkedin:
-            key = "li-hook"
-            if key in image_bytes:
-                try:
-                    url_li = await _run(bc.upload_media_local, image_bytes[key], "linkedin-hook.png", api_key=cfg.blotato_api_key)
-                    li_media_urls = [url_li]
-                except Exception as e:
-                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+        if is_carousel:
+            # Un solo juego de slides subido una vez y compartido por las redes
+            # activas (LinkedIn document carousel / IG carousel / FB multi-foto).
+            carousel_urls: list[str] = []
+            for key in [f"ig-{i}" for i in range(n_slides)]:
+                if key in image_bytes:
+                    try:
+                        u = await _run(bc.upload_media_local, image_bytes[key], f"{key}.png", api_key=cfg.blotato_api_key)
+                        carousel_urls.append(u)
+                    except Exception as e:
+                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                        carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
+                else:
+                    carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
+
+            li_media_urls = list(carousel_urls) if do_linkedin else []
+            ig_media_urls = list(carousel_urls) if do_instagram else []
+            fb_media_urls = list(carousel_urls) if do_facebook else []
+            if do_linkedin and carousel_urls:
+                job["images"]["blotato_urls"]["linkedin"] = carousel_urls[0]
+            if do_facebook and carousel_urls:
+                job["images"]["blotato_urls"]["facebook"] = carousel_urls[0]
+            if do_instagram:
+                job["images"]["blotato_urls"]["instagram"] = ig_media_urls
+        else:
+            if do_linkedin:
+                key = "li-hook"
+                if key in image_bytes:
+                    try:
+                        url_li = await _run(bc.upload_media_local, image_bytes[key], "linkedin-hook.png", api_key=cfg.blotato_api_key)
+                        li_media_urls = [url_li]
+                    except Exception as e:
+                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                        li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
+                else:
                     li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
-            else:
-                li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
-            if li_media_urls:
-                job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
+                if li_media_urls:
+                    job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
 
-        if do_facebook:
-            key = "fb-hook"
-            if key in image_bytes:
-                try:
-                    url_fb = await _run(bc.upload_media_local, image_bytes[key], "facebook-hook.png", api_key=cfg.blotato_api_key)
-                    fb_media_urls = [url_fb]
-                except Exception as e:
-                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+            if do_facebook:
+                key = "fb-hook"
+                if key in image_bytes:
+                    try:
+                        url_fb = await _run(bc.upload_media_local, image_bytes[key], "facebook-hook.png", api_key=cfg.blotato_api_key)
+                        fb_media_urls = [url_fb]
+                    except Exception as e:
+                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                        fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
+                else:
                     fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
-            else:
-                fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
-            if fb_media_urls:
-                job["images"]["blotato_urls"]["facebook"] = fb_media_urls[0]
+                if fb_media_urls:
+                    job["images"]["blotato_urls"]["facebook"] = fb_media_urls[0]
 
-        if do_instagram:
-            if formato_ig == "carrusel":
-                for key in [f"ig-{i}" for i in range(n_slides)]:
-                    if key in image_bytes:
-                        try:
-                            u = await _run(bc.upload_media_local, image_bytes[key], f"{key}.png", api_key=cfg.blotato_api_key)
-                            ig_media_urls.append(u)
-                        except Exception as e:
-                            await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                            ig_media_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
-                    else:
-                        ig_media_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
-            else:
+            if do_instagram:
                 key = "ig-single"
                 if key in image_bytes:
                     try:
@@ -812,7 +863,7 @@ async def run_pipeline(job: dict):
                 else:
                     ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
 
-            job["images"]["blotato_urls"]["instagram"] = ig_media_urls
+                job["images"]["blotato_urls"]["instagram"] = ig_media_urls
 
         job["_li_media_urls"] = li_media_urls
         job["_ig_media_urls"] = ig_media_urls
@@ -829,8 +880,8 @@ async def run_pipeline(job: dict):
         # plantilla local son gratis y no las cuenta el provider).
         hf_gens = getattr(provider, "hf_generations", 0)
         if hf_gens:
-            await _track(job, service="higgsfield", operation="image_generation",
-                         units={"generations": hf_gens}, model=cfg.higgsfield_model)
+            await _track(job, service="higgsfield_mcp", operation="image_generation",
+                         units={"generations": hf_gens}, model=cfg.higgsfield_mcp_image_model)
         produced = len({k for k in image_bytes} | {k for k in raw_urls})
         notices: list[str] = []
         if produced == 0:
@@ -948,10 +999,17 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
             result["instagram"] = {"error": str(e)}
 
     if not dry_run and do_facebook and accounts.get("facebook_id") and fb_text:
+        # tipo_post → mediaType de FB: reel/historia publican como Reel/Story. Además,
+        # un video de feed también va como "reel": Blotato/Facebook ya no aceptan
+        # videos de feed normales ("regular feed videos no longer supported").
+        fb_media_type = {"reel": "reel", "historia": "story"}.get(params.get("tipo_post", "post"))
+        if fb_media_type is None and fb_media and fb_media[0] == (job.get("video") or {}).get("url"):
+            fb_media_type = "reel"
         try:
             resp = await _run(bc.publish_post, accounts["facebook_id"], "facebook", fb_text, fb_media,
                               api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
-                              page_id=accounts.get("facebook_page_id") or None)
+                              page_id=accounts.get("facebook_page_id") or None,
+                              media_type=fb_media_type)
             status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
             result["facebook"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
         except Exception as e:

@@ -25,7 +25,7 @@ def _system_prompt() -> str:
     return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn, Instagram and Facebook based on YouTube video content.
 
 OUTPUT FORMAT: Respond with ONLY valid JSON in this exact shape — no markdown, no explanation, no preamble:
-{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}}
+{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}, "video_prompt": "..."}
 Only write text for the platforms requested in the user message; set any non-requested platform's text to an empty string.
 
 === IMAGE TEXT (overlay copy for the visuals) ===
@@ -34,6 +34,14 @@ The `image_text` object is the text that gets printed ON the images/carousel —
 - `slides`: an array of short idea-statements, ONE per info slide. The exact number of slides required is given in the user message ("INFO SLIDES NEEDED: N") — output EXACTLY that many strings. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
 - If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
 Write `image_text` in the same language as the posts.
+
+=== VIDEO PROMPT (text-to-video generation script) ===
+`video_prompt` feeds an AI text-to-video model that generates the clip for the post — the audience never reads it. Provide it ONLY when the user message says "VIDEO PROMPT NEEDED: yes"; otherwise set it to an empty string.
+- Write it in ENGLISH regardless of the posts' language (video models follow English best).
+- 40–80 words describing ONE continuous, filmable scene that visually embodies the content's core message: pick a concrete setting, subject and action inspired by the transcript's main idea (a talk about saving money → coins dropping into a glass jar on a wooden desk). Avoid abstract concepts a camera cannot film.
+- Specify camera movement (slow push-in, orbit, glide...), lighting and mood; compose for a vertical phone screen.
+- The scene is purely visual: no people talking to camera, no dialogue, and do NOT ask for on-screen text of any kind.
+- The fabrication rule does not apply here (it is a scene description, not a claim), but the scene must clearly evoke THIS content's topic — never a generic office stock clip.
 
 === LINKEDIN POST RULES ===
 - 150–300 words
@@ -108,8 +116,9 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     has_url = bool((clean_url or "").strip())
 
     # How many info slides the carousel needs (slide 0 = hook, last = credits).
-    # Only an Instagram carousel needs info slides; everything else needs 0.
-    if do_ig and fmt_ig == "carrusel":
+    # El carrusel es multi-red (IG nativo, LinkedIn document carousel, FB multi-foto),
+    # así que los slides se piden siempre que el formato sea carrusel.
+    if fmt_ig == "carrusel":
         n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
         n_info_slides = n_slides - 2
     else:
@@ -122,13 +131,29 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     title = content.get("title", "")
     description = (content.get("description") or "")[:500]
 
+    # Reel/historia: el caption es para un Reel/Story (IG y FB), no un feed post.
+    tipo_post = params.get("tipo_post", "post")
+    special_fmt = {"reel": "reel", "historia": "story"}.get(tipo_post)
+
+    # ¿El pipeline va a generar un video (text-to-video)? Misma condición que la
+    # rama de video de job_runner, calculada solo con params para que ambos flujos
+    # (individual y bulk) la compartan. En modo "subir" el medio ya existe.
+    wants_video = params.get("media_origin", "generar") != "subir" and (
+        params.get("tipo_medio", "imagen") == "video"
+        or tipo_post == "reel"
+        or (tipo_post == "historia" and params.get("historia_formato", "imagen") == "video")
+    )
+
     platforms = []
     if do_li:
         platforms.append(f"LinkedIn — tone: {tono_li}, objective: {obj_li}")
     if do_ig:
-        platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {fmt_ig}")
+        platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {special_fmt or fmt_ig}")
     if do_fb:
-        platforms.append(f"Facebook — tone: {tono_fb}, objective: {obj_fb}")
+        fb_line = f"Facebook — tone: {tono_fb}, objective: {obj_fb}"
+        if special_fmt:
+            fb_line += f", format: {special_fmt}"
+        platforms.append(fb_line)
 
     # The content can come from a YouTube video, a voice note transcription, or a
     # text document. Tell the model what it is reading and whether a source URL
@@ -150,6 +175,7 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
 CONTENT SOURCE: {source_label}.
 Language to write in: {lang}
 INFO SLIDES NEEDED: {n_info_slides}  (output EXACTLY this many strings in image_text.slides — 0 means an empty array)
+VIDEO PROMPT NEEDED: {"yes" if wants_video else "no"}
 {url_line}
 Channel: {channel}
 
@@ -172,6 +198,7 @@ Important reminders:
 - Instagram: max 5 hashtags, no raw URL in caption
 {li_url_reminder}
 - image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
+- video_prompt: {"write the English text-to-video scene script tied to this content (see VIDEO PROMPT rules)" if wants_video else "set it to an empty string (no video will be generated)"}
 - Only write text for the platforms listed above; set every other platform's text to an empty string
 {_off_networks_reminder(do_li, do_ig, do_fb)}
 """
@@ -301,6 +328,12 @@ def _parse_raw(raw: str) -> dict:
             parsed["image_text"] = img
         else:
             parsed.pop("image_text", None)
+        # video_prompt: string no vacío o nada (job_runner cae al prompt genérico).
+        vp = parsed.get("video_prompt")
+        if isinstance(vp, str) and vp.strip():
+            parsed["video_prompt"] = vp.strip()
+        else:
+            parsed.pop("video_prompt", None)
         return parsed
     # Level-3 fallback recovers only the caption texts; image_text is left out
     # on purpose so job_runner degrades the overlay copy to its heuristics.
@@ -476,6 +509,8 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
         if img.get("hook"):
             img["hook"] = _strip(img["hook"])
         img["slides"] = [_strip(s) for s in img.get("slides", [])]
+    if posts.get("video_prompt"):
+        posts["video_prompt"] = _strip(posts["video_prompt"])
     return posts, _perplexity_usage(usage, model)
 
 
