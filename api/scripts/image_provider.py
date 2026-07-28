@@ -43,24 +43,39 @@ import higgsfield_mcp as hfmcp   # MCP oficial (OAuth) — backend activo, créd
 # Bundled fallback templates live next to the api package: api/assets/templates/.
 # scripts/ is api/scripts/, so go up one level to api/ then into assets/templates.
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "assets" / "templates"
-_TEMPLATE_BASE = _TEMPLATES_DIR / "template-1.png"     # base / hook
-_TEMPLATE_INFO = _TEMPLATES_DIR / "template-2.png"     # info / argument slides
-_TEMPLATE_CREDITS = _TEMPLATES_DIR / "template-3.png"  # credits / closing slide
+
+# Role index within a set: 1 = base/hook, 2 = info/argument, 3 = credits/closing.
+# El usuario elige uno de 3 SETS de estilo por post (template_set 1-3). Cada set es
+# una carpeta set-{n}/ con sus template-1/2/3.png. Layout y fallback:
+#   - set-{n}/template-{role}.png            (estilo propio del set)
+#   - set-1/template-{role}.png              (por si el set-1 vive en carpeta)
+#   - template-{role}.png  (layout plano)    (default histórico = set-1)
+# Así los 3 sets funcionan de inmediato (set-2/3 caen al look del set-1 hasta que el
+# usuario agregue sus PNG), sin errores ni archivos duplicados.
+_TEMPLATE_SETS = (1, 2, 3)
 
 
-def _template_path(p: Path) -> str:
-    """Return the template path as a string, raising a clear error if missing.
+def _template_file(role_idx: int, set_n: int) -> str:
+    """Ruta del PNG de plantilla para (rol, set), con fallback al set-1 / layout plano.
 
-    The templates are bundled assets the user drops into api/assets/templates/;
-    a missing file is a deployment problem, not a runtime fallback, so surface it.
+    Los PNG son assets que el usuario deja en api/assets/templates/. Un archivo
+    faltante en TODOS los candidatos es un problema de despliegue → error claro.
     """
-    if not p.exists():
-        raise RuntimeError(
-            f"Template de respaldo no encontrado: {p}. "
-            "Coloca template-1.png, template-2.png y template-3.png (1080x1080) "
-            "en api/assets/templates/."
-        )
-    return str(p)
+    set_n = set_n if set_n in _TEMPLATE_SETS else 1
+    fname = f"template-{role_idx}.png"
+    candidates: list[Path] = []
+    if set_n != 1:
+        candidates.append(_TEMPLATES_DIR / f"set-{set_n}" / fname)
+    candidates.append(_TEMPLATES_DIR / "set-1" / fname)
+    candidates.append(_TEMPLATES_DIR / fname)  # layout plano histórico = set-1
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    raise RuntimeError(
+        f"Template de respaldo no encontrado: {fname} (set {set_n}). "
+        "Coloca template-1.png, template-2.png y template-3.png (1080x1080) en "
+        "api/assets/templates/ (y en set-2/ y set-3/ para variar el estilo por set)."
+    )
 
 
 def _short_reason(exc: Exception) -> str:
@@ -95,7 +110,9 @@ class TemplateProvider:
     # Las plantillas locales son gratis: nunca cuentan como generación de pago.
     hf_generations = 0
 
-    def __init__(self):
+    def __init__(self, set_n: int = 1):
+        # Set de estilo elegido por el usuario (1-3); un valor inválido cae al 1.
+        self._set = set_n if set_n in _TEMPLATE_SETS else 1
         self._warnings: list[str] = []
 
     def pop_warnings(self) -> list[str]:
@@ -105,10 +122,10 @@ class TemplateProvider:
         return w
 
     def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
-        # Base / hook slide always uses template-1. Las plantillas locales son 1:1;
+        # Base / hook slide = role 1 del set elegido. Las plantillas locales son 1:1;
         # el aspect solicitado (p. ej. 9:16 para historia) lo aplica el overlay al
         # hacer center-crop, así que aquí se ignora.
-        return _template_path(_TEMPLATE_BASE)
+        return _template_file(1, self._set)
 
     def prewarm_extras(self, prompts: list[str]) -> list:
         # No async work — return one handle per extra slide. The last extra is the
@@ -122,7 +139,7 @@ class TemplateProvider:
 
     def resolve(self, handle: dict) -> str:
         kind = handle.get("template_kind", "info")
-        return _template_path(_TEMPLATE_CREDITS if kind == "credits" else _TEMPLATE_INFO)
+        return _template_file(3 if kind == "credits" else 2, self._set)
 
 
 class HiggsfieldProvider:
@@ -213,9 +230,9 @@ class MCPProvider:
     name = "higgsfield-mcp"
     label = "Higgsfield (MCP)"
 
-    def __init__(self, *, image_model: str = ""):
+    def __init__(self, *, image_model: str = "", template_set: int = 1):
         self._image_model = image_model
-        self._fallback = TemplateProvider()
+        self._fallback = TemplateProvider(template_set)
         self._warnings: list[str] = []
         self._hf_generations = 0
 
@@ -266,18 +283,22 @@ class MCPProvider:
             return self._fallback.resolve(handle)
 
 
-def make_provider(*, force_template: bool = False, mcp_image_model: str = ""):
+def make_provider(*, force_template: bool = False, mcp_image_model: str = "",
+                  template_set: int = 1):
     """Devuelve el backend de imágenes.
 
     - force_template=True → plantillas locales directas (el usuario eligió plantillas).
     - MCP configurado (existe el token store OAuth) → MCPProvider (créditos de suscripción).
     - Si no → plantillas locales (backend offline siempre disponible).
 
+    `template_set` (1-3) elige el set de estilo de las plantillas — se usa tanto en el
+    modo plantillas directas como en el fallback por-imagen del MCP.
+
     El Cloud API (HiggsfieldProvider, key+secret) quedó retirado como backend activo;
     se conserva la clase por si hay que hacer rollback.
     """
     if force_template:
-        return TemplateProvider()
+        return TemplateProvider(template_set)
     if hfmcp.is_configured():
-        return MCPProvider(image_model=mcp_image_model)
-    return TemplateProvider()
+        return MCPProvider(image_model=mcp_image_model, template_set=template_set)
+    return TemplateProvider(template_set)

@@ -43,6 +43,8 @@ PRICING = {
         "image_credits_per_generation": {"default": 2, "nano_banana_pro": 2, "z_image": 0.5},
         "video_credits_per_second": {"default": 1.5, "kling3_0_turbo": 1.5},
         "video_default_seconds": 5,
+        "tts_credits_per_character": {"default": 0.00667, "seed_audio": 0.00667},
+        "subtitle_credits_per_block": 0.05,
     },
     "whisper": {
         "whisper-1": {"per_minute": 0.006},
@@ -186,6 +188,30 @@ def test_higgsfield_mcp_zero_usd_per_credit_means_free_but_counted():
         {"generations": 5}, pricing, operation="image_generation") == 0.0
     assert cost_calc.higgsfield_mcp_credits(
         {"generations": 5}, pricing, operation="image_generation") == approx(10.0)
+
+
+def test_higgsfield_mcp_tts_credits_per_character():
+    # Voz en off del reel: 300 caracteres × 0.00667 cr/char (seed_audio).
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 4, "characters": 300}, PRICING, model="seed_audio", operation="tts")
+    assert credits == approx(300 * 0.00667)
+
+
+def test_higgsfield_mcp_tts_frozen_credits_take_precedence():
+    # El pipeline congela el costo exacto del preflight get_cost; no se recalcula.
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"generations": 4, "characters": 300, "credits": 1.8}, PRICING,
+        model="seed_audio", operation="tts")
+    assert credits == approx(1.8)
+
+
+def test_higgsfield_mcp_assembly_subtitles_per_voiced_block():
+    # explainer_video: el ensamblaje es gratis; los subtítulos cobran 0.05 cr por
+    # bloque CON voz (voiced_blocks, no blocks).
+    credits = cost_calc.higgsfield_mcp_credits(
+        {"blocks": 6, "voiced_blocks": 4}, PRICING,
+        model="explainer_video", operation="video_assembly")
+    assert credits == approx(0.05 * 4)
 
 
 def test_compute_cost_dispatch_higgsfield_mcp():

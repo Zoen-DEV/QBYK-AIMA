@@ -1,4 +1,5 @@
 import asyncio
+import io
 import re
 import sys
 import uuid
@@ -10,10 +11,13 @@ import blotato_client as bc
 import image_provider as improv
 import higgsfield_client as hf   # Cloud API (retirado; se conserva por rollback)
 import higgsfield_mcp as hfmcp   # MCP oficial (OAuth) — backend activo de video/imagen
+import video_stitch as vstitch   # concat de segmentos de video con ffmpeg
 import transcribe as tr
 import transcribe_local as trl
 import document_text as doc
 import remote_file as rf
+
+import cost_calc
 
 try:
     import image_overlay as ov
@@ -21,7 +25,7 @@ try:
 except ImportError:
     _HAS_OVERLAY = False
 
-from post_writer import write_posts
+from post_writer import write_posts, _segments_needed, _wants_video
 from networks import active_networks
 import cost_tracker
 
@@ -60,6 +64,7 @@ async def _track(job: dict, *, service: str, operation: str, units: dict,
 
 def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: str = "",
              final_media_bytes: bytes = b"", final_media_filename: str = "",
+             photo_files: list | None = None,
              flow: str = "individual", batch_id: str | None = None) -> dict:
     """Build a fresh in-memory job from an already-normalized `params` dict.
 
@@ -81,8 +86,8 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "content": {},
         "accounts": {},
         "posts": {},
-        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": [], "facebook": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": ""},
-        "video": {"url": "", "provider": "", "notice": ""},
+        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": ""},
+        "video": {"url": "", "provider": "", "notice": "", "cost": None},
         "result": {},
         "error_msg": None,
         "_queue": asyncio.Queue(),
@@ -90,12 +95,16 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "_li_media_urls": [],
         "_ig_media_urls": [],
         "_fb_media_urls": [],
+        "_tk_media_urls": [],
         "_upload_bytes": upload_bytes,
         "_upload_filename": upload_filename,
         # Medio final subido por el usuario (modo "subir" de reel/historia): se publica
         # tal cual, sin generación. Vacío en el modo "generar" y en el flujo normal.
         "_final_media_bytes": final_media_bytes,
         "_final_media_filename": final_media_filename,
+        # Fotos subidas para el recorrido image-to-video (modo "fotos", solo-individual):
+        # lista de (bytes, filename). Vacío en el resto de los flujos.
+        "_photo_files": photo_files or [],
     }
 
 
@@ -111,6 +120,60 @@ def _save_image(job_id: str, key: str, png: bytes) -> None:
 async def _run(fn, *args, **kwargs):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
+def _job_model(job: dict, param: str, default: str) -> str:
+    """Modelo de generación elegido para ESTE job, o el default del .env.
+
+    `param` ∈ {modelo_imagen, modelo_video, modelo_voz}. Los valores llegan ya
+    validados contra model_catalog en la entrada (create_job / sheets); vacío =
+    usar el modelo por defecto de la config.
+    """
+    return (job["params"].get(param) or "").strip() or default
+
+
+# Ajuste fino de la voz (ratios, 1.0 = normal). El MCP acepta params extra, así que
+# un modelo que no los soporte los ignora (no rompe). Valores conservadores.
+_PITCH_RATES = {"grave": 0.92, "agudo": 1.08}
+_SPEED_RATES = {"lenta": 0.9, "rapida": 1.1}
+
+
+def _wants_preview(job: dict) -> bool:
+    """True si el job debe PAUSAR en el preview editable antes de generar el medio.
+
+    Solo el flujo individual (flow="individual") pausa: el usuario revisa/edita los
+    prompts y textos antes de gastar créditos en imágenes/video. El bulk (flow="bulk")
+    sigue de corrido — mantiene su propia aprobación en dos fases a nivel de lote.
+    `preview_step` en params permite desactivarlo (default: activado).
+    """
+    return (job.get("flow", "individual") == "individual"
+            and bool(job["params"].get("preview_step", True)))
+
+
+def _template_set(params: dict) -> int:
+    """Set de estilo de plantillas elegido (1-3); default/invalid → 1."""
+    try:
+        n = int(params.get("template_set", 1) or 1)
+    except (TypeError, ValueError):
+        n = 1
+    return n if n in (1, 2, 3) else 1
+
+
+def _voice_params(job: dict, cfg) -> dict:
+    """Selección de voz para ESTE job (precedencia: form > .env).
+
+    Devuelve {voice_type, voice_id, speech_rate, pitch_rate} listo para pasar como
+    kwargs a hfmcp.generate_audio / audio_cost. `voz_id`/`voz_tipo` vienen del form
+    (una voz de list_voices); vacío = la voz por defecto del .env (o la del server).
+    `voz_pitch`/`voz_velocidad` (grave/agudo, lenta/rapida) → ratios; None = normal.
+    """
+    p = job["params"]
+    return {
+        "voice_type": (p.get("voz_tipo") or cfg.higgsfield_tts_voice_type or ""),
+        "voice_id": (p.get("voz_id") or cfg.higgsfield_tts_voice_id or ""),
+        "speech_rate": _SPEED_RATES.get((p.get("voz_velocidad") or "").strip().lower()),
+        "pitch_rate": _PITCH_RATES.get((p.get("voz_pitch") or "").strip().lower()),
+    }
 
 
 def _media_mime(filename: str) -> str:
@@ -170,6 +233,507 @@ async def _media_fallback(q: asyncio.Queue, raw_urls: dict, key: str, filename: 
         return []
 
 
+# ── Video por segmentos (text-to-video storyboard / image-to-video de fotos) ──────
+
+# Se anexa siempre a cada prompt de segmento: garantiza clips limpios sin texto.
+_NO_TEXT_SUFFIX = "No text, no captions, no typography, no logos, no watermarks."
+# Estilo visual de respaldo cuando el LLM no entrega `video_style`: mantiene una
+# base de calidad y de coherencia entre segmentos aunque el guion venga incompleto.
+_DEFAULT_VIDEO_STYLE = (
+    "Cinematic footage, filmic color grade, shallow depth of field, "
+    "smooth stable camera, natural coherent motion."
+)
+# Tope de segmentos por job para acotar el costo aunque el LLM/entrada pidan de más.
+_MAX_VIDEO_SEGMENTS = 8
+# Reintentos por segmento (y por línea de voz). Un clip perdido rompe el reel entero
+# —queda corto y sin voz— y los fallos del proveedor son casi siempre transitorios
+# (job failed puntual, timeout de la espera, corte de red), así que reintentar sale
+# mucho más barato que degradar: lo caro es tirar los segmentos que SÍ salieron.
+_SEGMENT_ATTEMPTS = 3
+_SEGMENT_RETRY_SLEEP = 6.0
+# Deadline por INTENTO de espera (el duro del cliente es 600s). Un clip de 5-10s
+# tarda ~60-180s; cortar antes deja lugar a reintentar dentro del mismo presupuesto.
+_SEGMENT_POLL_DEADLINE = 300
+# Ventana FIJA por bloque de explainer_video (confirmado empíricamente: 2 clips de
+# 5s + voz → 20.0s). Con voz, los segmentos se generan de este largo para que la
+# duración final del reel coincida con la pedida.
+_VOICE_BLOCK_SECONDS = 10
+
+# Movimiento de cámara del recorrido inmobiliario (por par de fotos). El modelo
+# interpola de start_image a end_image; el prompt fija el estilo del movimiento.
+_WALKTHROUGH_STYLES = {
+    "dolly": "Gimbal-smooth cinematic dolly that glides forward from the first framing to the second at a calm walking pace, as if entering the space.",
+    "orbit": "Gimbal-smooth cinematic orbit that arcs gently from the first framing to the second, revealing the space with steady parallax.",
+    "pan": "Gimbal-smooth cinematic pan with a slight forward push that carries the first framing into the second.",
+}
+_WALKTHROUGH_DEFAULT = "dolly"
+
+
+def _walkthrough_prompt(style: str) -> str:
+    base = _WALKTHROUGH_STYLES.get(style, _WALKTHROUGH_STYLES[_WALKTHROUGH_DEFAULT])
+    return (
+        f"Professional real-estate walkthrough transition between two photos of the same property. "
+        f"{base} Photorealistic interior videography: straight architectural lines, consistent "
+        f"exposure and white balance, soft natural window light, no warping or morphing of walls "
+        f"and furniture. {_NO_TEXT_SUFFIX}"
+    )
+
+
+def _photo_to_vertical(pbytes: bytes, fname: str) -> tuple[bytes, str]:
+    """Recorta la foto al centro a 9:16 para el recorrido image-to-video.
+
+    En image-to-video Kling interpola entre las fotos tal cual: con fotos
+    horizontales el clip sale horizontal aunque se pida aspect_ratio 9:16, y el
+    reel termina letterboxeado (barras negras). Recortar la entrada garantiza
+    segmentos nativamente verticales que llenan el cuadro del reel. Best-effort:
+    sin Pillow o con un formato ilegible se devuelven los bytes originales.
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return pbytes, fname
+    try:
+        img = Image.open(io.BytesIO(pbytes))
+        img = ImageOps.exif_transpose(img)
+        w, h = img.size
+        target = 9 / 16
+        if abs(w / h - target) < 0.01:
+            return pbytes, fname
+        if w / h > target:  # demasiado ancha → recorte lateral centrado
+            nw = round(h * target)
+            x0 = (w - nw) // 2
+            img = img.crop((x0, 0, x0 + nw, h))
+        else:  # demasiado alta → recorte superior/inferior centrado
+            nh = round(w / target)
+            y0 = (h - nh) // 2
+            img = img.crop((0, y0, w, y0 + nh))
+        if img.height > 1920:
+            img = img.resize((1080, 1920), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "JPEG", quality=92)
+        stem = fname.rsplit(".", 1)[0] or "foto"
+        return buf.getvalue(), f"{stem}-9x16.jpg"
+    except Exception as e:
+        print(f"   [aviso] No se pudo recortar la foto a 9:16 ({fname}): {e}")
+        return pbytes, fname
+
+
+def _generic_scene(content: dict) -> str:
+    topic = content.get("title", "professional topic")
+    return (
+        f"Cinematic video evoking: {topic}. One concrete symbolic object in a real, "
+        "lived-in setting; slow push-in from a medium framing to a close-up; soft "
+        "directional window light, muted editorial palette, calm confident mood."
+    )
+
+
+def _segment_prompt(beat: str, style: str) -> str:
+    """Prompt final de un segmento text-to-video: shot + look compartido + sin texto.
+
+    El `style` (el `video_style` del LLM, idéntico en TODOS los segmentos) es lo
+    que hace que clips generados por separado corten como un solo video; si falta,
+    el estilo por defecto garantiza la misma coherencia mínima.
+    """
+    parts = [(beat or "").strip(), (style or "").strip() or _DEFAULT_VIDEO_STYLE, _NO_TEXT_SUFFIX]
+    return " ".join(p for p in parts if p)
+
+
+def _usd_per_credit() -> float:
+    """USD por crédito de la suscripción de Higgsfield (de pricing.json). 0 si falta."""
+    try:
+        pricing = cost_calc.load_pricing()
+        return float((pricing.get("higgsfield_mcp") or {}).get("usd_per_credit") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _save_video(job_id: str, mp4: bytes) -> None:
+    try:
+        out = _OUTPUTS_DIR / job_id
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "reel.mp4").write_bytes(mp4)
+    except Exception as e:
+        print(f"   [aviso] No se pudo guardar el video en disco: {e}")
+
+
+def _subtitle_font(cfg) -> str:
+    """Fuente de los subtítulos quemados, o "" si están desactivados por config."""
+    font = (getattr(cfg, "higgsfield_subtitle_font", "") or "").strip().lower()
+    return "" if font in ("none", "off", "no", "0") else font
+
+
+def _video_warn(job: dict, msg: str) -> None:
+    """Acumula un aviso en job["video"]["notice"] (el banner ámbar de la revisión).
+
+    Con una sola asignación, el último error pisaba a los anteriores y el usuario
+    veía "falló el segmento 4" sin enterarse de que también habían fallado el 1 y
+    el 2 — ni de por qué el reel salió mudo.
+    """
+    prev = (job["video"].get("notice") or "").strip()
+    job["video"]["notice"] = f"{prev} {msg}".strip() if prev else msg
+
+
+def _is_fatal_gen_error(e: BaseException) -> bool:
+    """True si reintentar no puede cambiar el resultado (sesión muerta / sin créditos).
+
+    Con estos dos errores se corta la tanda de una: reintentar cada segmento con el
+    mismo fallo solo alarga el job (cada espera cuesta minutos) y tapa el motivo real.
+    """
+    if isinstance(e, hfmcp.ReauthRequired):
+        return True
+    return "not_enough_credits" in str(e).lower()
+
+
+def _is_poll_timeout(e: BaseException) -> bool:
+    """True si el fallo fue solo la espera (el job encolado sigue vivo del lado del server)."""
+    return "poll timeout" in str(e).lower()
+
+
+async def _await_segment(q: asyncio.Queue, seg: dict, handle: dict | None, *,
+                         idx: int, total: int, aspect: str, seg_seconds: int,
+                         model: str, attempts: int = _SEGMENT_ATTEMPTS) -> dict:
+    """Espera UN segmento reintentando hasta `attempts` veces; lanza el último error.
+
+    Un timeout de espera NO invalida el job encolado (el server sigue generando), así
+    que se vuelve a esperar el mismo handle: no se paga otra generación. Cualquier
+    otro fallo sí descarta el job y el reintento encola uno nuevo.
+    """
+    last: BaseException = RuntimeError("no se pudo generar el segmento")
+    for attempt in range(1, attempts + 1):
+        try:
+            if handle is None:
+                handle = await _run(hfmcp.submit_video, seg["prompt"], aspect_ratio=aspect,
+                                    duration=(seg_seconds or None), model=model,
+                                    medias=seg.get("medias"))
+            res = await _run(hfmcp.poll_video, handle, deadline=_SEGMENT_POLL_DEADLINE)
+            if res.get("url"):
+                return res
+            last = RuntimeError("el proveedor no devolvió la URL del clip")
+        except Exception as e:
+            if _is_fatal_gen_error(e):
+                raise
+            last = e
+        # Log del motivo EXACTO del proveedor. Los warn del SSE se pisan en la UI
+        # (la fila del video muestra solo el último evento), así que sin esto un
+        # segmento caído se investiga a ciegas.
+        print(f"   [video] segmento {idx + 1}/{total} intento {attempt}/{attempts} falló: {last}")
+        if not _is_poll_timeout(last):
+            handle = None
+        if attempt < attempts:
+            await _push(q, {"step": "video", "status": "running",
+                            "msg": f"Reintentando el segmento {idx + 1}/{total} "
+                                   f"({attempt}/{attempts - 1})..."})
+            await asyncio.sleep(_SEGMENT_RETRY_SLEEP)
+    raise last
+
+
+async def _generate_segments(job: dict, q: asyncio.Queue, segments: list[dict], *,
+                             aspect: str, seg_seconds: int, model: str) -> list[dict | None]:
+    """Genera los N segmentos y devuelve los resultados ALINEADOS por índice (None = falló).
+
+    Los submits se encolan todos primero: el server genera en paralelo, así que un
+    reel de 6 clips tarda lo que el más lento y no la suma de los seis (menos tiempo
+    de pared = menos ventana para que algo se caiga a mitad de camino). Después se
+    espera cada uno en orden, con reintentos. El índice se conserva porque el guion
+    de voz está alineado 1:1 con el storyboard: perder la posición desfasa la
+    narración.
+    """
+    n = len(segments)
+    handles: list[dict | None] = [None] * n
+    results: list[dict | None] = [None] * n
+
+    fatal = ""
+    await _push(q, {"step": "video", "status": "running", "msg": f"Encolando {n} clip(s) de video..."})
+    for i, seg in enumerate(segments):
+        try:
+            handles[i] = await _run(hfmcp.submit_video, seg["prompt"], aspect_ratio=aspect,
+                                    duration=(seg_seconds or None), model=model,
+                                    medias=seg.get("medias"))
+        except Exception as e:
+            print(f"   [video] no se pudo encolar el segmento {i + 1}/{n} ({model}, {seg_seconds}s): {e}")
+            if _is_fatal_gen_error(e):
+                fatal = str(e)
+                _video_warn(job, f"Generación interrumpida: {e}")
+                await _push(q, {"step": "video", "status": "warn", "msg": fatal})
+                break
+            # Fallo puntual del encolado: se reintenta al esperar este segmento.
+
+    # Con un error fatal en el encolado no se reintenta nada, pero sí se esperan los
+    # clips que YA se encolaron: están pagados y con dos alcanza para armar el reel.
+    for i, seg in enumerate(segments):
+        if fatal and handles[i] is None:
+            continue
+        await _push(q, {"step": "video", "status": "running", "msg": f"Generando segmento {i + 1}/{n}..."})
+        try:
+            results[i] = await _await_segment(q, seg, handles[i], idx=i, total=n, aspect=aspect,
+                                              seg_seconds=seg_seconds, model=model,
+                                              attempts=1 if fatal else _SEGMENT_ATTEMPTS)
+        except Exception as e:
+            if _is_fatal_gen_error(e):
+                _video_warn(job, f"Generación interrumpida en el segmento {i + 1} de {n}: {e}")
+                await _push(q, {"step": "video", "status": "warn", "msg": str(e)})
+                return results
+            print(f"   [video] segmento {i + 1}/{n} DESCARTADO tras {_SEGMENT_ATTEMPTS} intentos: {e}")
+            _video_warn(job, f"El segmento {i + 1} de {n} no se pudo generar: {e}")
+            await _push(q, {"step": "video", "status": "warn",
+                            "msg": f"Segmento {i + 1}/{n} descartado: {e}"})
+    ok = sum(1 for r in results if r)
+    print(f"   [video] {ok}/{n} segmentos generados (modelo={model}, {seg_seconds}s, aspect={aspect})")
+    return results
+
+
+async def _tts_job_id(q: asyncio.Queue, line: str, *, model: str, voice: dict,
+                      idx: int, total: int) -> str:
+    """job_id del TTS de una línea, o "" si falló tras los reintentos.
+
+    Mismo criterio que los segmentos: un fallo puntual del TTS no debería costar la
+    voz del reel entero (antes tumbaba toda la rama y el reel salía mudo).
+    """
+    for attempt in range(1, _SEGMENT_ATTEMPTS + 1):
+        await _push(q, {"step": "video", "status": "running",
+                        "msg": f"Generando voz {idx + 1}/{total}..."})
+        try:
+            res = await _run(hfmcp.generate_audio, line, model=model, **voice)
+            if res.get("job_id"):
+                return res["job_id"]
+        except Exception as e:
+            if _is_fatal_gen_error(e):
+                raise
+            if attempt == _SEGMENT_ATTEMPTS:
+                await _push(q, {"step": "video", "status": "warn",
+                                "msg": f"No se pudo generar la voz {idx + 1}/{total}: {e}"})
+        if attempt < _SEGMENT_ATTEMPTS:
+            await asyncio.sleep(_SEGMENT_RETRY_SLEEP)
+    return ""
+
+
+async def _voiceover_assembly(job: dict, q: asyncio.Queue, cfg, seg_jobs: list[dict],
+                              voice_lines: list[str], *, aspect: str) -> tuple[bytes, str]:
+    """Voz en off + subtítulos: TTS por segmento y ensamblaje con explainer_video.
+
+    `seg_jobs` ([{"job_id", "url"}]) y `voice_lines` llegan ALINEADOS 1:1: cada
+    línea narra su propio clip. Si el TTS de una línea falla tras los reintentos, se
+    descarta ese bloque entero (clip incluido) en vez de mandarlo sin audio: un
+    bloque mudo deja el join `in_progress` para siempre en el server (verificado).
+    Devuelve (bytes_mp4, url_del_explainer) — bytes vacíos si la descarga falló pero
+    la URL sirve. Si cualquier paso rompe, lanza: el llamador degrada al stitching
+    mudo local (los clips ya están generados, no se pierde nada).
+    """
+    n = len(seg_jobs)
+    tts_model = _job_model(job, "modelo_voz", cfg.higgsfield_mcp_tts_model)
+    voice = _voice_params(job, cfg)  # voz + ajuste elegidos en el form (o el .env)
+
+    # TTS por línea → un bloque (clip + voz) por línea que salió bien.
+    blocks: list[tuple[dict, str, str]] = []  # (segmento, audio_job_id, línea)
+    for i, (sj, line) in enumerate(zip(seg_jobs, voice_lines)):
+        audio_id = await _tts_job_id(q, line, model=tts_model, voice=voice, idx=i, total=n)
+        if audio_id:
+            blocks.append((sj, audio_id, line))
+        else:
+            _video_warn(job, f"La voz del segmento {i + 1} falló: ese clip se omite del reel.")
+    if len(blocks) < 2:
+        raise RuntimeError("no quedaron bloques con voz suficientes para el ensamblaje")
+    lines = [b[2] for b in blocks]
+
+    # Tracking del TTS: créditos exactos vía preflight (lineal por carácter);
+    # si el preflight falla, cost_calc estima con la tarifa por carácter.
+    tts_chars = sum(len(l) for l in lines)
+    tts_cost = await _run(hfmcp.audio_cost, " ".join(lines), model=tts_model, **voice)
+    tts_units = {"generations": len(blocks), "characters": tts_chars}
+    if tts_cost and tts_cost.get("credits_exact") is not None:
+        tts_units["credits"] = float(tts_cost["credits_exact"])
+    await _track(job, service="higgsfield_mcp", operation="tts", units=tts_units,
+                 model=tts_model)
+
+    # Ensamblaje server-side: ventanas fijas por bloque + voz TTS por bloque. Se pide
+    # SIN los subtítulos "etiqueta de papel" del server: quemamos los nuestros
+    # (minimalistas) sobre el MP4 resultante. El ensamblaje es gratis.
+    want_subs = bool(_subtitle_font(cfg))  # HIGGSFIELD_SUBTITLE_FONT=none|off los apaga
+    await _push(q, {"step": "video", "status": "running", "msg": "Ensamblando el reel con voz..."})
+    items = [{"video": sj["job_id"], "audio": audio_id} for sj, audio_id, _ in blocks]
+    w, h = vstitch.size_for_aspect(aspect)
+    url = await _run(hfmcp.assemble_explainer, items, width=w, height=h, subtitle_font="")
+    await _track(job, service="higgsfield_mcp", operation="video_assembly",
+                 units={"blocks": len(blocks), "voiced_blocks": len(blocks), "credits": 0.0},
+                 model="explainer_video")
+
+    try:
+        final_bytes = await _run(vstitch.fetch_video_bytes, url)
+    except Exception as e:
+        await _push(q, {"step": "video", "status": "warn",
+                        "msg": f"No se pudo descargar el MP4 final ({e}); se re-hospeda desde la URL."})
+        final_bytes = b""
+
+    # Subtítulos minimalistas propios (una línea por bloque, repartidas en la duración
+    # real). Best-effort: si falla, el reel queda con voz pero sin subtítulos.
+    if want_subs and final_bytes:
+        await _push(q, {"step": "video", "status": "running", "msg": "Añadiendo subtítulos..."})
+        try:
+            final_bytes = await _run(vstitch.burn_subtitles, final_bytes, lines,
+                                     aspect=aspect, block_seconds=_VOICE_BLOCK_SECONDS)
+        except Exception as e:
+            await _push(q, {"step": "video", "status": "warn",
+                            "msg": f"No se pudieron quemar los subtítulos ({e}); el reel queda con voz sin subtítulos."})
+    return final_bytes, url
+
+
+async def _run_video_segments(job: dict, q: asyncio.Queue, cfg, segments: list[dict], *,
+                              aspect: str, seg_seconds: int,
+                              do_linkedin: bool, do_instagram: bool, do_facebook: bool,
+                              do_tiktok: bool = False,
+                              voiceover: list[str] | None = None) -> None:
+    """Genera N segmentos, los une (con voz si hay guion) y deja el medio en el job.
+
+    `segments`: lista de {"prompt": str, "medias": list|None}. Un segmento = una
+    generación con Higgsfield (text-to-video si medias es None; image-to-video si
+    trae start_image/end_image). Cada uno se reintenta (`_generate_segments`); los
+    que aun así fallen se descartan y el reel se arma con los que sobrevivieron,
+    avisando cuántos faltaron. Sin fallback gratis: si no sobrevive ninguno, la
+    publicación queda sin medio (las plantillas son imágenes, no son un clip).
+
+    `voiceover`: líneas habladas del LLM (una por segmento). Si hay y REEL_VOICEOVER
+    no está apagado, la unión la hace `explainer_video` en el server (voz TTS por
+    bloque + subtítulos quemados) en vez del concat mudo de ffmpeg; cualquier fallo
+    de esa rama degrada al stitching mudo local — los clips ya están generados.
+    """
+    model = _job_model(job, "modelo_video", cfg.higgsfield_mcp_video_model)
+    n = len(segments)
+    job["video"]["provider"] = "higgsfield-mcp"
+    voice_lines = [l.strip() for l in (voiceover or []) if l and l.strip()]
+    # La voz necesita el switch encendido, ≥2 segmentos (explainer_video exige
+    # mínimo 2 bloques) y el guion COMPLETO (una línea por segmento): un bloque sin
+    # audio deja el join in_progress indefinidamente en el server (verificado:
+    # timeout a los 600s). Un reel de 1 segmento sale mudo, como siempre.
+    want_voice = getattr(cfg, "reel_voiceover", True) and n >= 2 and len(voice_lines) >= n
+    if getattr(cfg, "reel_voiceover", True) and n >= 2 and 0 < len(voice_lines) < n:
+        # Caso típico tras editar el preview: se borró una línea y el guion dejó de
+        # calzar con los shots. Antes salía mudo sin explicación.
+        _video_warn(job, f"El guion de voz trae {len(voice_lines)} línea(s) para {n} "
+                         f"segmento(s): el reel se genera sin voz. Dejá una línea por shot en el preview.")
+
+    # ── Preflight de costo (get_cost — no encola ni cobra). Informativo. ──
+    per = await _run(hfmcp.video_cost, aspect_ratio=aspect, duration=(seg_seconds or None),
+                     model=model, medias=(segments[0].get("medias") if segments else None))
+    per_credits = float(per["credits"]) if (per and per.get("credits") is not None) else 0.0
+    voice_credits = 0.0
+    if per and per.get("credits") is not None:
+        total_credits = per_credits * n
+        extras = ""
+        if want_voice:
+            tts_est = await _run(hfmcp.audio_cost, " ".join(voice_lines[:n]),
+                                 model=_job_model(job, "modelo_voz", cfg.higgsfield_mcp_tts_model),
+                                 **_voice_params(job, cfg))
+            voice_credits = float((tts_est or {}).get("credits_exact") or 0.0)
+            if _subtitle_font(cfg):
+                voice_credits += 0.05 * min(len(voice_lines), n)
+            total_credits += voice_credits
+            extras = " · con voz y subtítulos" if _subtitle_font(cfg) else " · con voz"
+        usd = total_credits * _usd_per_credit()
+        job["video"]["cost"] = {
+            "credits": round(total_credits, 2), "usd": round(usd, 4),
+            "segments": n, "seconds": (seg_seconds or 0) * n, "voice": want_voice,
+        }
+        await _push(q, {"step": "video", "status": "running",
+                        "msg": f"Costo estimado: {total_credits:.1f} créditos (~${usd:.2f}) · {n} segmento(s) · ~{(seg_seconds or 0) * n}s{extras}"})
+
+    # ── Generar los segmentos (con reintentos; se conserva el job_id porque
+    #    explainer_video referencia los clips por id, no por URL) ──
+    results = await _generate_segments(job, q, segments, aspect=aspect,
+                                       seg_seconds=seg_seconds, model=model)
+    # Solo los que salieron, conservando su índice: la línea i de la voz narra el
+    # shot i, así que el guion se recorta a los MISMOS índices que sobrevivieron.
+    kept = [(i, r) for i, r in enumerate(results) if r]
+    seg_jobs = [r for _, r in kept]
+    seg_urls = [r["url"] for r in seg_jobs]
+    if seg_jobs and len(seg_jobs) < n:
+        _video_warn(job, f"Se generaron {len(seg_jobs)} de {n} segmentos: el video dura "
+                         f"~{(seg_seconds or 0) * len(seg_jobs)}s en vez de ~{(seg_seconds or 0) * n}s.")
+
+    play_url = ""
+    if seg_urls:
+        final_bytes = b""
+        voiced_url = ""
+        # ── Voz en off + subtítulos (explainer_video). Degrada al concat mudo. ──
+        # Con segmentos caídos se sigue adelante usando solo las líneas de los clips
+        # que existen (≥2 bloques, el mínimo de explainer_video): perder un clip ya
+        # es bastante castigo como para además quedarse sin voz ni subtítulos.
+        kept_lines = [voice_lines[i] for i, _ in kept] if want_voice else []
+        if want_voice and len(seg_jobs) >= 2:
+            try:
+                final_bytes, voiced_url = await _voiceover_assembly(
+                    job, q, cfg, seg_jobs, kept_lines, aspect=aspect)
+            except Exception as e:
+                _video_warn(job, f"No se pudo añadir la voz al reel: {e}. Se publica sin audio.")
+                await _push(q, {"step": "video", "status": "warn",
+                                "msg": f"No se pudo añadir la voz al reel: {e}. Se publica sin audio."})
+                final_bytes, voiced_url = b"", ""
+        elif want_voice:
+            _video_warn(job, "Quedó un solo clip: el reel se publica sin voz (el ensamblaje con voz necesita al menos dos).")
+            await _push(q, {"step": "video", "status": "warn",
+                            "msg": "Quedó un solo clip: el reel se publica sin voz."})
+        if job["video"].get("cost"):
+            job["video"]["cost"]["voice"] = bool(final_bytes or voiced_url)
+
+        # ── Concatenar mudo (solo si no hubo voz y hay más de uno) ──
+        if not final_bytes and not voiced_url and len(seg_urls) > 1:
+            try:
+                final_bytes = await _run(vstitch.concat_videos, seg_urls, aspect=aspect)
+            except Exception as e:
+                await _push(q, {"step": "video", "status": "warn",
+                                "msg": f"No se pudieron unir los {len(seg_urls)} segmentos ({e}). Se publica el primero."})
+                final_bytes = b""
+
+        # ── Guardar en disco y re-hospedar en Blotato ──
+        try:
+            if final_bytes:
+                _save_video(job["id"], final_bytes)
+                play_url = await _run(bc.upload_media_local, final_bytes, "reel.mp4",
+                                      api_key=cfg.blotato_api_key, mime="video/mp4")
+            else:
+                src = voiced_url or seg_urls[0]
+                hosted = await _run(bc.upload_media_from_url, src, api_key=cfg.blotato_api_key)
+                play_url = hosted or src
+        except Exception as e:
+            play_url = voiced_url or seg_urls[0]
+            await _push(q, {"step": "video", "status": "warn",
+                            "msg": f"No se pudo re-hospedar el video en Blotato: {e}. Se usa la URL del proveedor."})
+
+        # ── Tracking de costo real: segundos totales generados (el MCP cobra por seg) ──
+        await _track(job, service="higgsfield_mcp", operation="video_generation",
+                     units={"generations": len(seg_urls), "seconds": (seg_seconds or 0) * len(seg_urls)},
+                     model=model)
+        # El costo mostrado en la revisión se ajusta a lo que realmente se generó
+        # (el preflight asumía los N segmentos pedidos).
+        if job["video"].get("cost") and len(seg_urls) != n:
+            real = per_credits * len(seg_urls) + (voice_credits if job["video"]["cost"]["voice"] else 0.0)
+            job["video"]["cost"].update({
+                "credits": round(real, 2), "usd": round(real * _usd_per_credit(), 4),
+                "segments": len(seg_urls), "seconds": (seg_seconds or 0) * len(seg_urls),
+            })
+
+    if play_url:
+        job["video"]["url"] = play_url
+        job["_li_media_urls"] = [play_url] if do_linkedin else []
+        job["_ig_media_urls"] = [play_url] if do_instagram else []
+        job["_fb_media_urls"] = [play_url] if do_facebook else []
+        job["_tk_media_urls"] = [play_url] if do_tiktok else []
+        job["images"]["blotato_urls"] = {
+            "linkedin": play_url if do_linkedin else "",
+            "instagram": [play_url] if do_instagram else [],
+            "facebook": play_url if do_facebook else "",
+            "tiktok": play_url if do_tiktok else "",
+        }
+        await _push(q, {"step": "video", "status": "done", "msg": "Video listo"})
+    else:
+        # Ningún clip sobrevivió: sin fallback gratis, la publicación queda sin medio.
+        if not job["video"].get("notice"):
+            _video_warn(job, "No se pudo generar ningún clip del video.")
+        job["_li_media_urls"] = []
+        job["_ig_media_urls"] = []
+        job["_fb_media_urls"] = []
+        job["_tk_media_urls"] = []
+
+
 async def run_pipeline(job: dict):
     q: asyncio.Queue = job["_queue"]
     params: dict = job["params"]
@@ -180,17 +744,27 @@ async def run_pipeline(job: dict):
     dry_run: bool = params.get("dry_run", False)
     formato_ig: str = params.get("formato_instagram", "imagen-unica")
 
-    # Tipo de publicación de Instagram: "post" (feed, default) | "reel" | "historia".
-    # Reel e historia fuerzan redes=["instagram"] y un solo medio 9:16.
-    tipo_post: str = params.get("tipo_post", "post")
-    media_origin: str = params.get("media_origin", "generar")
-    historia_formato: str = params.get("historia_formato", "imagen")
+    # Segundos por segmento de video (config): lo necesita post_writer para calcular
+    # cuántos shots pedirle al storyboard (y el presupuesto de palabras de la voz).
+    # Se fija antes de escribir los posts. Con voz en off, cada bloque de
+    # explainer_video es una ventana FIJA de ~10s (confirmado empíricamente:
+    # 2 clips de 5s + voz → 20.0s), así que los segmentos se generan de 10s para
+    # que la duración final coincida con la pedida — mismo costo total (Kling
+    # cobra por segundo) y el doble de presupuesto de palabras por línea.
+    # `_wants_video` es la fuente única de "este job necesita guion de video": la
+    # comparte post_writer para pedir el storyboard y alinear la voz.
+    wants_voiced_video = cfg.reel_voiceover and _wants_video(params)
+    params["video_segment_seconds"] = (
+        _VOICE_BLOCK_SECONDS if wants_voiced_video
+        else max(1, int(cfg.higgsfield_video_segment_seconds or 5))
+    )
 
     # Redes destino elegidas en el form/sheet (default: las tres). Fuente única: networks.
     nets = active_networks(params)
     do_linkedin = "linkedin" in nets
     do_instagram = "instagram" in nets
     do_facebook = "facebook" in nets
+    do_tiktok = "tiktok" in nets  # solo reels (video vertical); ver networks.py
 
     try:
         # ── Step 1: Extract ──────────────────────────────────────────────
@@ -307,6 +881,7 @@ async def run_pipeline(job: dict):
         li_account_id = params.get("linkedin_account_id") or cfg.linkedin_account_id
         ig_account_id = params.get("instagram_account_id") or cfg.instagram_account_id
         fb_account_id = params.get("facebook_account_id") or cfg.facebook_account_id
+        tk_account_id = params.get("tiktok_account_id") or cfg.tiktok_account_id
 
         if do_linkedin and not li_account_id:
             try:
@@ -332,6 +907,14 @@ async def run_pipeline(job: dict):
             except Exception as e:
                 await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta Facebook: {e}"})
 
+        if do_tiktok and not tk_account_id:
+            try:
+                accounts = await _run(bc.get_accounts, "tiktok", api_key=cfg.blotato_api_key)
+                if accounts:
+                    tk_account_id = str(accounts[0]["id"])
+            except Exception as e:
+                await _push(q, {"step": "accounts", "status": "warn", "msg": f"No se pudo obtener cuenta TikTok: {e}"})
+
         # LinkedIn page id (a "subaccount") is optional — empty means personal profile.
         # Facebook posts always target a Page (its pageId is a subaccount too): Blotato
         # rechaza el post sin pageId ("body.post.target must have required property
@@ -350,6 +933,7 @@ async def run_pipeline(job: dict):
             "linkedin_id": li_account_id, "linkedin_page_id": li_page_id,
             "instagram_id": ig_account_id,
             "facebook_id": fb_account_id, "facebook_page_id": fb_page_id,
+            "tiktok_id": tk_account_id,  # TikTok no tiene páginas/subcuentas
         }
         await _push(q, {"step": "accounts", "status": "done", "msg": "Cuentas configuradas"})
 
@@ -386,7 +970,67 @@ async def run_pipeline(job: dict):
         if writer_usage:
             await _track(job, service=writer_usage["service"], operation="post_writing",
                          units=writer_usage["units"], model=writer_usage["model"])
+    except Exception as e:
+        job["status"] = "error"
+        job["error_msg"] = str(e)
+        await _push(q, {"step": "error", "msg": str(e)})
+        return
 
+    # ── Preview gate (solo flujo individual): pausa para revisión editable de los
+    # prompts y textos ANTES de gastar créditos generando imágenes/video. El bulk
+    # sigue de corrido (conserva su aprobación en dos fases a nivel de lote).
+    if _wants_preview(job):
+        job["status"] = "preview"
+        await _push(q, {"step": "preview", "redirect": f"/jobs/{job['id']}/preview"})
+        return
+
+    await _run_media_phase(job)
+
+
+async def resume_media(job: dict):
+    """Reanuda tras el preview editable: corre la fase de media (endpoint /generate)."""
+    job["status"] = "running"
+    # La fase A ya corrió (extract/accounts/writing). Re-emitir su "done" para que la
+    # barra de progreso del segundo tramo no los muestre pendientes (los eventos se
+    # bufferean en la cola hasta que el nuevo stream SSE se conecta).
+    q: asyncio.Queue = job["_queue"]
+    for step in ("extract", "accounts", "writing"):
+        await _push(q, {"step": step, "status": "done"})
+    await _run_media_phase(job)
+
+
+async def _run_media_phase(job: dict):
+    """Fase 2 del pipeline: genera el medio (imágenes/video) y deja el job en review.
+
+    Recalcula sus locales desde el job (params/content/posts) para poder correrse
+    tanto de corrido (bulk) como reanudada tras el preview editable (individual).
+    """
+    q: asyncio.Queue = job["_queue"]
+    params: dict = job["params"]
+    cfg = job["_cfg"]
+
+    source_type = params.get("source_type", "youtube")
+    dry_run = params.get("dry_run", False)
+    formato_ig = params.get("formato_instagram", "imagen-unica")
+    tipo_post = params.get("tipo_post", "post")
+    media_origin = params.get("media_origin", "generar")
+    historia_formato = params.get("historia_formato", "imagen")
+
+    # Redes destino (misma fuente única que la fase A).
+    nets = active_networks(params)
+    do_linkedin = "linkedin" in nets
+    do_instagram = "instagram" in nets
+    do_facebook = "facebook" in nets
+    do_tiktok = "tiktok" in nets
+
+    content = job["content"]
+    posts = job["posts"]
+    lang = params.get("lang") or content.get("lang", "es")
+    tono_li = params.get("tono_linkedin", "educativo")
+    tono_ig = params.get("tono_instagram", "inspiracional")
+    tono_fb = params.get("tono_facebook", "personal")
+
+    try:
         # ── Media: medio final subido por el usuario (reel/historia, modo "subir") ──
         # El video/imagen ya está hecho: se sube tal cual a Blotato y se publica sin
         # generación. Reel/historia aplican a Instagram y Facebook (LinkedIn se filtró).
@@ -403,8 +1047,10 @@ async def run_pipeline(job: dict):
                 raise RuntimeError(f"No se pudo subir el archivo a Blotato: {e}")
             job["_ig_media_urls"] = [url_media] if do_instagram else []
             job["_fb_media_urls"] = [url_media] if do_facebook else []
+            job["_tk_media_urls"] = [url_media] if do_tiktok else []
             job["images"]["blotato_urls"]["instagram"] = [url_media] if do_instagram else []
             job["images"]["blotato_urls"]["facebook"] = url_media if do_facebook else ""
+            job["images"]["blotato_urls"]["tiktok"] = url_media if do_tiktok else ""
             # Si es video, refléjalo también en job["video"] para que la revisión lo muestre.
             if mime.startswith("video/"):
                 job["video"]["provider"] = "subido"
@@ -414,12 +1060,68 @@ async def run_pipeline(job: dict):
             await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
             return
 
-        # ── Media decision: video (text-to-video) OR images ─────────────────
+        # ── Media decision: video por segmentos (fotos o text-to-video) OR images ──
         tipo_medio = params.get("tipo_medio", "imagen")
-        # Reel y historia-video siempre son video vertical 9:16 (text-to-video).
+        # Reel y historia-video siempre son video vertical 9:16.
         is_reel = tipo_post == "reel"
         is_historia_video = tipo_post == "historia" and historia_formato == "video"
         is_historia_imagen = tipo_post == "historia" and historia_formato == "imagen"
+        # Segundos por segmento generado (la duración total se logra uniendo N).
+        # Se lee de params: run_pipeline lo fijó arriba (10s si el job lleva voz,
+        # para calzar con la ventana fija de explainer_video; si no, la config).
+        seg_seconds = max(1, int(params.get("video_segment_seconds") or 5))
+
+        # ── Recorrido image-to-video a partir de fotos (modo "fotos", solo-individual) ──
+        # Cada par de fotos consecutivas es un segmento de transición (start_image →
+        # end_image); se concatenan en un solo reel. Sin fallback: requiere Higgsfield.
+        if media_origin == "fotos":
+            if not cfg.video_available:
+                raise RuntimeError(
+                    "El recorrido a partir de fotos requiere Higgsfield (MCP) configurado. "
+                    "Conéctalo desde la página Conexiones."
+                )
+            photos = job.get("_photo_files") or []
+            if len(photos) < 2:
+                raise RuntimeError("Sube al menos 2 fotos para armar el recorrido.")
+            await _push(q, {"step": "video", "status": "running",
+                            "msg": f"Preparando {len(photos)} fotos (recorte vertical 9:16)..."})
+            # Recortar cada foto a 9:16, hospedarla en Blotato (→ URL pública) e
+            # importarla al MCP (→ media_id).
+            photo_ids: list[str] = []
+            for idx, (pbytes, pfname) in enumerate(photos):
+                try:
+                    fname = pfname or f"foto-{idx}.jpg"
+                    pbytes, fname = await _run(_photo_to_vertical, pbytes, fname)
+                    purl = await _run(bc.upload_media_local, pbytes, fname,
+                                      api_key=cfg.blotato_api_key, mime=_media_mime(fname))
+                    mid = await _run(hfmcp.import_media_url, purl)
+                    photo_ids.append(mid)
+                except Exception as e:
+                    await _push(q, {"step": "video", "status": "warn", "msg": f"No se pudo procesar la foto {idx + 1}: {e}"})
+            if len(photo_ids) < 2:
+                job["video"]["notice"] = "No se pudieron preparar suficientes fotos para el recorrido."
+                await _push(q, {"step": "video", "status": "warn", "msg": job["video"]["notice"]})
+                job["_li_media_urls"] = []
+                job["_ig_media_urls"] = []
+                job["_fb_media_urls"] = []
+            else:
+                estilo = params.get("camara_estilo", _WALKTHROUGH_DEFAULT)
+                prompt = _walkthrough_prompt(estilo)
+                segments = [
+                    {"prompt": prompt, "medias": [
+                        {"value": photo_ids[i], "role": "start_image"},
+                        {"value": photo_ids[i + 1], "role": "end_image"},
+                    ]}
+                    for i in range(min(len(photo_ids) - 1, _MAX_VIDEO_SEGMENTS))
+                ]
+                await _run_video_segments(job, q, cfg, segments, aspect="9:16", seg_seconds=seg_seconds,
+                                          do_linkedin=do_linkedin, do_instagram=do_instagram, do_facebook=do_facebook,
+                                          do_tiktok=do_tiktok)
+            job["status"] = "review"
+            await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
+            return
+
+        # ── Video text-to-video por segmentos (reel/historia-video o tipo_medio=video) ──
         want_video = tipo_medio == "video" or is_reel or is_historia_video
         # Aspect del clip: 9:16 para reel/historia-video; el default de feed en lo demás.
         video_aspect = "9:16" if (is_reel or is_historia_video) else cfg.higgsfield_video_aspect
@@ -435,71 +1137,32 @@ async def run_pipeline(job: dict):
                             "msg": "Video solicitado pero Higgsfield no está configurado — se generan imágenes."})
 
         if want_video:
-            # Single clean text-to-video clip (no text overlay) shared by both platforms.
-            await _push(q, {"step": "video", "status": "running", "msg": "Generando video con Higgsfield..."})
-            # Guion del LLM (post_writer escribe `video_prompt` cuando el job genera
-            # video): una escena concreta ligada al contenido del trigger. Fallback:
-            # prompt genérico con el título. Las restricciones de "sin texto" se
-            # anexan siempre aquí para garantizarlas aunque el guion las omita.
-            scene = (posts.get("video_prompt") or "").strip()
-            if not scene:
-                topic = content.get("title", "professional topic")
-                scene = (
-                    f"Cinematic editorial video about: {topic}. "
-                    "Smooth subtle camera motion, soft natural lighting, muted professional palette, "
-                    "elegant minimal scene."
-                )
-            video_prompt = (
-                f"{scene} No text, no captions, no typography, no logos, no watermarks."
-            )
-            video_url = ""
-            play_url = ""
-            try:
-                video_url = await _run(
-                    hfmcp.generate_video, video_prompt,
-                    aspect_ratio=video_aspect,
-                    duration=(cfg.higgsfield_video_duration or None),
-                    model=cfg.higgsfield_mcp_video_model,
-                )
-                # Tracking de costos: 1 clip generado vía MCP (éxito = hay URL).
-                # El MCP cobra el video POR SEGUNDO; sin duración configurada se usa
-                # el default del modelo (pricing.json: video_default_seconds).
-                video_units: dict = {"generations": 1}
-                if cfg.higgsfield_video_duration:
-                    video_units["seconds"] = cfg.higgsfield_video_duration
-                await _track(job, service="higgsfield_mcp", operation="video_generation",
-                             units=video_units, model=cfg.higgsfield_mcp_video_model)
-                # Re-host on Blotato so the post is decoupled from Higgsfield's CDN.
-                # If that fails, fall back to the raw provider URL.
-                try:
-                    hosted = await _run(bc.upload_media_from_url, video_url, api_key=cfg.blotato_api_key)
-                    play_url = hosted or video_url
-                except Exception as e:
-                    play_url = video_url
-                    await _push(q, {"step": "video", "status": "warn",
-                                    "msg": f"No se pudo re-hospedar el video en Blotato: {e}. Se usa la URL del proveedor."})
-            except Exception as e:
-                job["video"]["notice"] = f"No se pudo generar el video con Higgsfield: {e}"
-                await _push(q, {"step": "video", "status": "warn", "msg": job["video"]["notice"]})
-
-            job["video"]["provider"] = "higgsfield-mcp"
-            if play_url:
-                job["video"]["url"] = play_url
-                job["_li_media_urls"] = [play_url] if do_linkedin else []
-                job["_ig_media_urls"] = [play_url] if do_instagram else []
-                job["_fb_media_urls"] = [play_url] if do_facebook else []
-                job["images"]["blotato_urls"] = {
-                    "linkedin": play_url if do_linkedin else "",
-                    "instagram": [play_url] if do_instagram else [],
-                    "facebook": play_url if do_facebook else "",
-                }
-                await _push(q, {"step": "video", "status": "done", "msg": "Video listo"})
+            await _push(q, {"step": "video", "status": "running", "msg": "Preparando el guion del video..."})
+            # Storyboard del LLM (N shots concretos anclados a la transcripción) → N
+            # segmentos. Si falta, 1 segmento con el video_prompt (o una escena genérica
+            # del título como última red). El "sin texto" se anexa por segmento.
+            storyboard = [s for s in (posts.get("video_storyboard") or []) if s.strip()]
+            if storyboard:
+                beats = storyboard[:_MAX_VIDEO_SEGMENTS]
             else:
-                # No media — the user can still publish text-only, or retry.
-                job["_li_media_urls"] = []
-                job["_ig_media_urls"] = []
-                job["_fb_media_urls"] = []
-
+                scene = (posts.get("video_prompt") or "").strip() or _generic_scene(content)
+                beats = [scene]
+            # Un guion más corto que la duración pedida da un reel corto sin que nadie
+            # lo diga (el LLM devolvió menos shots, o se borraron líneas en el preview).
+            wanted = min(_segments_needed(params), _MAX_VIDEO_SEGMENTS)
+            if len(beats) < wanted:
+                _video_warn(job, f"El guion trae {len(beats)} shot(s) para los {wanted} que "
+                                 f"pedía la duración: el video dura ~{len(beats) * seg_seconds}s.")
+            # El look compartido (video_style) se anexa a CADA beat: es lo que hace
+            # que los segmentos, generados por separado, corten como un solo video.
+            video_style = (posts.get("video_style") or "").strip()
+            segments = [{"prompt": _segment_prompt(b, video_style), "medias": None} for b in beats]
+            # Guion de voz del LLM (una línea hablada por shot, en el idioma de los
+            # posts). Si falta o REEL_VOICEOVER está apagado, el reel sale mudo.
+            voiceover = [v for v in (posts.get("video_voiceover") or []) if v.strip()][:len(beats)]
+            await _run_video_segments(job, q, cfg, segments, aspect=video_aspect, seg_seconds=seg_seconds,
+                                      do_linkedin=do_linkedin, do_instagram=do_instagram, do_facebook=do_facebook,
+                                      do_tiktok=do_tiktok, voiceover=voiceover)
             job["status"] = "review"
             await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
             return
@@ -511,8 +1174,9 @@ async def run_pipeline(job: dict):
             await _push(q, {"step": "images", "status": "init", "subkeys": ["ig-story"]})
             await _push(q, {"step": "images", "status": "running", "msg": "Generando imagen vertical para la historia..."})
             force_template = params.get("fuente_imagen", "higgsfield") == "template"
+            img_model = _job_model(job, "modelo_imagen", cfg.higgsfield_mcp_image_model)
             provider = improv.make_provider(
-                force_template=force_template, mcp_image_model=cfg.higgsfield_mcp_image_model,
+                force_template=force_template, mcp_image_model=img_model,
             )
             topic = content.get("title", "professional topic")
             base_prompt = (
@@ -543,7 +1207,7 @@ async def run_pipeline(job: dict):
             hf_gens = getattr(provider, "hf_generations", 0)
             if hf_gens:
                 await _track(job, service="higgsfield_mcp", operation="image_generation",
-                             units={"generations": hf_gens}, model=cfg.higgsfield_mcp_image_model)
+                             units={"generations": hf_gens}, model=img_model)
             if story_url:
                 job["_ig_media_urls"] = [story_url] if do_instagram else []
                 job["_fb_media_urls"] = [story_url] if do_facebook else []
@@ -583,8 +1247,10 @@ async def run_pipeline(job: dict):
         # El usuario puede forzar plantillas locales (sin llamar a Higgsfield) o usar
         # el flujo normal (Higgsfield con fallback a plantilla). Default: higgsfield.
         force_template = params.get("fuente_imagen", "higgsfield") == "template"
+        img_model = _job_model(job, "modelo_imagen", cfg.higgsfield_mcp_image_model)
         provider = improv.make_provider(
-            force_template=force_template, mcp_image_model=cfg.higgsfield_mcp_image_model,
+            force_template=force_template, mcp_image_model=img_model,
+            template_set=_template_set(params),
         )
 
         await _push(q, {"step": "images", "status": "init", "subkeys": expected_subkeys})
@@ -881,7 +1547,7 @@ async def run_pipeline(job: dict):
         hf_gens = getattr(provider, "hf_generations", 0)
         if hf_gens:
             await _track(job, service="higgsfield_mcp", operation="image_generation",
-                         units={"generations": hf_gens}, model=cfg.higgsfield_mcp_image_model)
+                         units={"generations": hf_gens}, model=img_model)
         produced = len({k for k in image_bytes} | {k for k in raw_urls})
         notices: list[str] = []
         if produced == 0:
@@ -965,13 +1631,19 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
     do_linkedin = "linkedin" in nets
     do_instagram = "instagram" in nets
     do_facebook = "facebook" in nets
+    do_tiktok = "tiktok" in nets
 
     li_text = posts.get("linkedin_text", "")
     ig_text = posts.get("instagram_text", "")
     fb_text = posts.get("facebook_text", "")
+    # TikTok reutiliza el caption corto de reel: el de Instagram si existe, si no el de
+    # otra red (post_writer escribe instagram_text cuando TikTok está activo — ver
+    # _user_message). Evita un post de TikTok sin texto si solo se eligió TikTok.
+    tk_text = posts.get("instagram_text", "") or posts.get("facebook_text", "") or posts.get("linkedin_text", "")
     li_media = job.get("_li_media_urls", [])
     ig_media = job.get("_ig_media_urls", [])
     fb_media = job.get("_fb_media_urls", [])
+    tk_media = job.get("_tk_media_urls", [])
 
     result: dict = {}
     scheduled_at = (schedule_time or "").strip() or None
@@ -1015,11 +1687,30 @@ async def publish_job_posts(job: dict, schedule_time: str | None = "") -> dict:
         except Exception as e:
             result["facebook"] = {"error": str(e)}
 
+    # TikTok solo publica video (reels). Su `target` exige privacidad + flags de
+    # disclosure completos (ver TIKTOK_TARGET_DEFAULTS en blotato_client). El único
+    # que depende del job es `isAiGenerated`: solo el video que sube el usuario
+    # ("subir") no lo genera la app.
+    if not dry_run and do_tiktok and accounts.get("tiktok_id") and tk_text:
+        if not tk_media:
+            result["tiktok"] = {"error": "TikTok necesita un video y este post no tiene medio."}
+        else:
+            try:
+                resp = await _run(bc.publish_post, accounts["tiktok_id"], "tiktok", tk_text, tk_media,
+                                  api_key=cfg.blotato_api_key, schedule_time=scheduled_at,
+                                  tiktok_options={"isAiGenerated": params.get("media_origin", "generar") != "subir"})
+                status = await _run(bc.poll_post_status, resp["postSubmissionId"], api_key=cfg.blotato_api_key)
+                result["tiktok"] = {"submission_id": resp["postSubmissionId"], "status": status.get("status"), "url": _post_url(status)}
+            except Exception as e:
+                result["tiktok"] = {"error": str(e)}
+
     if dry_run:
         result["dry_run"] = True
         result["linkedin"] = {"status": "dry-run"}
         result["instagram"] = {"status": "dry-run"}
         result["facebook"] = {"status": "dry-run"}
+        if do_tiktok:
+            result["tiktok"] = {"status": "dry-run"}
 
     job["result"] = result
     job["status"] = "done"

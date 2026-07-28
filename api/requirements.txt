@@ -15,6 +15,9 @@ openpyxl
 faster-whisper
 # Cliente del MCP oficial de Higgsfield (backend de generación por OAuth)
 mcp
+# Concatenación de segmentos de video (reels de varios clips) — binario estático,
+# no requiere instalar ffmpeg en el sistema
+imageio-ffmpeg
 # Persistencia del dashboard de costos (driver async de MongoDB)
 motor
 # Tests (dashboard de costos): pytest + pytest-asyncio

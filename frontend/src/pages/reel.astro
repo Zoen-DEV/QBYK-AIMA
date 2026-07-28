@@ -1,6 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
 import BackLink from "../components/BackLink.astro";
+import VoicePicker from "../components/VoicePicker.astro";
 ---
 
 <Base title="Nuevo Reel">
@@ -8,7 +9,7 @@ import BackLink from "../components/BackLink.astro";
     <div class="mb-8">
       <BackLink href="/" />
       <h1 class="text-3xl font-bold text-white mt-3 mb-2">Reel</h1>
-      <p class="text-gray-400">Publica un Reel vertical (9:16) en Instagram y/o Facebook. Genera el video desde una fuente o sube el tuyo; nosotros escribimos el caption. (LinkedIn no tiene reels.)</p>
+      <p class="text-gray-400">Publica un Reel vertical (9:16) en Instagram, Facebook y/o TikTok. Genera el video desde una fuente o sube el tuyo; nosotros escribimos el caption. (LinkedIn no tiene reels.)</p>
     </div>
 
     <form method="POST" action="/api/jobs" id="job-form" class="space-y-6" enctype="multipart/form-data">
@@ -20,6 +21,7 @@ import BackLink from "../components/BackLink.astro";
           <span class="text-sm font-medium text-gray-300 mb-2 block">¿Cómo quieres el video?</span>
           <select name="media_origin" id="media-origin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
             <option value="generar">Generarlo desde una fuente (Higgsfield)</option>
+            <option value="fotos">A partir de fotos (recorrido)</option>
             <option value="subir">Subir mi propio video</option>
           </select>
         </label>
@@ -49,9 +51,57 @@ import BackLink from "../components/BackLink.astro";
             <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="file-hint"></span>
           </label>
 
-          <label class="block hidden" id="src-manual">
-            <span class="text-xs text-gray-400 mb-1 block">Texto</span>
-            <textarea name="manual_text" id="manual-text" rows="6" placeholder="Escribe o pega aquí el texto base para el video y el caption..."
+          <div class="hidden space-y-4" id="src-manual">
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Contexto del copy (caption)</span>
+              <textarea name="manual_text" id="manual-text" rows="5" placeholder="Texto base del caption del reel. Si dejas vacíos los contextos de abajo, también se usa para el video y la voz."
+                class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
+            </label>
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Contexto del video <span class="text-gray-600">(opcional)</span></span>
+              <textarea name="contexto_video" id="contexto-video" rows="3" placeholder="Qué se debe ver en el video: escenas, objetos, ambiente. Vacío = se usa el copy."
+                class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
+            </label>
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Contexto de la voz en off <span class="text-gray-600">(opcional)</span></span>
+              <textarea name="contexto_voz" id="contexto-voz" rows="3" placeholder="Qué debe decir la locución: mensaje, datos, ideas clave. Vacío = se usa el copy."
+                class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
+            </label>
+          </div>
+
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Duración del video</span>
+            <select name="duracion_video" id="duracion-generar" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="10">10 segundos</option>
+              <option value="20" selected>20 segundos</option>
+              <option value="30">30 segundos</option>
+              <option value="45">45 segundos</option>
+              <option value="60">1 minuto</option>
+            </select>
+            <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Los videos largos se arman uniendo varios clips. El costo se calcula al generar.</span>
+          </label>
+        </div>
+
+        <!-- Modo FOTOS: recorrido image-to-video a partir de varias fotos -->
+        <div id="mode-fotos" class="space-y-4 hidden">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Fotos (mínimo 2, en orden del recorrido)</span>
+            <input type="file" name="photos" id="photos-input" accept="image/*,.jpg,.jpeg,.png,.webp" multiple
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-brand-500 file:text-white file:cursor-pointer hover:file:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 transition" />
+            <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Ej: fotos de una casa. Generamos una transición entre cada par de fotos consecutivas y las unimos en un reel. Las fotos horizontales se recortan al centro a formato vertical (9:16) — deja el sujeto centrado.</span>
+            <span class="text-[11px] text-brand-300 mt-1.5 block leading-relaxed" id="fotos-hint"></span>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Movimiento de cámara</span>
+            <select name="camara_estilo" id="camara-estilo" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="dolly">Dolly (avanzar / recorrer)</option>
+              <option value="orbit">Órbita (rodear)</option>
+              <option value="pan">Paneo</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Caption</span>
+            <textarea name="manual_text" id="fotos-caption" rows="5" placeholder="Escribe el caption del reel (lo puliremos con el tono elegido)..."
               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
           </label>
         </div>
@@ -70,15 +120,42 @@ import BackLink from "../components/BackLink.astro";
               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y"></textarea>
           </label>
         </div>
+
+        <!-- Modelos de video y voz (aplican a generar y fotos; en subir no hay generación) -->
+        <div class="grid grid-cols-2 gap-4" id="modelo-video-wrap">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Modelo de video</span>
+            <select name="modelo_video" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Por defecto (Kling 3.0 Turbo)</option>
+              <option value="kling3_0_turbo">Kling 3.0 Turbo · 1.5 cr/s (económico)</option>
+              <option value="seedance_2_0_mini">Seedance 2.0 Mini · 2.5 cr/s</option>
+              <option value="seedance_2_0">Seedance 2.0 · 4.5 cr/s (máxima calidad)</option>
+            </select>
+          </label>
+          <label class="block" id="modelo-voz-label">
+            <span class="text-xs text-gray-400 mb-1 block">Motor de voz (TTS)</span>
+            <select name="modelo_voz" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Por defecto (Seed Audio)</option>
+              <option value="seed_audio">Seed Audio · ~0.007 cr/carácter</option>
+              <option value="elevenlabs">ElevenLabs · ~0.003 cr/carácter</option>
+            </select>
+          </label>
+          <span class="text-[11px] text-gray-500 block leading-relaxed col-span-2 -mt-2">Costos en créditos de la suscripción de Higgsfield. El recorrido de fotos sale sin voz (no hay guion).</span>
+        </div>
+
+        <!-- Voz en off: voz/acento + tono + velocidad (se alimenta de GET /voices) -->
+        <div id="voice-config-wrap" class="border-t border-gray-800 pt-4">
+          <VoicePicker />
+        </div>
       </div>
 
       <!-- Redes donde publicar (reels existen en Instagram y Facebook) -->
       <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
         <div>
           <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Redes donde publicar</h2>
-          <p class="text-[11px] text-gray-500 mt-1">Los reels existen en Instagram y Facebook. LinkedIn no los soporta.</p>
+          <p class="text-[11px] text-gray-500 mt-1">Los reels existen en Instagram, Facebook y TikTok. LinkedIn no los soporta.</p>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-3 gap-3">
           <label class="cursor-pointer">
             <input type="checkbox" class="red-toggle peer sr-only" value="instagram" checked />
             <span class="flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-medium text-gray-400 transition peer-checked:border-brand-500 peer-checked:bg-brand-500/10 peer-checked:text-white">
@@ -89,6 +166,12 @@ import BackLink from "../components/BackLink.astro";
             <input type="checkbox" class="red-toggle peer sr-only" value="facebook" checked />
             <span class="flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-medium text-gray-400 transition peer-checked:border-brand-500 peer-checked:bg-brand-500/10 peer-checked:text-white">
               Facebook
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="checkbox" class="red-toggle peer sr-only" value="tiktok" />
+            <span class="flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-medium text-gray-400 transition peer-checked:border-brand-500 peer-checked:bg-brand-500/10 peer-checked:text-white">
+              TikTok
             </span>
           </label>
         </div>
@@ -143,6 +226,14 @@ import BackLink from "../components/BackLink.astro";
           </select>
         </label>
 
+        <!-- Cuenta de TikTok (aparece solo si TikTok está activo) -->
+        <label class="block" id="tiktok-account-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Cuenta de TikTok</span>
+          <select name="tiktok_account_id" id="tiktok-account" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Cargando cuentas...</option>
+          </select>
+        </label>
+
         <label class="block">
           <span class="text-xs text-gray-400 mb-1 block">Idioma</span>
           <select name="idioma" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
@@ -189,12 +280,21 @@ import BackLink from "../components/BackLink.astro";
   const form = document.getElementById("job-form") as HTMLFormElement;
   const btn = document.getElementById("submit-btn") as HTMLButtonElement;
 
-  // ── Modo: generar (desde fuente) vs subir (video propio) ─────────────────────
+  // ── Modo: generar (fuente) vs fotos (recorrido) vs subir (video propio) ──────
   const mediaOrigin = document.getElementById("media-origin") as HTMLSelectElement;
   const modeGenerar = document.getElementById("mode-generar") as HTMLElement;
+  const modeFotos = document.getElementById("mode-fotos") as HTMLElement;
   const modeSubir = document.getElementById("mode-subir") as HTMLElement;
+  const modeloVideoWrap = document.getElementById("modelo-video-wrap") as HTMLElement;
+  const modeloVozLabel = document.getElementById("modelo-voz-label") as HTMLElement;
+  const voiceConfigWrap = document.getElementById("voice-config-wrap") as HTMLElement;
   const finalMediaFile = document.getElementById("final-media-file") as HTMLInputElement;
   const captionText = document.getElementById("caption-text") as HTMLTextAreaElement;
+  // Modo fotos
+  const photosInput = document.getElementById("photos-input") as HTMLInputElement;
+  const fotosCaption = document.getElementById("fotos-caption") as HTMLTextAreaElement;
+  const camaraEstilo = document.getElementById("camara-estilo") as HTMLSelectElement;
+  const fotosHint = document.getElementById("fotos-hint") as HTMLElement;
 
   // ── Fuente del contenido (modo generar) ──────────────────────────────────────
   const sourceType = document.getElementById("source-type") as HTMLSelectElement;
@@ -204,6 +304,8 @@ import BackLink from "../components/BackLink.astro";
   const youtubeUrl = document.getElementById("youtube-url") as HTMLInputElement;
   const mediaFile = document.getElementById("media-file") as HTMLInputElement;
   const manualText = document.getElementById("manual-text") as HTMLTextAreaElement;
+  const contextoVideo = document.getElementById("contexto-video") as HTMLTextAreaElement;
+  const contextoVoz = document.getElementById("contexto-voz") as HTMLTextAreaElement;
   const fileLabel = document.getElementById("file-label") as HTMLElement;
   const fileHint = document.getElementById("file-hint") as HTMLElement;
 
@@ -235,6 +337,9 @@ import BackLink from "../components/BackLink.astro";
     mediaFile.required = isFile;
     manualText.disabled = !isManual;
     manualText.required = isManual;
+    // Contextos de video/voz: opcionales, solo se envían en modo manual.
+    contextoVideo.disabled = !isManual;
+    contextoVoz.disabled = !isManual;
     if (isFile) {
       const cfg = FILE_CONFIG[v];
       mediaFile.accept = cfg.accept;
@@ -245,23 +350,65 @@ import BackLink from "../components/BackLink.astro";
   };
   sourceType.addEventListener("change", syncSource);
 
+  // Estimación de referencia para el hint de fotos (el costo real lo fija el server
+  // con el preflight get_cost). Coincide con pricing.json: 1.5 cr/s, $0.029/crédito.
+  const SEG_SECS = 5;
+  const CREDITS_PER_SEC = 1.5;
+  const USD_PER_CREDIT = 0.029;
+  const updateFotosHint = () => {
+    const n = photosInput.files?.length ?? 0;
+    if (n < 2) {
+      fotosHint.textContent = n === 1 ? "Sube al menos 2 fotos." : "";
+      return;
+    }
+    const segs = n - 1;
+    const secs = segs * SEG_SECS;
+    const credits = secs * CREDITS_PER_SEC;
+    const usd = credits * USD_PER_CREDIT;
+    fotosHint.textContent = `${n} fotos → ${segs} transición(es) → ~${secs}s · ~${Math.round(credits)} créditos (~$${usd.toFixed(2)}) aprox. El costo exacto se calcula al generar.`;
+  };
+  photosInput.addEventListener("change", updateFotosHint);
+
   const syncMode = () => {
-    const subir = mediaOrigin.value === "subir";
-    modeGenerar.classList.toggle("hidden", subir);
-    modeSubir.classList.toggle("hidden", !subir);
-    // Modo subir: desactivar toda la fuente de generación; activar video + caption.
-    sourceType.disabled = subir;
-    finalMediaFile.disabled = !subir;
-    finalMediaFile.required = subir;
-    captionText.disabled = !subir;
-    captionText.required = subir;
-    if (subir) {
+    const mode = mediaOrigin.value; // generar | fotos | subir
+    const isGenerar = mode === "generar";
+    const isFotos = mode === "fotos";
+    const isSubir = mode === "subir";
+    modeGenerar.classList.toggle("hidden", !isGenerar);
+    modeFotos.classList.toggle("hidden", !isFotos);
+    modeSubir.classList.toggle("hidden", !isSubir);
+    // Solo el modo activo envía sus campos: los inactivos se desactivan (hidden por
+    // CSS no impide el submit — hay que deshabilitar los inputs).
+    sourceType.disabled = !isGenerar;
+    finalMediaFile.disabled = !isSubir;
+    finalMediaFile.required = isSubir;
+    captionText.disabled = !isSubir;
+    captionText.required = isSubir;
+    photosInput.disabled = !isFotos;
+    photosInput.required = isFotos;
+    fotosCaption.disabled = !isFotos;
+    fotosCaption.required = isFotos;
+    camaraEstilo.disabled = !isFotos;
+    // Modelos de generación: aplican a generar y fotos; en subir no se genera nada.
+    modeloVideoWrap.classList.toggle("hidden", isSubir);
+    // El recorrido de fotos siempre sale mudo (no hay guion) — se atenúa la voz.
+    modeloVozLabel.classList.toggle("opacity-40", isFotos);
+    modeloVozLabel.classList.toggle("pointer-events-none", isFotos);
+    // Config de voz: oculta en "subir" (no se genera), atenuada en "fotos" (mudo).
+    voiceConfigWrap.classList.toggle("hidden", isSubir);
+    voiceConfigWrap.classList.toggle("opacity-40", isFotos);
+    voiceConfigWrap.classList.toggle("pointer-events-none", isFotos);
+    if (isGenerar) {
+      syncSource();
+    } else {
+      // Desactivar toda la fuente de "generar".
       youtubeUrl.disabled = true;
       mediaFile.disabled = true;
       manualText.disabled = true;
-    } else {
-      syncSource();
+      contextoVideo.disabled = true;
+      contextoVoz.disabled = true;
     }
+    if (isFotos) updateFotosHint();
   };
   mediaOrigin.addEventListener("change", syncMode);
   syncMode();
@@ -271,10 +418,12 @@ import BackLink from "../components/BackLink.astro";
   type Account = { id: string; label: string; pages?: FbPage[] };
   const igAccount = document.getElementById("instagram-account") as HTMLSelectElement;
   const fbAccount = document.getElementById("facebook-account") as HTMLSelectElement;
+  const tkAccount = document.getElementById("tiktok-account") as HTMLSelectElement;
   const fbPage = document.getElementById("facebook-page") as HTMLSelectElement;
   const fbPageWrap = document.getElementById("facebook-page-wrap") as HTMLLabelElement;
   const igAccountWrap = document.getElementById("instagram-account-wrap") as HTMLElement;
   const fbAccountWrap = document.getElementById("facebook-account-wrap") as HTMLElement;
+  const tkAccountWrap = document.getElementById("tiktok-account-wrap") as HTMLElement;
 
   let fbAccounts: Account[] = [];
 
@@ -330,6 +479,9 @@ import BackLink from "../components/BackLink.astro";
     fbAccountWrap.classList.toggle("pointer-events-none", !isNetOn("facebook"));
     fbAccount.disabled = !isNetOn("facebook");
     fbPage.disabled = !isNetOn("facebook");
+    tkAccountWrap.classList.toggle("opacity-40", !isNetOn("tiktok"));
+    tkAccountWrap.classList.toggle("pointer-events-none", !isNetOn("tiktok"));
+    tkAccount.disabled = !isNetOn("tiktok");
     updateFacebookPages();
     if (selectedNets().length > 0) redesError.classList.add("hidden");
   }
@@ -351,10 +503,12 @@ import BackLink from "../components/BackLink.astro";
       fbAccounts = data.facebook ?? [];
       fillSelect(igAccount, data.instagram, data.instagram_error);
       fillSelect(fbAccount, fbAccounts, data.facebook_error);
+      fillSelect(tkAccount, data.tiktok, data.tiktok_error);
       syncRedes();
     } catch (e) {
       fillSelect(igAccount, [], String(e));
       fillSelect(fbAccount, [], String(e));
+      fillSelect(tkAccount, [], String(e));
     }
   })();
   syncRedes();

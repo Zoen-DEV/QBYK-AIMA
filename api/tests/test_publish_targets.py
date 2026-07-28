@@ -55,6 +55,35 @@ def test_instagram_reel_keeps_cover_and_share_to_feed(monkeypatch):
     assert post["shareToFeed"] is True
 
 
+def test_tiktok_target_has_every_required_field(monkeypatch):
+    # Sin estos campos la API responde 400 ("must have required property ...").
+    calls = _capture(monkeypatch)
+    bc.publish_post("acc", "tiktok", "hola", ["https://m/x.mp4"], api_key="k")
+    target = calls[0]["body"]["post"]["target"]
+    required = {"privacyLevel", "disabledComments", "disabledDuet", "disabledStitch",
+                "isBrandedContent", "isYourBrand", "isAiGenerated"}
+    assert required <= set(target)
+    assert target["targetType"] == "tiktok"
+    assert target["privacyLevel"] == "PUBLIC_TO_EVERYONE"
+    assert target["isAiGenerated"] is True
+
+
+def test_tiktok_options_override_defaults(monkeypatch):
+    calls = _capture(monkeypatch)
+    bc.publish_post("acc", "tiktok", "hola", ["https://m/x.mp4"], api_key="k",
+                    tiktok_options={"isAiGenerated": False, "privacyLevel": "SELF_ONLY"})
+    target = calls[0]["body"]["post"]["target"]
+    assert target["isAiGenerated"] is False
+    assert target["privacyLevel"] == "SELF_ONLY"
+    assert target["disabledDuet"] is False  # el resto sigue con el default
+
+
+def test_non_tiktok_targets_stay_clean(monkeypatch):
+    calls = _capture(monkeypatch)
+    bc.publish_post("acc", "instagram", "hola", ["https://m/x.mp4"], api_key="k", media_type="reel")
+    assert "privacyLevel" not in calls[0]["body"]["post"]["target"]
+
+
 def test_linkedin_never_gets_media_type(monkeypatch):
     calls = _capture(monkeypatch)
     bc.publish_post("acc", "linkedin", "hola", ["https://m/1.png", "https://m/2.png"],

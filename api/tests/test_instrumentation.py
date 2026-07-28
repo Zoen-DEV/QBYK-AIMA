@@ -79,8 +79,8 @@ def test_higgsfield_counts_only_successful_generations(monkeypatch):
 
 def test_higgsfield_does_not_count_fallbacks(monkeypatch):
     prov = image_provider.HiggsfieldProvider("k", "s", model="m", resolution="1080p")
-    # Evita depender de los PNG de plantilla en disco.
-    monkeypatch.setattr(image_provider, "_template_path", lambda p: "dummy.png")
+    # Evita depender de los PNG de plantilla en disco (resolución por rol/set).
+    monkeypatch.setattr(image_provider, "_template_file", lambda role_idx, set_n: "dummy.png")
 
     # base falla → fallback a plantilla, NO cuenta.
     def _boom(*a, **k):

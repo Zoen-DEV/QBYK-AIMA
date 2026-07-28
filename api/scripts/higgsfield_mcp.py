@@ -13,6 +13,18 @@ cambien (todas SÍNCRONAS y bloqueantes, como las del cliente viejo):
     submit_image(prompt)   -> handle    solo submit (para el prewarm concurrente)
     poll_image(handle)     -> url        espera un handle enviado
     generate_video(prompt) -> url        submit + poll de video, bloquea
+    generate_video_job(..) -> {job_id,url}  como generate_video pero conserva el
+                                         job_id (explainer_video referencia clips por id)
+    submit_video(..)/poll_video(h)       submit y espera separados: encola los N
+                                         segmentos de un reel de una y reintenta la
+                                         espera sin volver a pagar la generación
+    generate_audio(text)   -> {job_id,url}  TTS (voz en off por segmento del reel)
+    submit_audio(..)/poll_audio(h)       ídem para el TTS
+    assemble_explainer(..) -> url        une clips + voz por bloque + subtítulos
+                                         quemados server-side (tool explainer_video)
+    import_media_url(url)  -> media_id   importa una imagen HTTPS (image-to-video)
+    video_cost(...)        -> {credits}  preflight de costo (get_cost, sin encolar)
+    audio_cost(...)        -> {credits}  ídem para el TTS (escala por caracteres)
 
 Patrón del MCP (descubierto en el spike):
     generate_image/generate_video  ->  {"results": [{"id", "status": "pending", ...}]}
@@ -81,12 +93,40 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # text-to-video rápido citado en la descripción de generate_video.
 DEFAULT_VIDEO_MODEL = "kling3_0_turbo"
 DEFAULT_VIDEO_ASPECT = "9:16"
+# TTS para la voz en off de los reels. seed_audio (ByteDance) es el default que
+# recomienda el propio generate_audio; multilingüe. Costo medido (jul 2026):
+# ~0.0067 créditos por carácter (lineal). Voz configurable con voice_type+voice_id
+# de list_voices (sin configurar, el server usa su voz por defecto).
+DEFAULT_TTS_MODEL = "seed_audio"
+# Engines de la tool text2speech_v2 (el id de app es el nombre del engine, p.ej.
+# "elevenlabs"; el MCP los expone como model=text2speech_v2 + variant). A
+# diferencia de seed_audio, text2speech_v2 EXIGE voice_type + voice_id.
+_TTS_V2_VARIANTS = {"elevenlabs", "minimax", "seed_speech", "vibe_voice", "cozy_voice"}
+# Voz de respaldo para esos engines cuando el .env no fija
+# HIGGSFIELD_TTS_VOICE_TYPE/ID: preset "Elena" de list_voices (jul 2026).
+_DEFAULT_V2_VOICE = ("preset", "ca83ca7f-c186-493d-bd69-0d765fa861b2")
+# Seedance genera audio nativo por defecto; nuestros clips van SIEMPRE mudos (la
+# voz la pone el TTS + explainer_video, y el concat mudo de ffmpeg no espera pista
+# de audio), así que se apaga explícito. Solo se manda a modelos que aceptan el
+# flag — un param desconocido puede disparar un 422 (p.ej. Kling no lo tiene).
+_VIDEO_EXTRA_PARAMS = {
+    "seedance_2_0": {"generate_audio": False},
+    "seedance_2_0_mini": {"generate_audio": False},
+}
+# Fuentes válidas de los subtítulos quemados de explainer_video.
+SUBTITLE_FONTS = ("patrick", "caveat", "marker", "anton")
+
+# Cache en memoria del catálogo de voces (list_voices): casi no cambia y la llamada
+# abre una sesión MCP, así que se cachea 10 min. Best-effort.
+_VOICES_CACHE: dict = {"voices": None, "ts": 0.0}
+_VOICES_TTL = 600.0
 
 # Token store: web/api/.hf_oauth.json (lo genera mcp_bootstrap.py). Configurable.
 _DEFAULT_TOKEN_STORE = Path(__file__).resolve().parent.parent / ".hf_oauth.json"
 
 _POLL_DEADLINE = 240       # imagen ~10-40s; margen holgado
 _VIDEO_POLL_DEADLINE = 600  # video ~60-180s
+_AUDIO_POLL_DEADLINE = 240  # TTS ~5-30s por línea; margen holgado
 # Estados terminales de fallo (el resto se considera "en progreso").
 _TERMINAL_FAIL = {"failed", "canceled", "cancelled", "nsfw", "ip_detected", "ip_detect"}
 
@@ -104,6 +144,10 @@ def image_model() -> str:
 
 def video_model() -> str:
     return _env("HIGGSFIELD_MCP_VIDEO_MODEL", DEFAULT_VIDEO_MODEL)
+
+
+def tts_model() -> str:
+    return _env("HIGGSFIELD_MCP_TTS_MODEL", DEFAULT_TTS_MODEL)
 
 
 def token_store_path() -> Path:
@@ -422,6 +466,15 @@ async def _generate(tool: str, params: dict, deadline: int) -> str:
         return await _poll_in(session, job_id, deadline)
 
 
+async def _generate_job(tool: str, params: dict, deadline: int) -> dict:
+    """Como _generate pero conserva el job_id: explainer_video referencia los
+    clips/voces por su job id de generación, no por URL."""
+    async with _open_session() as session:
+        job_id = await _submit_in(session, tool, params)
+        url = await _poll_in(session, job_id, deadline)
+        return {"job_id": job_id, "url": url}
+
+
 async def _submit_only(tool: str, params: dict) -> str:
     async with _open_session() as session:
         return await _submit_in(session, tool, params)
@@ -452,13 +505,269 @@ def generate_image(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, mod
     return [_run_coro(_generate("generate_image", params, _POLL_DEADLINE))]
 
 
-def generate_video(prompt: str, *, aspect_ratio: str = DEFAULT_VIDEO_ASPECT,
-                   duration: int | None = None, model: str = "") -> str:
-    """Envía y bloquea hasta que el video esté listo. Devuelve la URL del video."""
-    params: dict = {"model": model or video_model(), "prompt": (prompt or "")[:2000], "aspect_ratio": aspect_ratio}
+def _video_params(prompt: str, aspect_ratio: str, duration: int | None,
+                  model: str, medias: list[dict] | None) -> dict:
+    m = model or video_model()
+    params: dict = {"model": m, "prompt": (prompt or "")[:2000], "aspect_ratio": aspect_ratio}
+    params.update(_VIDEO_EXTRA_PARAMS.get(m, {}))
     if duration:
         params["duration"] = duration
+    if medias:
+        params["medias"] = medias
+    return params
+
+
+def generate_video(prompt: str, *, aspect_ratio: str = DEFAULT_VIDEO_ASPECT,
+                   duration: int | None = None, model: str = "",
+                   medias: list[dict] | None = None) -> str:
+    """Envía y bloquea hasta que el video esté listo. Devuelve la URL del video.
+
+    `medias` habilita image-to-video: lista de {"value": media_id, "role": ...}
+    con roles start_image/end_image/image (el media_id sale de import_media_url).
+    En text-to-video se deja en None.
+    """
+    params = _video_params(prompt, aspect_ratio, duration, model, medias)
     return _run_coro(_generate("generate_video", params, _VIDEO_POLL_DEADLINE))
+
+
+def submit_video(prompt: str, *, aspect_ratio: str = DEFAULT_VIDEO_ASPECT,
+                 duration: int | None = None, model: str = "",
+                 medias: list[dict] | None = None) -> dict:
+    """Encola una generación de video y devuelve el handle {"job_id"} sin esperarla.
+
+    Separar el submit de la espera (igual que submit_image/poll_image) permite
+    encolar los N segmentos de un reel de una vez — el server los genera en
+    paralelo — y reintentar la espera de uno sin volver a pagar la generación.
+    """
+    params = _video_params(prompt, aspect_ratio, duration, model, medias)
+    return {"job_id": _run_coro(_submit_only("generate_video", params))}
+
+
+def poll_video(handle: dict, *, deadline: int = _VIDEO_POLL_DEADLINE) -> dict:
+    """Espera un handle de submit_video. Devuelve {"job_id", "url"}."""
+    job_id = handle["job_id"]
+    return {"job_id": job_id, "url": _run_coro(_poll_only(job_id, deadline))}
+
+
+def generate_video_job(prompt: str, *, aspect_ratio: str = DEFAULT_VIDEO_ASPECT,
+                       duration: int | None = None, model: str = "",
+                       medias: list[dict] | None = None) -> dict:
+    """Como generate_video, pero devuelve {"job_id", "url"}.
+
+    El job_id es lo que consume assemble_explainer (referencia los clips por id de
+    generación); la URL sigue sirviendo para el fallback de stitching local.
+    """
+    params = _video_params(prompt, aspect_ratio, duration, model, medias)
+    return _run_coro(_generate_job("generate_video", params, _VIDEO_POLL_DEADLINE))
+
+
+def _tts_params(text: str, model: str, voice_type: str, voice_id: str, *,
+                speech_rate: float | None = None, pitch_rate: float | None = None) -> dict:
+    """Params de generate_audio para un modelo TTS de la app.
+
+    Un id de _TTS_V2_VARIANTS (p.ej. "elevenlabs") se traduce a
+    model=text2speech_v2 + variant. Ese modelo exige voz explícita: si el .env
+    no fija HIGGSFIELD_TTS_VOICE_TYPE/ID se usa la voz de respaldo del módulo.
+    Con seed_audio la voz sigue siendo opcional (el server pone la suya).
+
+    `speech_rate`/`pitch_rate` son el ajuste fino de velocidad y tono (ratios,
+    1.0 = normal). El MCP acepta params extra (additionalProperties abierto), así
+    que un modelo que no los soporte simplemente los ignora — no rompe.
+    """
+    m = (model or tts_model()).strip()
+    params: dict = {"prompt": (text or "")[:2000]}
+    if m in _TTS_V2_VARIANTS:
+        params["model"] = "text2speech_v2"
+        params["variant"] = m
+        if not (voice_type and voice_id):
+            voice_type, voice_id = _DEFAULT_V2_VOICE
+    else:
+        params["model"] = m
+    if voice_type and voice_id:
+        params["voice_type"] = voice_type
+        params["voice_id"] = voice_id
+    if speech_rate is not None:
+        params["speech_rate"] = speech_rate
+    if pitch_rate is not None:
+        params["pitch_rate"] = pitch_rate
+    return params
+
+
+def generate_audio(text: str, *, model: str = "", voice_type: str = "",
+                   voice_id: str = "", speech_rate: float | None = None,
+                   pitch_rate: float | None = None) -> dict:
+    """TTS: genera la locución de `text` y devuelve {"job_id", "url"}.
+
+    La voz es opcional (voice_type + voice_id de list_voices, p.ej. preset +
+    UUID); sin configurar, el server usa la voz por defecto del modelo (o la de
+    respaldo si el modelo la exige — ver _tts_params). `speech_rate`/`pitch_rate`
+    ajustan velocidad y tono (1.0 = normal). El job_id es lo que se pasa como
+    `audio` de un bloque de assemble_explainer.
+    """
+    params = _tts_params(text, model, voice_type, voice_id,
+                         speech_rate=speech_rate, pitch_rate=pitch_rate)
+    return _run_coro(_generate_job("generate_audio", params, _AUDIO_POLL_DEADLINE))
+
+
+def submit_audio(text: str, *, model: str = "", voice_type: str = "",
+                 voice_id: str = "", speech_rate: float | None = None,
+                 pitch_rate: float | None = None) -> dict:
+    """Encola un TTS y devuelve el handle {"job_id"} sin esperarlo (ver submit_video)."""
+    params = _tts_params(text, model, voice_type, voice_id,
+                         speech_rate=speech_rate, pitch_rate=pitch_rate)
+    return {"job_id": _run_coro(_submit_only("generate_audio", params))}
+
+
+def poll_audio(handle: dict, *, deadline: int = _AUDIO_POLL_DEADLINE) -> dict:
+    """Espera un handle de submit_audio. Devuelve {"job_id", "url"}."""
+    job_id = handle["job_id"]
+    return {"job_id": job_id, "url": _run_coro(_poll_only(job_id, deadline))}
+
+
+def list_voices(*, max_pages: int = 5, force: bool = False) -> list[dict]:
+    """Lista las voces disponibles para el TTS (tool list_voices del MCP).
+
+    Devuelve [{voice_id, voice_type, name, gender, preview_url}] — presets + clones
+    del usuario. El par (voice_type, voice_id) es lo que consume generate_audio.
+    Best-effort (── [] si falla, sin lanzar) y cacheado en memoria (10 min) porque
+    el catálogo casi no cambia y la llamada abre una sesión MCP.
+    """
+    now = time.time()
+    cached = _VOICES_CACHE["voices"]
+    if not force and cached is not None and now - _VOICES_CACHE["ts"] < _VOICES_TTL:
+        return cached
+
+    async def _list() -> list[dict]:
+        out: list[dict] = []
+        cursor: str | None = None
+        async with _open_session() as session:
+            for _ in range(max_pages):
+                args: dict = {"size": 100}
+                if cursor:
+                    args["cursor"] = cursor
+                data = _structured(await session.call_tool("list_voices", args))
+                err = data.get("error") or ""
+                if err:
+                    if _is_auth_error(err):
+                        raise ReauthRequired(
+                            f"Higgsfield MCP: sesión OAuth inválida ({err}). {_REAUTH_HINT}")
+                    break
+                for v in (data.get("voices") or []):
+                    if v.get("voice_id"):
+                        out.append({
+                            "voice_id": v.get("voice_id"),
+                            "voice_type": v.get("voice_type") or "preset",
+                            "name": v.get("name") or "Voz",
+                            "gender": v.get("gender"),
+                            "preview_url": v.get("preview_url") or "",
+                        })
+                cursor = data.get("next_cursor")
+                if not data.get("has_more") or not cursor:
+                    break
+        return out
+
+    try:
+        voices = _run_coro(_list())
+    except Exception:
+        return cached or []
+    _VOICES_CACHE["voices"] = voices
+    _VOICES_CACHE["ts"] = now
+    return voices
+
+
+def assemble_explainer(items: list[dict], *, width: int, height: int,
+                       subtitle_font: str = "") -> str:
+    """Une clips (+ voz por bloque) en un MP4 vía la tool explainer_video del MCP.
+
+    `items`: [{"video": job_id|media_id, "audio": job_id|media_id opcional}, ...]
+    en orden final (mínimo 2). Cada bloque es una ventana fija: la voz corta se
+    centra y la larga se acelera sin cambiar el pitch, así la duración total es
+    exacta. Con `subtitle_font` (patrick|caveat|marker|anton) el backend
+    transcribe la voz (Whisper) y quema subtítulos sincronizados (0.05 crédito
+    por bloque con voz; el ensamblaje en sí es gratis). Devuelve la URL del MP4.
+    """
+    params: dict = {"items": items, "width": width, "height": height}
+    if subtitle_font:
+        font = subtitle_font if subtitle_font in SUBTITLE_FONTS else SUBTITLE_FONTS[0]
+        params["subtitles"] = {"font": font}
+    return _run_coro(_generate("explainer_video", params, _VIDEO_POLL_DEADLINE))
+
+
+def import_media_url(url: str, *, media_type: str = "image") -> str:
+    """Importa una imagen/video/audio HTTPS a Higgsfield y devuelve su media_id.
+
+    Necesario antes de generate_video en image-to-video: el `medias[].value` debe
+    ser el media_id importado, no la URL cruda (máx 50MB por la doc del MCP).
+    """
+    async def _imp() -> str:
+        async with _open_session() as session:
+            data = _structured(await session.call_tool(
+                "media_import_url", {"url": url, "type": media_type}))
+            err = data.get("error") or ""
+            if err:
+                if _is_auth_error(err):
+                    raise ReauthRequired(
+                        f"Higgsfield MCP: sesión OAuth inválida ({err}). {_REAUTH_HINT}")
+                raise RuntimeError(f"media_import_url falló: {err}")
+            media_id = data.get("media_id")
+            if not media_id:
+                raise RuntimeError(f"media_import_url no devolvió media_id: {str(data)[:200]}")
+            return media_id
+    return _run_coro(_imp())
+
+
+def video_cost(*, prompt: str = "", aspect_ratio: str = DEFAULT_VIDEO_ASPECT,
+               duration: int | None = None, model: str = "",
+               medias: list[dict] | None = None) -> dict | None:
+    """Preflight del costo de UN video en créditos (get_cost=true — NO encola job).
+
+    Devuelve {"credits": int, "credits_exact": float} o None si falla. Best-effort:
+    nunca lanza (el costo es informativo, no debe frenar la generación).
+    """
+    params = dict(_video_params(prompt, aspect_ratio, duration, model, medias), get_cost=True)
+
+    async def _cost() -> dict:
+        async with _open_session() as session:
+            return _structured(await session.call_tool("generate_video", {"params": params}))
+
+    try:
+        data = _run_coro(_cost())
+    except Exception:
+        return None
+    return _parse_cost(data)
+
+
+def audio_cost(text: str, *, model: str = "", voice_type: str = "",
+               voice_id: str = "", speech_rate: float | None = None,
+               pitch_rate: float | None = None) -> dict | None:
+    """Preflight del costo del TTS en créditos (get_cost=true — NO encola job).
+
+    El costo escala linealmente con los caracteres del texto (~0.0067 cr/char con
+    seed_audio, medido jul 2026), así que pasarle el guion completo concatenado
+    da el total de todas las líneas en una sola llamada. Best-effort: nunca lanza.
+    """
+    params = dict(_tts_params(text, model, voice_type, voice_id,
+                              speech_rate=speech_rate, pitch_rate=pitch_rate), get_cost=True)
+
+    async def _cost() -> dict:
+        async with _open_session() as session:
+            return _structured(await session.call_tool("generate_audio", {"params": params}))
+
+    try:
+        data = _run_coro(_cost())
+    except Exception:
+        return None
+    return _parse_cost(data)
+
+
+def _parse_cost(data: dict) -> dict | None:
+    cost = data.get("cost")
+    if isinstance(cost, dict) and cost.get("credits") is not None:
+        return {
+            "credits": cost.get("credits"),
+            "credits_exact": cost.get("credits_exact", cost.get("credits")),
+        }
+    return None
 
 
 def credits_balance() -> float | None:

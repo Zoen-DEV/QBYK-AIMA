@@ -321,7 +321,9 @@ def render_hook(base_url: str, title: str, *, lang: str = "es", tone: str = "edu
     start_y = (1080 - total_h) // 2 - 30
     _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=14, align="center", max_width=_INNER_W)
 
-    subline = "Desliza →" if lang == "es" else "Swipe →"
+    # "»" y no "→": Poppins (tono inspiracional) no trae el glifo U+2192 y rendía
+    # un tofu; "»" existe en las dos fuentes embebidas (Montserrat y Poppins).
+    subline = "Desliza »" if lang == "es" else "Swipe »"
     sub_w = draw.textlength(subline, font=subline_font)
     draw.text(((1080 - sub_w) / 2, 1080 - _MARGIN - 50), subline, font=subline_font, fill=(255, 255, 255))
 
@@ -389,7 +391,8 @@ def render_credits(base_url: str, channel: str, video_title: str, *, lang: str =
     cta_font = _load_font(36, bold=False, tone=tone)
 
     label = "VIDEO ORIGINAL" if lang == "es" else "ORIGINAL VIDEO"
-    cta = "Link en bio 🔗" if lang == "es" else "Link in bio 🔗"
+    # Sin el emoji 🔗: ninguna de las fuentes embebidas trae glifos emoji (tofu).
+    cta = "Link en bio" if lang == "es" else "Link in bio"
 
     # Compute block height first to center vertically
     title_lines = _wrap(video_title, title_font, _INNER_W, draw)

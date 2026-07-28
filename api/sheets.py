@@ -12,6 +12,7 @@ import io
 from datetime import date, datetime
 from pathlib import Path
 
+import model_catalog
 import networks
 
 # Orden de columnas = orden en la plantilla. Los encabezados deben coincidir con
@@ -19,13 +20,17 @@ import networks
 COLUMNS = [
     "youtube_url",
     "texto",
-    "archivo_url",
     "tono",
     "objetivo",
     "tipo_medio",
     "fuente_imagen",
+    "modelo_imagen",
+    "template_set",
     "formato",
     "carrusel_slides",
+    "duracion_video",
+    "modelo_video",
+    "modelo_voz",
     "idioma",
     "linkedin",
     "instagram",
@@ -43,6 +48,11 @@ ALLOWED = {
     "objetivo": {"", "engagement", "awareness", "trafico"},
     "tipo_medio": {"imagen", "video"},
     "fuente_imagen": {"higgsfield", "template"},
+    # Modelos de generación (vacío = default del .env). Catálogo curado en
+    # model_catalog.py — misma fuente que los selectores del flujo individual.
+    "modelo_imagen": {""} | set(model_catalog.IMAGE_MODELS),
+    "modelo_video": {""} | set(model_catalog.VIDEO_MODELS),
+    "modelo_voz": {""} | set(model_catalog.TTS_MODELS),
     "formato": {"imagen-unica", "carrusel", "historia", "reel"},
     "idioma": {"auto", "es", "en"},
     # linkedin/instagram/facebook son sí/no por red → se parsean aparte (_net_yes).
@@ -52,6 +62,11 @@ ALLOWED = {
 NET_YES = {"sí", "si", "s", "yes", "y", "true", "1", "x", "✓"}
 NET_NO = {"no", "n", "false", "0"}
 
+# Redes que el sheet expone como columnas sí/no. TikTok NO está: es solo-individual
+# (destino de reels desde la página /reel), así que el bulk nunca lo elige. Recorrer
+# solo estas columnas evita que una columna ausente cuente como "sí".
+SHEET_NETWORKS = ("linkedin", "instagram", "facebook")
+
 # Opciones (ordenadas) que se muestran como lista desplegable en la plantilla.
 # Deben mantenerse en sincronía con ALLOWED (sin el vacío: ese se deja en blanco).
 # carrusel_slides también es una lista para que el usuario elija un número válido.
@@ -60,9 +75,14 @@ DROPDOWN_OPTIONS = {
     "objetivo": ["engagement", "awareness", "trafico"],
     "tipo_medio": ["imagen", "video"],
     "fuente_imagen": ["higgsfield", "template"],
+    "modelo_imagen": list(model_catalog.IMAGE_MODELS),
+    "modelo_video": list(model_catalog.VIDEO_MODELS),
+    "modelo_voz": list(model_catalog.TTS_MODELS),
     "formato": ["imagen-unica", "carrusel", "historia", "reel"],
     "idioma": ["auto", "es", "en"],
     "carrusel_slides": ["3", "4", "5", "6"],
+    "template_set": ["1", "2", "3"],
+    "duracion_video": ["10", "20", "30", "45", "60"],
     "linkedin": ["sí", "no"],
     "instagram": ["sí", "no"],
     "facebook": ["sí", "no"],
@@ -73,9 +93,14 @@ DEFAULTS = {
     "objetivo": "",
     "tipo_medio": "imagen",
     "fuente_imagen": "higgsfield",
+    "modelo_imagen": "",
+    "template_set": 1,
+    "modelo_video": "",
+    "modelo_voz": "",
     "formato": "imagen-unica",
     "idioma": "auto",
     "carrusel_slides": 3,
+    "duracion_video": 0,
     "linkedin": "sí",
     "instagram": "sí",
     "facebook": "sí",
@@ -84,15 +109,19 @@ DEFAULTS = {
 # Descripción legible de valores válidos: va en los comentarios de celda y en la
 # hoja "Instrucciones" de la plantilla.
 COLUMN_HELP = {
-    "youtube_url": "URL de YouTube. Llena ESTA, 'texto' o 'archivo_url' (una sola fuente por fila).",
-    "texto": "Texto libre (guion, notas). Llena ESTA, 'youtube_url' o 'archivo_url' (una sola por fila).",
-    "archivo_url": "URL pública de un audio (.ogg/.opus/.m4a/.mp3/.wav) o documento (.pdf/.docx/.txt/.md). Acepta links compartidos de Google Drive/Dropbox. Llena ESTA, 'youtube_url' o 'texto' (una sola por fila).",
+    "youtube_url": "URL de YouTube. Llena ESTA o 'texto' (una sola fuente por fila).",
+    "texto": "Texto libre (guion, notas). Llena ESTA o 'youtube_url' (una sola fuente por fila).",
     "tono": "Vacío (auto) | educativo | inspiracional | personal",
     "objetivo": "Vacío (auto) | engagement | awareness | trafico",
     "tipo_medio": "imagen | video. En formato = historia elige si la historia es imagen o video; en formato = reel se ignora (un reel siempre es video).",
     "fuente_imagen": "higgsfield (IA, con respaldo en plantillas) | template (solo plantillas). Solo aplica si tipo_medio = imagen.",
+    "modelo_imagen": "Modelo de las imágenes IA. Vacío (default Nano Banana Pro) | nano_banana_pro (2 cr/img) | nano_banana_2 (1.5) | nano_banana (1) | gpt_image_2 (0.5) | z_image (0.15). Solo aplica si la fuente es higgsfield.",
+    "template_set": "Set de estilo de las plantillas: 1 | 2 | 3 (vacío = 1). Solo aplica cuando se usan plantillas (fuente_imagen=template o como respaldo de Higgsfield).",
     "formato": "imagen-unica | carrusel | historia | reel. Aplica a todas las redes de la fila; si una red no soporta el formato se omite esa red (historia y reel no existen en LinkedIn). reel siempre genera video (requiere Higgsfield).",
     "carrusel_slides": "Número de 3 a 6 (solo aplica si formato = carrusel)",
+    "duracion_video": "Duración del video en segundos: 10 | 20 | 30 | 45 | 60 (solo aplica si tipo_medio = video o formato = reel). Vacío = un solo clip corto. Se arma concatenando varios clips.",
+    "modelo_video": "Modelo del video. Vacío (default Kling 3.0 Turbo) | kling3_0_turbo (1.5 cr/seg) | seedance_2_0_mini (2.5) | seedance_2_0 (4.5, máxima calidad). Solo aplica si hay video (tipo_medio = video o formato = reel/historia en video).",
+    "modelo_voz": "Voz en off de los reels. Vacío (default Seed Audio) | seed_audio (~0.007 cr/carácter) | elevenlabs (~0.003). Solo aplica a videos con voz.",
     "idioma": "auto | es | en",
     "linkedin": "¿Publicar en LinkedIn? sí | no (vacío = sí)",
     "instagram": "¿Publicar en Instagram? sí | no (vacío = sí)",
@@ -104,13 +133,17 @@ COLUMN_HELP = {
 COLUMN_WIDTHS = {
     "youtube_url": 44,
     "texto": 52,
-    "archivo_url": 44,
     "tono": 18,
     "objetivo": 18,
     "tipo_medio": 16,
     "fuente_imagen": 18,
+    "modelo_imagen": 20,
+    "template_set": 14,
     "formato": 18,
     "carrusel_slides": 18,
+    "duracion_video": 16,
+    "modelo_video": 20,
+    "modelo_voz": 16,
     "idioma": 14,
     "linkedin": 12,
     "instagram": 12,
@@ -122,13 +155,16 @@ EXAMPLE_ROWS = [
     {
         "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "texto": "",
-        "archivo_url": "",
         "tono": "educativo",
         "objetivo": "engagement",
         "tipo_medio": "imagen",
         "fuente_imagen": "higgsfield",
+        "modelo_imagen": "gpt_image_2",
         "formato": "carrusel",
         "carrusel_slides": 4,
+        "duracion_video": "",
+        "modelo_video": "",
+        "modelo_voz": "",
         "idioma": "auto",
         "linkedin": "sí",
         "instagram": "sí",
@@ -138,13 +174,16 @@ EXAMPLE_ROWS = [
     {
         "youtube_url": "",
         "texto": "Hoy quiero compartir 3 aprendizajes sobre productividad que cambiaron mi forma de trabajar...",
-        "archivo_url": "",
         "tono": "personal",
         "objetivo": "awareness",
         "tipo_medio": "imagen",
         "fuente_imagen": "template",
+        "modelo_imagen": "",
         "formato": "imagen-unica",
         "carrusel_slides": 3,
+        "duracion_video": "",
+        "modelo_video": "",
+        "modelo_voz": "",
         "idioma": "es",
         "linkedin": "sí",
         "instagram": "no",
@@ -154,13 +193,16 @@ EXAMPLE_ROWS = [
     {
         "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "texto": "",
-        "archivo_url": "",
         "tono": "inspiracional",
         "objetivo": "awareness",
         "tipo_medio": "video",
         "fuente_imagen": "higgsfield",
+        "modelo_imagen": "",
         "formato": "reel",
         "carrusel_slides": 3,
+        "duracion_video": "30",
+        "modelo_video": "seedance_2_0",
+        "modelo_voz": "elevenlabs",
         "idioma": "auto",
         "linkedin": "no",
         "instagram": "sí",
@@ -261,7 +303,7 @@ def build_template_xlsx() -> bytes:
         ("Cómo usar esta plantilla", True),
         ("", False),
         (f"• Cada fila = un post. Máximo {MAX_ROWS} filas (las demás se ignoran).", False),
-        ("• Por fila llena UNA fuente: 'youtube_url', 'texto' o 'archivo_url' (audio o documento por URL pública).", False),
+        ("• Por fila llena UNA fuente: 'youtube_url' o 'texto' (texto libre como guion o notas).", False),
         ("• 'fecha_hora' programa el post (AAAA-MM-DD HH:MM). Vacío = publicar ahora.", False),
         ("• Redes: pon sí/no en las columnas linkedin, instagram y facebook. Vacío = sí (se publica en las tres por defecto).", False),
         ("• 'formato' aplica a todas las redes de la fila. historia y reel no existen en LinkedIn: esa red se omite y se publica en las demás.", False),
@@ -368,22 +410,17 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
 
     youtube_url = _clean(g.get("youtube_url"))
     texto = _clean(g.get("texto"))
-    archivo_url = _clean(g.get("archivo_url"))
 
-    filled = [c for c, v in (("youtube_url", youtube_url), ("texto", texto), ("archivo_url", archivo_url)) if v]
+    filled = [c for c, v in (("youtube_url", youtube_url), ("texto", texto)) if v]
     if len(filled) > 1:
         w.append(f"Fila {idx}: tiene {', '.join(filled)}; se usa '{filled[0]}'.")
         if filled[0] != "texto":
             texto = ""
-        if filled[0] != "archivo_url":
-            archivo_url = ""
     if not filled:
-        w.append(f"Fila {idx}: sin 'youtube_url', 'texto' ni 'archivo_url'; se omite.")
+        w.append(f"Fila {idx}: sin 'youtube_url' ni 'texto'; se omite.")
         return None, w
 
-    # "archivo" = audio/documento por URL: se descarga y clasifica en run_pipeline
-    # (mismo camino que un archivo subido en el flujo individual).
-    source = "youtube" if youtube_url else ("texto" if texto else "archivo")
+    source = "youtube" if youtube_url else "texto"
     upload_bytes = b""
     upload_filename = ""
     if source == "texto":
@@ -420,7 +457,6 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
     params = {
         "source_type": source,
         "youtube_url": youtube_url,
-        "archivo_url": archivo_url,
         "upload_filename": upload_filename,
         "tono": _enum(g.get("tono"), "tono", w, idx),
         "tono_linkedin": "",
@@ -436,8 +472,14 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
         "media_origin": "generar",
         "historia_formato": historia_formato,
         "carrusel_slides": _parse_slides(g.get("carrusel_slides"), w, idx),
+        "duracion_video": _parse_duracion(g.get("duracion_video"), w, idx),
+        "camara_estilo": "dolly",
         "tipo_medio": tipo_medio,
         "fuente_imagen": _enum(g.get("fuente_imagen"), "fuente_imagen", w, idx),
+        "modelo_imagen": _enum(g.get("modelo_imagen"), "modelo_imagen", w, idx),
+        "template_set": _parse_template_set(g.get("template_set"), w, idx),
+        "modelo_video": _enum(g.get("modelo_video"), "modelo_video", w, idx),
+        "modelo_voz": _enum(g.get("modelo_voz"), "modelo_voz", w, idx),
         "idioma": _enum(g.get("idioma"), "idioma", w, idx),
         "modelo_perplexity": "sonar-pro",
         "redes": redes_ok,
@@ -447,8 +489,6 @@ def _row_to_spec(r: dict, idx: int) -> tuple[dict | None, list[str]]:
     schedule_dt = _parse_datetime(g.get("fecha_hora"), w, idx)
     if source == "youtube":
         label = youtube_url
-    elif source == "archivo":
-        label = archivo_url
     else:
         label = texto[:80] + ("…" if len(texto) > 80 else "")
 
@@ -506,10 +546,10 @@ def _parse_net_flags(g: dict, w: list[str], idx: int) -> list[str]:
     Por defecto (todas vacías) se publican las tres. Si el usuario pone 'no' en las
     tres, se avisa y se vuelve al default para no dejar el post sin destino.
     """
-    chosen = [net for net in networks.NETWORKS if _net_yes(g.get(net), net, w, idx)]
+    chosen = [net for net in SHEET_NETWORKS if _net_yes(g.get(net), net, w, idx)]
     if not chosen:
         w.append(f"Fila {idx}: no se eligió ninguna red (todas en 'no'); se publican las tres.")
-        return list(networks.NETWORKS)
+        return list(SHEET_NETWORKS)
     return chosen
 
 
@@ -525,6 +565,41 @@ def _parse_slides(value, w: list[str], idx: int) -> int:
     clamped = max(3, min(6, n))
     if clamped != n:
         w.append(f"Fila {idx}: 'carrusel_slides' {n} fuera de rango; se ajusta a {clamped}.")
+    return clamped
+
+
+def _parse_template_set(value, w: list[str], idx: int) -> int:
+    """Set de estilo de plantillas (1-3). Vacío → 1; fuera de rango → 1 con aviso."""
+    s = _clean(value)
+    if not s:
+        return DEFAULTS["template_set"]
+    try:
+        n = int(float(s))
+    except (ValueError, TypeError):
+        w.append(f"Fila {idx}: 'template_set' inválido ('{s}'); se usa 1.")
+        return DEFAULTS["template_set"]
+    if n not in (1, 2, 3):
+        w.append(f"Fila {idx}: 'template_set' {n} fuera de rango (1-3); se usa 1.")
+        return DEFAULTS["template_set"]
+    return n
+
+
+def _parse_duracion(value, w: list[str], idx: int) -> int:
+    """Duración de video en segundos (0 = un solo clip corto por defecto).
+
+    Vacío → 0. Se clampa a 0–60 (el pipeline la logra concatenando varios clips).
+    """
+    s = _clean(value)
+    if not s:
+        return DEFAULTS["duracion_video"]
+    try:
+        n = int(float(s))
+    except (ValueError, TypeError):
+        w.append(f"Fila {idx}: 'duracion_video' inválido ('{s}'); se usa el clip por defecto.")
+        return DEFAULTS["duracion_video"]
+    clamped = max(0, min(60, n))
+    if clamped != n:
+        w.append(f"Fila {idx}: 'duracion_video' {n} fuera de rango; se ajusta a {clamped}.")
     return clamped
 
 

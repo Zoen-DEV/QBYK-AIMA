@@ -89,7 +89,9 @@ export default function ProgressView({ jobId, apiUrl }: { jobId: string; apiUrl:
 
       if (step === "ping") return;
 
-      if (step === "done" && redirect) {
+      // "done" → pantalla de revisión; "preview" → pantalla de preview editable
+      // (pausa del flujo individual antes de generar imágenes/video).
+      if ((step === "done" || step === "preview") && redirect) {
         es.close();
         window.location.href = redirect;
         return;

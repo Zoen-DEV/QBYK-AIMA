@@ -1,0 +1,206 @@
+---
+import Base from "../../../layouts/Base.astro";
+import BackLink from "../../../components/BackLink.astro";
+
+const { id } = Astro.params;
+if (!id) return Astro.redirect("/");
+
+const apiUrl = import.meta.env.API_URL || "http://127.0.0.1:8000";
+const res = await fetch(`${apiUrl}/jobs/${id}`);
+if (!res.ok) return Astro.redirect("/");
+const job = await res.json();
+
+// El preview solo tiene sentido en el estado "preview" (fase de escritura terminada).
+// Si ya avanzó, mandamos a la pantalla que corresponde.
+if (job.status === "error") return Astro.redirect("/");
+if (job.status === "review" || job.status === "done") return Astro.redirect(`/jobs/${id}/review`);
+if (job.status !== "preview") return Astro.redirect(`/jobs/${id}`);
+
+const posts = job.posts || {};
+const showLi = !!posts.linkedin_text;
+const showIg = !!posts.instagram_text;
+const showFb = !!posts.facebook_text;
+
+const imageText =
+  posts.image_text && typeof posts.image_text === "object" ? posts.image_text : null;
+const imgHook = imageText?.hook || "";
+const imgSlides: string[] = Array.isArray(imageText?.slides) ? imageText.slides : [];
+const showImage = !!(imgHook || imgSlides.length);
+
+const storyboard: string[] = Array.isArray(posts.video_storyboard) ? posts.video_storyboard : [];
+const voiceover: string[] = Array.isArray(posts.video_voiceover) ? posts.video_voiceover : [];
+const showVideo = storyboard.length > 0 || !!posts.video_prompt;
+
+const inputCls =
+  "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y";
+---
+
+<Base title="Revisar prompts">
+  <div class="max-w-2xl mx-auto">
+    <div class="mb-6">
+      <BackLink href="/" label="Nueva generación" />
+      <h1 class="text-2xl font-bold text-white mt-3 mb-1">Revisar antes de generar</h1>
+      <p class="text-gray-400 text-sm truncate max-w-md">{job.content?.title || "Contenido"}</p>
+    </div>
+
+    <div class="mb-6 bg-brand-500/10 border border-brand-500/30 rounded-xl px-4 py-3 text-brand-200 text-sm flex items-start gap-2">
+      <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span>Estos son los textos y prompts generados. Edítalos si quieres antes de generar las imágenes/el video — así no gastas créditos en algo que aún no te convence.</span>
+    </div>
+
+    <form id="preview-form" class="space-y-6">
+      <!-- Textos de los posts -->
+      <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Textos de los posts</h2>
+        {showLi && (
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">LinkedIn</span>
+            <textarea name="linkedin_text" rows="6" class={inputCls}>{posts.linkedin_text}</textarea>
+          </label>
+        )}
+        {showIg && (
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Instagram{job.params?.tipo_post === "reel" ? " / TikTok (caption del reel)" : ""}</span>
+            <textarea name="instagram_text" rows="5" class={inputCls}>{posts.instagram_text}</textarea>
+          </label>
+        )}
+        {showFb && (
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Facebook</span>
+            <textarea name="facebook_text" rows="5" class={inputCls}>{posts.facebook_text}</textarea>
+          </label>
+        )}
+      </div>
+
+      <!-- Copy de los visuales (image_text) -->
+      {showImage && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+          <div>
+            <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Texto sobre las imágenes</h2>
+            <p class="text-[11px] text-gray-500 mt-1">Lo que va impreso en la portada y los slides (no es el caption).</p>
+          </div>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Portada (hook)</span>
+            <textarea name="image_hook" rows="2" class={inputCls}>{imgHook}</textarea>
+          </label>
+          {imgSlides.length > 0 && (
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Slides de info <span class="text-gray-600">(una idea por línea)</span></span>
+              <textarea name="image_slides" rows={Math.max(3, imgSlides.length)} class={inputCls}>{imgSlides.join("\n")}</textarea>
+            </label>
+          )}
+        </div>
+      )}
+
+      <!-- Prompts del video -->
+      {showVideo && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+          <div>
+            <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Video</h2>
+            <p class="text-[11px] text-gray-500 mt-1">El storyboard (en inglés) dirige la imagen de cada segmento; la voz en off (en el idioma del post) es lo que se escucha.</p>
+          </div>
+          {voiceover.length > 0 && (
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Voz en off <span class="text-gray-600">(una línea hablada por segmento)</span></span>
+              <textarea name="video_voiceover" rows={Math.max(3, voiceover.length)} class={inputCls}>{voiceover.join("\n")}</textarea>
+            </label>
+          )}
+          {storyboard.length > 0 && (
+            <label class="block">
+              <span class="text-xs text-gray-400 mb-1 block">Storyboard <span class="text-gray-600">(un shot por línea, en inglés)</span></span>
+              <textarea name="video_storyboard" rows={Math.max(3, storyboard.length)} class={inputCls}>{storyboard.join("\n")}</textarea>
+            </label>
+          )}
+          {/* La voz se arma por bloques: una línea hablada por shot. Si los conteos no
+              coinciden, el reel se genera mudo — mejor avisarlo antes de gastar créditos. */}
+          {voiceover.length > 0 && storyboard.length > 0 && (
+            <p id="vo-count" class="text-[11px] text-amber-400/90 hidden"></p>
+          )}
+          <details class="group">
+            <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition list-none">Prompts avanzados</summary>
+            <div class="mt-3 space-y-4">
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Estilo visual (video_style)</span>
+                <textarea name="video_style" rows="2" class={inputCls}>{posts.video_style || ""}</textarea>
+              </label>
+              <label class="block">
+                <span class="text-xs text-gray-400 mb-1 block">Prompt de respaldo (1 solo clip)</span>
+                <textarea name="video_prompt" rows="3" class={inputCls}>{posts.video_prompt || ""}</textarea>
+              </label>
+            </div>
+          </details>
+        </div>
+      )}
+
+      <p class="text-[11px] text-amber-400/80 hidden" id="gen-error"></p>
+
+      <button type="submit" id="gen-btn"
+        class="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3.5 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        Generar imágenes / video
+      </button>
+    </form>
+  </div>
+</Base>
+
+<script define:vars={{ id }}>
+  const form = document.getElementById("preview-form");
+  const btn = document.getElementById("gen-btn");
+  const errEl = document.getElementById("gen-error");
+
+  // Guion de voz vs storyboard: explainer_video arma un bloque por shot y necesita
+  // una línea hablada para cada uno. Con conteos distintos el reel sale mudo, así
+  // que se avisa mientras se edita (no bloquea: el usuario puede querer el mudo).
+  const voEl = form.querySelector('[name="video_voiceover"]');
+  const sbEl = form.querySelector('[name="video_storyboard"]');
+  const countEl = document.getElementById("vo-count");
+  const countLines = (el) => el.value.split("\n").filter((l) => l.trim()).length;
+
+  function syncCounts() {
+    const vo = countLines(voEl);
+    const sb = countLines(sbEl);
+    countEl.classList.toggle("hidden", vo === sb);
+    if (vo !== sb) {
+      countEl.textContent = `La voz tiene ${vo} línea(s) y el storyboard ${sb} shot(s): dejá una línea hablada por shot o el reel se genera sin voz ni subtítulos.`;
+    }
+  }
+
+  if (voEl && sbEl && countEl) {
+    voEl.addEventListener("input", syncCounts);
+    sbEl.addEventListener("input", syncCounts);
+    syncCounts();
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Enviando...`;
+    errEl.classList.add("hidden");
+
+    try {
+      // 1) Guardar las ediciones (solo los campos presentes en el form).
+      const editData = new FormData(form);
+      const editRes = await fetch(`/api/jobs/${id}/edit`, { method: "POST", body: editData });
+      if (!editRes.ok) throw new Error(`No se pudieron guardar los cambios (HTTP ${editRes.status})`);
+
+      // 2) Arrancar la generación de medios.
+      const genRes = await fetch(`/api/jobs/${id}/generate`, { method: "POST" });
+      if (!genRes.ok) {
+        const j = await genRes.json().catch(() => ({}));
+        throw new Error(j.detail || `No se pudo iniciar la generación (HTTP ${genRes.status})`);
+      }
+
+      // 3) Seguir el progreso de la fase de medios.
+      window.location.href = `/jobs/${id}`;
+    } catch (err) {
+      errEl.textContent = String(err.message || err);
+      errEl.classList.remove("hidden");
+      btn.disabled = false;
+      btn.innerHTML = "Generar imágenes / video";
+    }
+  });
+</script>

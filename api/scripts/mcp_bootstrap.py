@@ -260,6 +260,20 @@ async def _balance(session: ClientSession) -> float | None:
     return credits
 
 
+async def _voices(session: ClientSession) -> None:
+    """Voces TTS disponibles (para elegir HIGGSFIELD_TTS_VOICE_TYPE/ID del .env)."""
+    data = _structured(await session.call_tool("list_voices", {"size": 100}))
+    if data.get("error"):
+        print(f"!! error: {data['error']}")
+        return
+    voices = data.get("voices") or []
+    print(f"\n=== {len(voices)} voces (list_voices) ===\n")
+    for v in voices:
+        print(f"  {v.get('voice_type'):7}  {v.get('voice_id')}  {v.get('name')!r}"
+              f"  gender={v.get('gender')}  preview={v.get('preview_url', '')}")
+    print("\n>> En .env: HIGGSFIELD_TTS_VOICE_TYPE=<voice_type>  HIGGSFIELD_TTS_VOICE_ID=<voice_id>")
+
+
 async def _models(session: ClientSession, type_: str) -> None:
     # Sin filtro `input` para ver TODO el catálogo del tipo (con input=text el MCP
     # oculta los text-to-video como kling/seedance).
@@ -324,6 +338,8 @@ async def main() -> None:
     # Acciones (elegí una; por defecto lista las tools):
     parser.add_argument("--balance", action="store_true", help="Mostrar créditos + plan.")
     parser.add_argument("--models", choices=["image", "video"], help="Listar modelos de ese tipo.")
+    parser.add_argument("--voices", action="store_true",
+                        help="Listar voces TTS (voice_id para HIGGSFIELD_TTS_VOICE_ID).")
     parser.add_argument("--test-image", action="store_true", help="Generar 1 imagen y medir créditos.")
     parser.add_argument("--test-video", action="store_true", help="Generar 1 video y medir créditos.")
     parser.add_argument("--model", help="ID de modelo para la prueba (override del default).")
@@ -354,6 +370,8 @@ async def main() -> None:
                 await _balance(session)
             elif ns.models:
                 await _models(session, ns.models)
+            elif ns.voices:
+                await _voices(session)
             elif ns.test_image:
                 params = {"model": ns.model or _DEFAULT_IMAGE_MODEL,
                           "prompt": ns.prompt, "aspect_ratio": ns.aspect or "1:1"}

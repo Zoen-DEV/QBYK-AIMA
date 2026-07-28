@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import re
 import urllib.request
 import urllib.error
@@ -25,8 +26,9 @@ def _system_prompt() -> str:
     return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn, Instagram and Facebook based on YouTube video content.
 
 OUTPUT FORMAT: Respond with ONLY valid JSON in this exact shape — no markdown, no explanation, no preamble:
-{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}, "video_prompt": "..."}
+{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}, "video_prompt": "...", "video_style": "...", "video_storyboard": ["...", "..."], "video_voiceover": ["...", "..."]}
 Only write text for the platforms requested in the user message; set any non-requested platform's text to an empty string.
+Every string value is PLAIN TEXT for social feeds: never use markdown inside them (**bold**, _italics_, # headers, [links](url)) — the platforms render the characters literally.
 
 === IMAGE TEXT (overlay copy for the visuals) ===
 The `image_text` object is the text that gets printed ON the images/carousel — it is NOT the caption. Write it as standalone, designed-poster copy:
@@ -35,13 +37,38 @@ The `image_text` object is the text that gets printed ON the images/carousel —
 - If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
 Write `image_text` in the same language as the posts.
 
-=== VIDEO PROMPT (text-to-video generation script) ===
-`video_prompt` feeds an AI text-to-video model that generates the clip for the post — the audience never reads it. Provide it ONLY when the user message says "VIDEO PROMPT NEEDED: yes"; otherwise set it to an empty string.
-- Write it in ENGLISH regardless of the posts' language (video models follow English best).
-- 40–80 words describing ONE continuous, filmable scene that visually embodies the content's core message: pick a concrete setting, subject and action inspired by the transcript's main idea (a talk about saving money → coins dropping into a glass jar on a wooden desk). Avoid abstract concepts a camera cannot film.
-- Specify camera movement (slow push-in, orbit, glide...), lighting and mood; compose for a vertical phone screen.
-- The scene is purely visual: no people talking to camera, no dialogue, and do NOT ask for on-screen text of any kind.
-- The fabrication rule does not apply here (it is a scene description, not a claim), but the scene must clearly evoke THIS content's topic — never a generic office stock clip.
+=== VIDEO PROMPT, STYLE & STORYBOARD (text-to-video generation) ===
+`video_prompt`, `video_style` and `video_storyboard` feed an AI text-to-video model — the audience never reads them. Provide them (and `video_voiceover`) ONLY when the user message says "VIDEO PROMPT NEEDED: yes"; otherwise set `video_prompt` and `video_style` to "", and `video_storyboard` and `video_voiceover` to [].
+Write the prompt, style and storyboard in ENGLISH regardless of the posts' language (video models follow English best); `video_voiceover` is the one exception — the audience HEARS it, so it goes in the posts' language.
+
+GROUNDING (this is what makes the clip specific instead of generic — the #1 rule here):
+- First, find the SINGLE most visually concrete thing in the transcript: a named object, place, tool, action, example, anecdote, or number the speaker actually mentions. Build the scene from THAT specific detail.
+- NEVER output a generic scene. Banned: "modern office", "person at a laptop", "business people in a meeting", "abstract editorial background", "data/network flowing", glowing dashboards, and any stock-footage cliché. If the content is abstract, choose ONE concrete physical metaphor object (compound interest → a single coin dropping onto a growing stack of coins; focus → one lit desk lamp in an otherwise dark room; growth → a seedling breaking through soil).
+- The scene is purely visual: no people talking to camera, no dialogue, and NO on-screen text, captions, logos, or watermarks of any kind.
+- The no-fabrication rule does not apply to the scene itself (it is a description, not a claim), but the scene MUST clearly evoke THIS specific content — a viewer who knows the video should recognize why this scene was chosen.
+
+CINEMATOGRAPHY (write each shot like a director, not a keyword list):
+- Every shot description states, in natural prose: the subject and its ONE action; the framing (extreme close-up / close-up / medium / wide); ONE camera move (slow push-in, lateral glide, slow orbit, tilt-up reveal, rack focus); and the light with its source and quality ("warm late-afternoon window light", "a single desk lamp in a dark room", "soft overcast daylight").
+- One continuous take per shot: no cuts, no "then...", exactly one camera move, motion a real camera operator could physically execute.
+- Compose for a vertical 9:16 phone screen: subject in the upper two thirds, some foreground depth, and keep the lower third of the frame visually calm — burned-in captions will sit there.
+
+`video_style`: the look-lock that makes separately-generated segments cut together as one film — 10–18 words describing ONLY the look: lens/film character, lighting character, color palette, mood (e.g. "shot on 35mm, shallow depth of field, warm amber practicals against cool dusk blue, quiet confident mood"). No subjects, no actions, no scenery. It is appended verbatim to every shot, so never restate the look inside the beats.
+
+`video_prompt`: 40–80 words describing ONE continuous, filmable scene — the strongest single beat of the content, obeying the grounding and cinematography rules above.
+
+`video_storyboard`: an array of SHOT beats for a longer clip stitched from several segments. The user message says "VIDEO SEGMENTS NEEDED: N" — output EXACTLY N beats (if N is 0, output an empty array). Each beat is ONE continuous shot (25–50 words) obeying the grounding and cinematography rules. The N beats must read as ONE continuous visual story, never N disconnected clips:
+- Keep a recurring anchor across all beats — the same protagonist object, character or location evolving shot to shot, so the viewer feels "same world, next moment".
+- Chain the beats: open each beat on something the previous one left off (the object it ended on, the direction the camera was moving, the space it was entering) and name that carried-over element explicitly at the start of the beat.
+- Vary the framing between consecutive beats (wide → close-up → medium…) so each cut feels intentional; never vary the look — that lives in `video_style`.
+- Arc: beat 1 opens mid-action on the boldest image (it must grab in the first second), middle beats develop or escalate, and the final beat resolves on a payoff image that can hold a closing thought.
+Beat 1 should match the spirit of `video_prompt`. Draw each beat from a different concrete moment/example in the transcript when possible, not the same image repeated.
+
+`video_voiceover`: the narration spoken OVER the clip by a TTS voice — an array of EXACTLY N lines (same N as `video_storyboard`; empty array when N is 0). Unlike the prompts above, write it in the SAME LANGUAGE as the posts: line i is read aloud while shot i plays.
+- COUNT IS STRUCTURAL, NOT STYLISTIC: `video_voiceover` and `video_storyboard` must have the SAME number of items, one spoken line per shot. If the source material feels thin for N lines, split the narration into N shorter beats — never return fewer lines than shots.
+- SOUND HUMAN (the narration IS the reel — it must sound like a person, not a script): write like a creator talking to the camera — everyday spoken words, natural contractions, direct address to the viewer, and rhythm (mix a short punchy sentence with a longer one). Read each line aloud in your head: if it sounds like an essay or a news anchor, rewrite it. The humanization checklist applies here too (no AI filler connectors, no inflated vocabulary).
+- WORD BUDGET: the user message gives "VOICEOVER WORDS PER LINE: MIN-MAX". EVERY line must land inside that range — each line fills a fixed audio window, so a short line leaves seconds of dead air mid-reel (kills the flow) and an overlong one gets sped up.
+- FLOW BETWEEN LINES: line 1 is the spoken hook — open with the tension, claim or question that earns the next twenty seconds (never a greeting, never "en este video…"/"in this video…"). From line 2 on, pick up the previous line's idea with a natural spoken connector (ES: "Y eso significa que…", "Pero acá viene lo bueno:", "¿El resultado?" — EN: "And that means…", "But here's the good part:", "The result?") — vary them, never open two lines the same way, never restart cold as if the previous line didn't exist. The last line closes the idea and may end with ONE short natural call to action (watch the full video / follow) only if it fits the budget.
+- The lines are narration, NOT captions: never mention or describe what is on screen. Plain speakable prose only: no hashtags, no emojis, no URLs, no quotes, no "shot 1:" prefixes; write short numbers as words. The FAITHFUL CITATIONS rule fully APPLIES here (these lines make claims the audience hears): every fact must come from the transcript.
 
 === LINKEDIN POST RULES ===
 - 150–300 words
@@ -57,7 +84,7 @@ Write `image_text` in the same language as the posts.
 
 === INSTAGRAM POST RULES ===
 - 80–150 words
-- Bold opening hook (1 sentence)
+- Strong opening hook (1 sentence) — plain text, no asterisks/markdown bold
 - Short punchy sentences or bullets
 - 3–6 emojis woven in naturally (not stacked at the end or beginning)
 - Clear call-to-action: "Link en bio" / "Link in bio" — do NOT paste the raw YouTube URL in captions
@@ -99,6 +126,65 @@ Apply these rules to every post silently:
 """
 
 
+def _segments_needed(params: dict) -> int:
+    """Cuántos shots pedirle al storyboard: ceil(duración objetivo / seg por shot).
+
+    `duracion_video` es la duración total buscada (segundos); `video_segment_seconds`
+    es lo que dura cada segmento generado (lo fija job_runner desde la config). Sin
+    duración objetivo → 1 (un solo clip, comportamiento previo).
+    """
+    def _int(key: str, default: int) -> int:
+        try:
+            v = int(params.get(key) or 0)
+            return v if v > 0 else default
+        except (TypeError, ValueError):
+            return default
+    target = _int("duracion_video", 0)
+    seg = _int("video_segment_seconds", 5)
+    if target <= 0:
+        return 1
+    return max(1, math.ceil(target / seg))
+
+
+def _wants_video(params: dict) -> bool:
+    """¿El pipeline va a generar un video text-to-video que necesite guion del LLM?
+
+    Misma condición que la rama de video de `job_runner`, calculada solo con
+    `params` para que ambos flujos (individual y bulk) la compartan. En "subir" el
+    medio ya existe; en "fotos" los frames son las fotos subidas (transición por
+    plantilla fija, sin guion).
+    """
+    if params.get("media_origin", "generar") in ("subir", "fotos"):
+        return False
+    tipo_post = params.get("tipo_post", "post")
+    return (
+        params.get("tipo_medio", "imagen") == "video"
+        or tipo_post == "reel"
+        or (tipo_post == "historia" and params.get("historia_formato", "imagen") == "video")
+    )
+
+
+def _voiceover_word_budget(params: dict) -> tuple[int, int]:
+    """Rango (mín, máx) de palabras por línea de voz: lo que LLENA el bloque.
+
+    Cada línea suena dentro de una ventana FIJA de `video_segment_seconds`:
+    explainer_video centra la voz corta (deja aire muerto a los costados) y
+    acelera la larga sin cambiar el pitch. A ~2.2–2.8 palabras/segundo de habla
+    natural (es/en), el rango apunta a llenar la ventana: quedarse corto abre
+    silencios a mitad del reel (mata la fluidez); pasarse un poco solo acelera
+    levemente la voz. Piso de 8 para que hasta el segmento más corto admita una
+    frase completa.
+    """
+    try:
+        seg = int(params.get("video_segment_seconds") or 5)
+    except (TypeError, ValueError):
+        seg = 5
+    seg = seg if seg > 0 else 5
+    lo = max(8, round(seg * 2.2))
+    hi = max(lo + 3, round(seg * 2.8))
+    return lo, hi
+
+
 def _user_message(content: dict, params: dict, clean_url: str) -> str:
     lang = params.get("lang", "es")
     tono_li = params.get("tono_linkedin", "educativo")
@@ -112,6 +198,11 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     do_li = "linkedin" in nets
     do_ig = "instagram" in nets
     do_fb = "facebook" in nets
+    do_tk = "tiktok" in nets
+    # TikTok reutiliza el caption de reel de Instagram: si TikTok está activo, pedimos
+    # igual el instagram_text (aunque Instagram no sea destino) para no dejar el post
+    # de TikTok sin texto. La publicación real a IG sigue gobernada por do_ig.
+    do_ig_text = do_ig or do_tk
     source_type = params.get("source_type", "youtube")
     has_url = bool((clean_url or "").strip())
 
@@ -135,19 +226,17 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     tipo_post = params.get("tipo_post", "post")
     special_fmt = {"reel": "reel", "historia": "story"}.get(tipo_post)
 
-    # ¿El pipeline va a generar un video (text-to-video)? Misma condición que la
-    # rama de video de job_runner, calculada solo con params para que ambos flujos
-    # (individual y bulk) la compartan. En modo "subir" el medio ya existe.
-    wants_video = params.get("media_origin", "generar") != "subir" and (
-        params.get("tipo_medio", "imagen") == "video"
-        or tipo_post == "reel"
-        or (tipo_post == "historia" and params.get("historia_formato", "imagen") == "video")
-    )
+    wants_video = _wants_video(params)
+    # Cuántos segmentos (shots) necesita el storyboard para llegar a la duración objetivo.
+    n_video_segments = _segments_needed(params) if wants_video else 0
+    # Rango de palabras por línea de voz en off: cada línea se lee sobre UNA
+    # ventana fija de `video_segment_seconds` — el rango la llena sin dejar aire.
+    vo_lo, vo_hi = _voiceover_word_budget(params)
 
     platforms = []
     if do_li:
         platforms.append(f"LinkedIn — tone: {tono_li}, objective: {obj_li}")
-    if do_ig:
+    if do_ig_text:
         platforms.append(f"Instagram — tone: {tono_ig}, objective: {obj_ig}, format: {special_fmt or fmt_ig}")
     if do_fb:
         fb_line = f"Facebook — tone: {tono_fb}, objective: {obj_fb}"
@@ -176,6 +265,8 @@ CONTENT SOURCE: {source_label}.
 Language to write in: {lang}
 INFO SLIDES NEEDED: {n_info_slides}  (output EXACTLY this many strings in image_text.slides — 0 means an empty array)
 VIDEO PROMPT NEEDED: {"yes" if wants_video else "no"}
+VIDEO SEGMENTS NEEDED: {n_video_segments}  (output EXACTLY this many shot beats in video_storyboard — 0 means an empty array)
+VOICEOVER WORDS PER LINE: {vo_lo}-{vo_hi}  (video_voiceover: exactly {n_video_segments} spoken line(s) in the posts' language, EVERY line within this range — 0 means an empty array)
 {url_line}
 Channel: {channel}
 
@@ -191,17 +282,47 @@ TRANSCRIPT / TEXT (first 6000 chars):
 {transcript_snippet}
 
 {"[Note: transcript is empty — use title + description only]" if not transcript_snippet.strip() else ""}
-
+{_manual_context_block(params, wants_video)}
 Important reminders:
 - Apply the full humanization checklist before outputting
 - Verify every specific claim against the transcript above
 - Instagram: max 5 hashtags, no raw URL in caption
 {li_url_reminder}
 - image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
-- video_prompt: {"write the English text-to-video scene script tied to this content (see VIDEO PROMPT rules)" if wants_video else "set it to an empty string (no video will be generated)"}
+- video_prompt / video_style / video_storyboard / video_voiceover: {f"write the English scene(s) tied to this content — video_prompt (single strongest beat), video_style (the shared look-lock appended to every shot) AND exactly {n_video_segments} beat(s) in video_storyboard (see VIDEO PROMPT, STYLE & STORYBOARD rules); ground every beat in a concrete detail from the transcript, never a generic stock scene, and chain the beats as one continuous visual story. video_voiceover: exactly {n_video_segments} spoken line(s) in {lang}, {vo_lo}-{vo_hi} words each, flowing as one spoken narration (hook → build → payoff) with natural connectors between lines; every fact from the transcript" if wants_video else "set video_prompt and video_style to empty strings, and video_storyboard and video_voiceover to empty arrays (no video will be generated)"}
 - Only write text for the platforms listed above; set every other platform's text to an empty string
-{_off_networks_reminder(do_li, do_ig, do_fb)}
+{_off_networks_reminder(do_li, do_ig_text, do_fb)}
 """
+
+
+def _manual_context_block(params: dict, wants_video: bool) -> str:
+    """Contextos separados para el video y la voz (modo manual de reel).
+
+    Permiten dirigir el video y la locución con material DISTINTO al del copy (el
+    transcript = manual_text). Solo se inyectan si el usuario los llenó y el job
+    genera video. Son material de origen provisto por el usuario (data, no
+    instrucciones): aplican como fuente para esas piezas y priman sobre el copy.
+    """
+    if not wants_video:
+        return ""
+    cv = (params.get("contexto_video") or "").strip()
+    cz = (params.get("contexto_voz") or "").strip()
+    lines = []
+    if cv:
+        lines.append(
+            "VIDEO CONTEXT (source material for the visuals — base video_prompt, "
+            "video_style and video_storyboard on THIS, not the copy text above; "
+            "however short it is, still output the exact number of shots requested "
+            f"above): {cv[:1500]}"
+        )
+    if cz:
+        lines.append(
+            "VOICEOVER CONTEXT (source material for the narration — base "
+            "video_voiceover on THIS, not the copy text above; however short it is, "
+            "still output the exact number of spoken lines requested above, splitting "
+            f"this material across them): {cz[:1500]}"
+        )
+    return ("\n\n" + "\n\n".join(lines)) if lines else ""
 
 
 def _off_networks_reminder(do_li: bool, do_ig: bool, do_fb: bool) -> str:
@@ -309,6 +430,39 @@ def _normalize_image_text(value) -> dict | None:
     return {"hook": hook, "slides": slides}
 
 
+# Red de seguridad POST-parseo, compartida por ambos proveedores: los modelos a
+# veces meten artefactos que las redes muestran literales — marcadores de cita
+# tipo [1] (sonar con web search) y negrita markdown **así** (ningún feed la
+# renderiza; se desenvuelve conservando el texto). La humanización de fondo vive
+# en el system prompt (checklist), también compartido; esto solo limpia formato.
+_CITATION_RE = re.compile(r"\s*\[\d+\]")
+_BOLD_MD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+
+def _sanitize_text(s: str) -> str:
+    s = _CITATION_RE.sub("", s)
+    s = _BOLD_MD_RE.sub(r"\1", s)
+    return s.strip()
+
+
+def _sanitize_posts(posts: dict) -> dict:
+    for key in ("linkedin_text", "instagram_text", "facebook_text"):
+        if posts.get(key):
+            posts[key] = _sanitize_text(posts[key])
+    img = posts.get("image_text")
+    if isinstance(img, dict):
+        if img.get("hook"):
+            img["hook"] = _sanitize_text(img["hook"])
+        img["slides"] = [_sanitize_text(s) for s in img.get("slides", [])]
+    for key in ("video_prompt", "video_style"):
+        if posts.get(key):
+            posts[key] = _sanitize_text(posts[key])
+    for key in ("video_storyboard", "video_voiceover"):
+        if isinstance(posts.get(key), list):
+            posts[key] = [_sanitize_text(s) for s in posts[key] if _sanitize_text(s)]
+    return posts
+
+
 def _parse_raw(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -328,12 +482,29 @@ def _parse_raw(raw: str) -> dict:
             parsed["image_text"] = img
         else:
             parsed.pop("image_text", None)
-        # video_prompt: string no vacío o nada (job_runner cae al prompt genérico).
-        vp = parsed.get("video_prompt")
-        if isinstance(vp, str) and vp.strip():
-            parsed["video_prompt"] = vp.strip()
-        else:
-            parsed.pop("video_prompt", None)
+        # video_prompt / video_style: string no vacío o nada (job_runner cae al
+        # prompt genérico / al estilo por defecto).
+        for key in ("video_prompt", "video_style"):
+            v = parsed.get(key)
+            if isinstance(v, str) and v.strip():
+                parsed[key] = v.strip()
+            else:
+                parsed.pop(key, None)
+        # video_storyboard: lista de shots (strings no vacíos) o nada (job_runner
+        # cae al video_prompt único → 1 segmento). video_voiceover: misma forma
+        # (una línea hablada por shot) o nada (el reel sale mudo, como antes).
+        for key in ("video_storyboard", "video_voiceover"):
+            val = parsed.get(key)
+            if isinstance(val, str):
+                val = [val]
+            if isinstance(val, (list, tuple)):
+                val = [str(x).strip() for x in val if str(x).strip()]
+            else:
+                val = []
+            if val:
+                parsed[key] = val
+            else:
+                parsed.pop(key, None)
         return parsed
     # Level-3 fallback recovers only the caption texts; image_text is left out
     # on purpose so job_runner degrades the overlay copy to its heuristics.
@@ -401,7 +572,7 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
         return "".join(chunks), usage
 
     raw, usage = await loop.run_in_executor(None, _stream)
-    return _parse_raw(raw), _anthropic_usage(usage)
+    return _sanitize_posts(_parse_raw(raw)), _anthropic_usage(usage)
 
 
 def _perplexity_usage(usage, model: str) -> dict | None:
@@ -498,20 +669,100 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
         return "".join(chunks), usage
 
     raw, usage = await loop.run_in_executor(None, _stream)
-    posts = _parse_raw(raw)
-    # Safety net: sonar models sometimes append citation markers like [1] despite instructions.
-    _strip = lambda s: re.sub(r"\s*\[\d+\]", "", s).strip()
-    for key in ("linkedin_text", "instagram_text", "facebook_text"):
-        if posts.get(key):
-            posts[key] = _strip(posts[key])
-    img = posts.get("image_text")
-    if isinstance(img, dict):
-        if img.get("hook"):
-            img["hook"] = _strip(img["hook"])
-        img["slides"] = [_strip(s) for s in img.get("slides", [])]
-    if posts.get("video_prompt"):
-        posts["video_prompt"] = _strip(posts["video_prompt"])
-    return posts, _perplexity_usage(usage, model)
+    return _sanitize_posts(_parse_raw(raw)), _perplexity_usage(usage, model)
+
+
+# ── Guion del video: una línea de voz por shot ────────────────────────────────
+# El pipeline arma la voz con `explainer_video`: un bloque por shot, cada uno con
+# su línea hablada. Si los conteos no calzan el reel sale MUDO, así que la salida
+# del LLM se reconcilia acá — el aviso del preview queda solo para las ediciones
+# del usuario, no para lo que genera la app.
+
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _split_unit(unit: str) -> list[str]:
+    """Parte una frase en dos por el corte natural más cercano a la mitad."""
+    words = unit.split()
+    if len(words) < 4:
+        return []
+    mid = len(words) // 2
+    breaks = [i for i, w in enumerate(words[:-1]) if w.endswith((",", ";", ":"))]
+    cut = min(breaks, key=lambda i: abs(i + 1 - mid), default=mid - 1) + 1
+    return [" ".join(words[:cut]), " ".join(words[cut:])]
+
+
+def _script_units(lines: list[str], n: int) -> list[str]:
+    """Descompone el guion en unidades (frases) suficientes para n bloques."""
+    units = [u.strip() for line in lines for u in _SENTENCE_END_RE.split(line) if u.strip()]
+    # Con menos frases que shots hay que partir alguna: dividir una frase larga es
+    # mejor que quedarse sin voz. El guard corta si ya no queda nada divisible.
+    for _ in range(n * 4):
+        if len(units) >= n:
+            break
+        idx = max(range(len(units)), key=lambda i: len(units[i].split()))
+        parts = _split_unit(units[idx])
+        if not parts:
+            break
+        units[idx:idx + 1] = parts
+    return units
+
+
+def _rebalance_voiceover(lines: list[str], n: int) -> list[str]:
+    """Reparte el MISMO guion en exactamente n líneas de peso parecido.
+
+    No inventa ni descarta texto (regla #3: no fabricar): solo redistribuye las
+    frases entre los n bloques. Devuelve `[]` si el guion no da para n bloques.
+    """
+    units = _script_units(lines, n)
+    if len(units) < n:
+        return []
+    weights = [max(1, len(u.split())) for u in units]
+    total = sum(weights)
+    out: list[str] = []
+    current: list[str] = []
+    consumed = 0
+    for i, unit in enumerate(units):
+        current.append(unit)
+        consumed += weights[i]
+        left_units, left_groups = len(units) - i - 1, n - len(out) - 1
+        # Se cierra el bloque al llegar a su cuota de palabras, o antes si quedan
+        # justo las unidades necesarias para los bloques que faltan.
+        if left_groups > 0 and left_units >= left_groups and (
+            consumed >= total * (len(out) + 1) / n or left_units == left_groups
+        ):
+            out.append(" ".join(current))
+            current = []
+    out.append(" ".join(current))
+    return out
+
+
+def _align_video_script(posts: dict, params: dict) -> dict:
+    """Deja `video_storyboard` y `video_voiceover` con el mismo largo (y el pedido).
+
+    Dos desalineaciones típicas del LLM (sobre todo con contexto manual corto):
+    más/menos shots que los que pide `duracion_video`, y menos líneas de voz que
+    shots. La primera se corrige recortando el storyboard; la segunda repartiendo
+    el guion entre los shots que hay, para no perder la voz ni acortar el video.
+    """
+    if not _wants_video(params):
+        return posts
+    storyboard = posts.get("video_storyboard")
+    if isinstance(storyboard, list) and len(storyboard) > _segments_needed(params):
+        storyboard = storyboard[:_segments_needed(params)]
+        posts["video_storyboard"] = storyboard
+    voiceover = posts.get("video_voiceover")
+    if not (isinstance(storyboard, list) and storyboard and isinstance(voiceover, list) and voiceover):
+        return posts
+    if len(voiceover) != len(storyboard):
+        aligned = _rebalance_voiceover(voiceover, len(storyboard))
+        if aligned:
+            posts["video_voiceover"] = aligned
+        else:
+            # Guion demasiado corto para repartir: se recortan los shots sobrantes.
+            # Un reel más corto CON voz y subtítulos supera a uno completo mudo.
+            posts["video_storyboard"] = storyboard[:len(voiceover)]
+    return posts
 
 
 async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, cfg) -> tuple[dict, dict | None]:
@@ -522,5 +773,7 @@ async def write_posts(content: dict, params: dict, clean_url: str, queue: asynci
     """
     provider = cfg.llm_provider  # raises if neither key is set
     if provider == "perplexity":
-        return await _write_with_perplexity(content, params, clean_url, queue, cfg.perplexity_api_key)
-    return await _write_with_anthropic(content, params, clean_url, queue, cfg.anthropic_api_key)
+        posts, usage = await _write_with_perplexity(content, params, clean_url, queue, cfg.perplexity_api_key)
+    else:
+        posts, usage = await _write_with_anthropic(content, params, clean_url, queue, cfg.anthropic_api_key)
+    return _align_video_script(posts, params), usage

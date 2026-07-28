@@ -168,20 +168,29 @@ def higgsfield_mcp_credits(
     Si el evento ya trae `units.credits` (congelado al escribirse), se respeta tal
     cual. Si no, se estima con las tarifas de `pricing.higgsfield_mcp` (medidas con
     el preflight `get_cost` del MCP):
-      imagen → generations × image_credits_per_generation[modelo]
-      video  → generations × video_credits_per_second[modelo] × seconds
-               (sin `seconds` en units se usa `video_default_seconds`, la duración
-               por defecto del modelo cuando la app no manda `duration`)
+      imagen   → generations × image_credits_per_generation[modelo]
+      video    → generations × video_credits_per_second[modelo] × seconds
+                 (sin `seconds` en units se usa `video_default_seconds`, la duración
+                 por defecto del modelo cuando la app no manda `duration`)
+      tts      → characters × tts_credits_per_character[modelo] (voz en off del reel)
+      assembly → voiced_blocks × subtitle_credits_per_block (explainer_video;
+                 el ensamblaje en sí es gratis, cobran los subtítulos)
     """
     frozen = _units(units, "credits")
     if frozen:
         return frozen
     rates = pricing.get("higgsfield_mcp") or {}
     generations = _units(units, "generations")
-    if (operation or "").lower() == "video_generation":
+    op = (operation or "").lower()
+    if op == "video_generation":
         per_second = _model_rate(rates.get("video_credits_per_second"), model)
         seconds = _units(units, "seconds") or _rate(rates, "video_default_seconds")
         return generations * per_second * seconds
+    if op == "tts":
+        per_char = _model_rate(rates.get("tts_credits_per_character"), model)
+        return _units(units, "characters") * per_char
+    if op == "video_assembly":
+        return _units(units, "voiced_blocks") * _rate(rates, "subtitle_credits_per_block")
     per_generation = _model_rate(rates.get("image_credits_per_generation"), model)
     return generations * per_generation
 

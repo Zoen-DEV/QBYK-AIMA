@@ -1,6 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
 import BackLink from "../components/BackLink.astro";
+import VoicePicker from "../components/VoicePicker.astro";
 ---
 
 <Base title="Nuevo post">
@@ -134,6 +135,46 @@ import BackLink from "../components/BackLink.astro";
           </span>
         </label>
 
+        <!-- Duración del video (solo aplica a Tipo de medio = Video) -->
+        <label class="block" id="duracion-video-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Duración del video</span>
+          <select name="duracion_video" id="duracion-video" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="10">10 segundos</option>
+            <option value="20" selected>20 segundos</option>
+            <option value="30">30 segundos</option>
+            <option value="45">45 segundos</option>
+            <option value="60">1 minuto</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Los videos largos se arman uniendo varios clips (el costo escala con la duración; se calcula al generar).</span>
+        </label>
+
+        <!-- Modelos de video y voz (solo aplican a Tipo de medio = Video) -->
+        <div class="grid grid-cols-2 gap-4" id="modelo-video-wrap">
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Modelo de video</span>
+            <select name="modelo_video" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Por defecto (Kling 3.0 Turbo)</option>
+              <option value="kling3_0_turbo">Kling 3.0 Turbo · 1.5 cr/s (económico)</option>
+              <option value="seedance_2_0_mini">Seedance 2.0 Mini · 2.5 cr/s</option>
+              <option value="seedance_2_0">Seedance 2.0 · 4.5 cr/s (máxima calidad)</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Motor de voz (TTS)</span>
+            <select name="modelo_voz" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">Por defecto (Seed Audio)</option>
+              <option value="seed_audio">Seed Audio · ~0.007 cr/carácter</option>
+              <option value="elevenlabs">ElevenLabs · ~0.003 cr/carácter</option>
+            </select>
+          </label>
+          <span class="text-[11px] text-gray-500 block leading-relaxed col-span-2 -mt-2">Costos en créditos de la suscripción de Higgsfield. El costo total del video se estima al generar.</span>
+        </div>
+
+        <!-- Voz en off: voz/acento + tono + velocidad (solo aplica a Tipo de medio = Video) -->
+        <div id="voice-config-wrap" class="border-t border-gray-800 pt-4">
+          <VoicePicker />
+        </div>
+
         <!-- Fuente de las imágenes (solo aplica a Tipo de medio = Imagen) -->
         <label class="block" id="fuente-imagen-wrap">
           <span class="text-xs text-gray-400 mb-1 block">Fuente de las imágenes</span>
@@ -144,6 +185,31 @@ import BackLink from "../components/BackLink.astro";
           <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">
             <strong class="text-gray-400">Higgsfield</strong> genera imágenes con IA y, si falla, usa las plantillas locales. <strong class="text-gray-400">Plantillas directamente</strong> omite Higgsfield y usa siempre las plantillas (más rápido, sin consumir créditos).
           </span>
+        </label>
+
+        <!-- Modelo de imagen (solo aplica a Tipo de medio = Imagen con fuente Higgsfield) -->
+        <label class="block" id="modelo-imagen-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Modelo de imagen</span>
+          <select name="modelo_imagen" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="">Por defecto (Nano Banana Pro)</option>
+            <option value="nano_banana_pro">Nano Banana Pro · 2 cr/imagen (máxima calidad)</option>
+            <option value="nano_banana_2">Nano Banana 2 · 1.5 cr/imagen</option>
+            <option value="nano_banana">Nano Banana · 1 cr/imagen (económico)</option>
+            <option value="gpt_image_2">GPT Image 2 (ChatGPT) · 0.5 cr/imagen</option>
+            <option value="z_image">Z Image · 0.15 cr/imagen (ultra económico)</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Costo en créditos de la suscripción de Higgsfield por imagen generada. Solo aplica si la fuente es Higgsfield.</span>
+        </label>
+
+        <!-- Set de plantillas (aplica al modo plantillas y al respaldo de Higgsfield) -->
+        <label class="block" id="template-set-wrap">
+          <span class="text-xs text-gray-400 mb-1 block">Set de plantillas</span>
+          <select name="template_set" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <option value="1">Set 1</option>
+            <option value="2">Set 2</option>
+            <option value="3">Set 3</option>
+          </select>
+          <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Estilo de las plantillas de imagen. Aplica cuando la fuente es "Plantillas directamente" o como respaldo si Higgsfield falla.</span>
         </label>
 
         <div class="grid grid-cols-2 gap-4">
@@ -238,61 +304,81 @@ import BackLink from "../components/BackLink.astro";
             Opciones avanzadas
           </summary>
           <div class="mt-4 space-y-4">
-            <div class="grid grid-cols-2 gap-4">
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Tono LinkedIn (override)</span>
-                <select name="tono_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="educativo">Educativo</option>
-                  <option value="inspiracional">Inspiracional</option>
-                  <option value="personal">Personal</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Tono Instagram (override)</span>
-                <select name="tono_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="educativo">Educativo</option>
-                  <option value="inspiracional">Inspiracional</option>
-                  <option value="personal">Personal</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Objetivo LinkedIn (override)</span>
-                <select name="objetivo_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="engagement">Engagement</option>
-                  <option value="awareness">Awareness</option>
-                  <option value="trafico">Tráfico</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Objetivo Instagram (override)</span>
-                <select name="objetivo_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="engagement">Engagement</option>
-                  <option value="awareness">Awareness</option>
-                  <option value="trafico">Tráfico</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Tono Facebook (override)</span>
-                <select name="tono_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="educativo">Educativo</option>
-                  <option value="inspiracional">Inspiracional</option>
-                  <option value="personal">Personal</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs text-gray-400 mb-1 block">Objetivo Facebook (override)</span>
-                <select name="objetivo_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  <option value="">— mismo que global —</option>
-                  <option value="engagement">Engagement</option>
-                  <option value="awareness">Awareness</option>
-                  <option value="trafico">Tráfico</option>
-                </select>
-              </label>
+            <p class="text-[11px] text-gray-500">Overrides por red (tono y objetivo). Vacío = usa el valor global de arriba.</p>
+
+            <!-- LinkedIn -->
+            <div class="space-y-2">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">LinkedIn</span>
+              <div class="grid grid-cols-2 gap-4">
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Tono</span>
+                  <select name="tono_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="educativo">Educativo</option>
+                    <option value="inspiracional">Inspiracional</option>
+                    <option value="personal">Personal</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Objetivo</span>
+                  <select name="objetivo_linkedin" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="engagement">Engagement</option>
+                    <option value="awareness">Awareness</option>
+                    <option value="trafico">Tráfico</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <!-- Instagram -->
+            <div class="space-y-2">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Instagram</span>
+              <div class="grid grid-cols-2 gap-4">
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Tono</span>
+                  <select name="tono_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="educativo">Educativo</option>
+                    <option value="inspiracional">Inspiracional</option>
+                    <option value="personal">Personal</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Objetivo</span>
+                  <select name="objetivo_instagram" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="engagement">Engagement</option>
+                    <option value="awareness">Awareness</option>
+                    <option value="trafico">Tráfico</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <!-- Facebook -->
+            <div class="space-y-2">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Facebook</span>
+              <div class="grid grid-cols-2 gap-4">
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Tono</span>
+                  <select name="tono_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="educativo">Educativo</option>
+                    <option value="inspiracional">Inspiracional</option>
+                    <option value="personal">Personal</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="text-xs text-gray-400 mb-1 block">Objetivo</span>
+                  <select name="objetivo_facebook" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                    <option value="">— mismo que global —</option>
+                    <option value="engagement">Engagement</option>
+                    <option value="awareness">Awareness</option>
+                    <option value="trafico">Tráfico</option>
+                  </select>
+                </label>
+              </div>
             </div>
 
             <label class="block">
@@ -390,6 +476,11 @@ import BackLink from "../components/BackLink.astro";
   const formatoIg = document.getElementById("formato-instagram") as HTMLSelectElement;
   const slidesWrap = document.getElementById("carrusel-slides-wrap") as HTMLElement;
   const fuenteImagenWrap = document.getElementById("fuente-imagen-wrap") as HTMLElement;
+  const modeloImagenWrap = document.getElementById("modelo-imagen-wrap") as HTMLElement;
+  const templateSetWrap = document.getElementById("template-set-wrap") as HTMLElement;
+  const duracionVideoWrap = document.getElementById("duracion-video-wrap") as HTMLElement;
+  const modeloVideoWrap = document.getElementById("modelo-video-wrap") as HTMLElement;
+  const voiceConfigWrap = document.getElementById("voice-config-wrap") as HTMLElement;
 
   // Carousel slide count only matters for carousel format (and not for video).
   const syncSlidesState = () => {
@@ -402,9 +493,17 @@ import BackLink from "../components/BackLink.astro";
     const isVideo = tipoMedio.value === "video";
     formatoWrap.classList.toggle("opacity-40", isVideo);
     formatoWrap.classList.toggle("pointer-events-none", isVideo);
-    // La fuente de imágenes no aplica cuando se genera video.
+    // La fuente y el modelo de imágenes no aplican cuando se genera video.
     fuenteImagenWrap.classList.toggle("opacity-40", isVideo);
     fuenteImagenWrap.classList.toggle("pointer-events-none", isVideo);
+    modeloImagenWrap.classList.toggle("opacity-40", isVideo);
+    modeloImagenWrap.classList.toggle("pointer-events-none", isVideo);
+    templateSetWrap.classList.toggle("opacity-40", isVideo);
+    templateSetWrap.classList.toggle("pointer-events-none", isVideo);
+    // La duración y los modelos de video/voz solo aplican al video.
+    duracionVideoWrap.classList.toggle("hidden", !isVideo);
+    modeloVideoWrap.classList.toggle("hidden", !isVideo);
+    voiceConfigWrap.classList.toggle("hidden", !isVideo);
     syncSlidesState();
   };
   tipoMedio.addEventListener("change", syncFormatoState);

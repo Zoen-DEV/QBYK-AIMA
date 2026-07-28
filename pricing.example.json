@@ -1,5 +1,5 @@
 {
-  "version": "2026-06-19",
+  "version": "2026-07-20",
   "base_currency": "USD",
   "display_currency": "USD",
   "fx_rate": 1.0,
@@ -35,10 +35,28 @@
 
   "higgsfield_mcp": {
     "usd_per_credit": 0,
-    "image_credits_per_generation": { "default": 2, "nano_banana_pro": 2 },
-    "video_credits_per_second": { "default": 1.5, "kling3_0_turbo": 1.5 },
+    "image_credits_per_generation": {
+      "default": 2,
+      "nano_banana_pro": 2,
+      "nano_banana_2": 1.5,
+      "nano_banana": 1,
+      "gpt_image_2": 0.5,
+      "z_image": 0.15
+    },
+    "video_credits_per_second": {
+      "default": 1.5,
+      "kling3_0_turbo": 1.5,
+      "seedance_2_0_mini": 2.5,
+      "seedance_2_0": 4.5
+    },
     "video_default_seconds": 5,
-    "note": "creditos de la suscripcion, medidos con el preflight get_cost del MCP (jul 2026). El consumo se registra en creditos; usd_per_credit > 0 lo valoriza en USD — en ese caso deja fixed_monthly.higgsfield en 0 para no contar doble."
+    "tts_credits_per_character": {
+      "default": 0.00667,
+      "seed_audio": 0.00667,
+      "elevenlabs": 0.003
+    },
+    "subtitle_credits_per_block": 0.05,
+    "note": "creditos de la suscripcion, medidos con el preflight get_cost del MCP (jul 2026). El consumo se registra en creditos; usd_per_credit > 0 lo valoriza en USD — en ese caso deja fixed_monthly.higgsfield en 0 para no contar doble. tts = voz en off del reel (lineal por caracter, medido jul 2026); subtitle = 0.05 cr por bloque con voz de explainer_video (el ensamblaje es gratis)."
   },
 
   "whisper": {

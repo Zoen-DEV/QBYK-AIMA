@@ -1,0 +1,98 @@
+---
+// Selector de la voz en off (voz/acento + tono + velocidad) con preview de audio.
+// Se alimenta de GET /api/voices (list_voices del MCP). Vacío = voz por defecto del
+// .env. El valor de "voz" es "voice_type:voice_id"; app.py lo separa. Reutilizable
+// en los forms de reel / historia (video) / individual (video).
+---
+<div class="space-y-4" id="voice-picker">
+  <label class="block">
+    <span class="text-xs text-gray-400 mb-1 block">Voz en off — voz y acento</span>
+    <div class="flex gap-2">
+      <select name="voz" id="voz-select" class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <option value="">Por defecto (voz del sistema)</option>
+      </select>
+      <button type="button" id="voz-preview-btn" disabled
+        class="shrink-0 w-11 rounded-lg border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center"
+        title="Escuchar una muestra">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+      </button>
+    </div>
+    <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="voz-hint">Cada voz define el acento y el género. Escucha una muestra con ▶.</span>
+    <audio id="voz-preview-audio" preload="none"></audio>
+  </label>
+
+  <div class="grid grid-cols-2 gap-4">
+    <label class="block">
+      <span class="text-xs text-gray-400 mb-1 block">Tono</span>
+      <select name="voz_pitch" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <option value="">Normal</option>
+        <option value="grave">Grave</option>
+        <option value="agudo">Agudo</option>
+      </select>
+    </label>
+    <label class="block">
+      <span class="text-xs text-gray-400 mb-1 block">Velocidad</span>
+      <select name="voz_velocidad" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <option value="">Normal</option>
+        <option value="lenta">Lenta</option>
+        <option value="rapida">Rápida</option>
+      </select>
+    </label>
+  </div>
+</div>
+
+<script>
+  type Voice = { voice_id: string; voice_type: string; name: string; gender?: string | null; preview_url?: string };
+
+  const sel = document.getElementById("voz-select") as HTMLSelectElement | null;
+  const btn = document.getElementById("voz-preview-btn") as HTMLButtonElement | null;
+  const audio = document.getElementById("voz-preview-audio") as HTMLAudioElement | null;
+  const hint = document.getElementById("voz-hint") as HTMLElement | null;
+
+  if (sel && btn && audio) {
+    const GENDER: Record<string, string> = { male: "masculina", female: "femenina", man: "masculina", woman: "femenina" };
+
+    // Guarda la preview_url de cada voz en el <option> para reproducirla al pedirla.
+    const fillPreviewState = () => {
+      const opt = sel.options[sel.selectedIndex];
+      btn.disabled = !(opt && opt.dataset.preview);
+    };
+
+    (async () => {
+      try {
+        const res = await fetch("/api/voices");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const voices: Voice[] = data.voices ?? [];
+        if (voices.length === 0) {
+          if (hint) hint.textContent = "No hay voces disponibles (conecta Higgsfield en Conexiones). Se usa la voz por defecto.";
+          return;
+        }
+        for (const v of voices) {
+          const opt = document.createElement("option");
+          opt.value = `${v.voice_type}:${v.voice_id}`;
+          const g = v.gender ? ` · ${GENDER[String(v.gender).toLowerCase()] ?? v.gender}` : "";
+          opt.textContent = `${v.name}${g}`;
+          if (v.preview_url) opt.dataset.preview = v.preview_url;
+          sel.appendChild(opt);
+        }
+      } catch (e) {
+        if (hint) hint.textContent = `No se pudieron cargar las voces (${e}). Se usa la voz por defecto.`;
+      }
+    })();
+
+    sel.addEventListener("change", () => {
+      fillPreviewState();
+      if (!audio.paused) audio.pause();
+    });
+
+    btn.addEventListener("click", () => {
+      const opt = sel.options[sel.selectedIndex];
+      const url = opt?.dataset.preview;
+      if (!url) return;
+      if (audio.src !== url) audio.src = url;
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+    });
+  }
+</script>

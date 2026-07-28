@@ -14,23 +14,29 @@ from __future__ import annotations
 from typing import Any
 
 # Orden canónico (también el orden en que se muestran en la UI y en la revisión).
-NETWORKS: tuple[str, ...] = ("linkedin", "instagram", "facebook")
+# TikTok solo existe como destino de reels (video vertical); se filtra de los demás
+# formatos por la matriz FORMAT_NETWORKS de abajo.
+NETWORKS: tuple[str, ...] = ("linkedin", "instagram", "facebook", "tiktok")
 
 # Formatos de publicación (columna `formato` del sheet / campo del form). El formato
 # elegido aplica a TODAS las redes del post; una red que no soporta el formato se
 # omite (se publica solo en las demás). Matriz según lo que Blotato permite:
-#   - imagen-unica: post normal con una imagen → las tres redes.
+#   - imagen-unica: post normal con una imagen → LinkedIn/Instagram/Facebook.
 #   - carrusel: IG carousel nativo; LinkedIn document-carousel (2-10 imágenes);
 #     Facebook post multi-foto.
-#   - historia / reel: solo Instagram y Facebook (target.mediaType de Blotato);
-#     LinkedIn no tiene historias ni reels.
+#   - historia: solo Instagram y Facebook (target.mediaType de Blotato).
+#   - reel: Instagram, Facebook y TikTok (video vertical 9:16). LinkedIn no tiene
+#     reels; TikTok solo publica video, así que solo aparece en este formato.
 FORMATS: tuple[str, ...] = ("imagen-unica", "carrusel", "historia", "reel")
 
+# Redes de feed (formatos de imagen): no incluyen TikTok (solo video).
+_FEED_NETWORKS: tuple[str, ...] = ("linkedin", "instagram", "facebook")
+
 FORMAT_NETWORKS: dict[str, tuple[str, ...]] = {
-    "imagen-unica": NETWORKS,
-    "carrusel": NETWORKS,
+    "imagen-unica": _FEED_NETWORKS,
+    "carrusel": _FEED_NETWORKS,
     "historia": ("instagram", "facebook"),
-    "reel": ("instagram", "facebook"),
+    "reel": ("instagram", "facebook", "tiktok"),
 }
 
 
@@ -40,7 +46,7 @@ def networks_for_format(formato: str, nets: list[str] | tuple[str, ...]) -> list
     Un formato desconocido/vacío no filtra nada. Puede devolver una lista vacía:
     el llamador decide si eso es un error (individual) o un warning (fila del bulk).
     """
-    allowed = FORMAT_NETWORKS.get((formato or "").strip().lower(), NETWORKS)
+    allowed = FORMAT_NETWORKS.get((formato or "").strip().lower(), _FEED_NETWORKS)
     return [n for n in NETWORKS if n in nets and n in allowed]
 
 
@@ -59,7 +65,9 @@ def normalize_networks(value: Any) -> list[str]:
     else:
         items = []
     picked = [n for n in NETWORKS if n in items]
-    return picked or list(NETWORKS)
+    # Default sin selección = las 3 redes de feed (TikTok nunca por defecto: es opt-in
+    # y solo aplica a reels).
+    return picked or list(_FEED_NETWORKS)
 
 
 def active_networks(params: dict) -> list[str]:
@@ -73,4 +81,4 @@ def active_networks(params: dict) -> list[str]:
     solo = (params.get("solo") or "").strip().lower()
     if solo in NETWORKS:
         return [solo]
-    return list(NETWORKS)
+    return list(_FEED_NETWORKS)

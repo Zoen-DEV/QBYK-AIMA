@@ -13,12 +13,13 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
 
+import model_catalog
 import sheets
 import cost_queries
 import cost_calc
 import db
 from config import load_config
-from job_runner import run_pipeline, make_job, publish_job_posts, _media_mime
+from job_runner import run_pipeline, resume_media, make_job, publish_job_posts, _media_mime
 from networks import active_networks, networks_for_format, FORMATS
 from batch_runner import run_batch, publish_batch, to_utc_iso
 from higgsfield_client import _USER_AGENT as _BROWSER_UA  # scripts/ ya está en sys.path (lo agrega job_runner)
@@ -58,6 +59,28 @@ def _account_label(acc: dict) -> str:
     return f"Cuenta {acc.get('id', '')}"
 
 
+def _parse_voice(voz: str, pitch: str, velocidad: str) -> dict:
+    """Normaliza la selección de voz del form al shape que consume el pipeline.
+
+    `voz` es el valor combinado "voice_type:voice_id" del selector (de GET /voices).
+    Se separa y valida; vacío/mal formado = voz por defecto del .env. `pitch` y
+    `velocidad` son enums (grave/agudo, lenta/rapida) → los mapea job_runner a ratios.
+    """
+    voice_type, _sep, voice_id = (voz or "").partition(":")
+    voice_type = voice_type.strip().lower()
+    voice_id = voice_id.strip()
+    if voice_type not in ("preset", "element") or not voice_id:
+        voice_type, voice_id = "", ""
+    pitch = (pitch or "").strip().lower()
+    velocidad = (velocidad or "").strip().lower()
+    return {
+        "voz_tipo": voice_type,
+        "voz_id": voice_id,
+        "voz_pitch": pitch if pitch in ("grave", "agudo") else "",
+        "voz_velocidad": velocidad if velocidad in ("lenta", "rapida") else "",
+    }
+
+
 @app.get("/accounts")
 def list_accounts():
     """List the user's connected Blotato accounts per platform for the UI selectors.
@@ -80,8 +103,9 @@ def list_accounts():
         "linkedin": cfg.linkedin_account_id,
         "instagram": cfg.instagram_account_id,
         "facebook": cfg.facebook_account_id,
+        "tiktok": cfg.tiktok_account_id,
     }
-    for platform in ("linkedin", "instagram", "facebook"):
+    for platform in ("linkedin", "instagram", "facebook", "tiktok"):
         try:
             accounts = bc.get_accounts(platform, api_key=cfg.blotato_api_key)
             out[platform] = [{"id": str(a.get("id", "")), "label": _account_label(a)} for a in accounts if a.get("id")]
@@ -105,6 +129,22 @@ def list_accounts():
                 acc["pages"] = []
 
     return out
+
+
+@app.get("/voices")
+def list_voices():
+    """Voces disponibles para la voz en off de los reels (list_voices del MCP).
+
+    Alimenta el selector de voz de los forms (nombre/género + preview de audio).
+    Best-effort: [] si el MCP no está conectado o la consulta falla — el form cae a
+    la voz por defecto del .env.
+    """
+    if not higgsfield_mcp.is_configured():
+        return {"voices": []}
+    try:
+        return {"voices": higgsfield_mcp.list_voices()}
+    except Exception as e:
+        return {"voices": [], "error": str(e)}
 
 
 # ── Conexiones (OAuth del MCP de Higgsfield desde la UI) ──────────────────────
@@ -205,8 +245,13 @@ async def create_job(
     source_type: Annotated[str, Form()] = "youtube",
     youtube_url: Annotated[str, Form()] = "",
     manual_text: Annotated[str, Form()] = "",
+    # Contextos separados (modo manual de reel): guían por separado el video y la voz.
+    # Vacíos = se usa manual_text (el copy) como base también para video/voz.
+    contexto_video: Annotated[str, Form()] = "",
+    contexto_voz: Annotated[str, Form()] = "",
     media_file: Annotated[UploadFile | None, File()] = None,
     final_media_file: Annotated[UploadFile | None, File()] = None,
+    photos: Annotated[list[UploadFile], File()] = [],
     tono: Annotated[str, Form()] = "",
     tono_linkedin: Annotated[str, Form()] = "",
     tono_instagram: Annotated[str, Form()] = "",
@@ -219,10 +264,19 @@ async def create_job(
     formato_instagram: Annotated[str, Form()] = "",
     carrusel_slides: Annotated[int, Form()] = 3,
     tipo_medio: Annotated[str, Form()] = "imagen",
+    duracion_video: Annotated[int, Form()] = 0,
+    camara_estilo: Annotated[str, Form()] = "dolly",
     tipo_post: Annotated[str, Form()] = "post",
     media_origin: Annotated[str, Form()] = "generar",
     historia_formato: Annotated[str, Form()] = "imagen",
     fuente_imagen: Annotated[str, Form()] = "higgsfield",
+    template_set: Annotated[int, Form()] = 1,
+    modelo_imagen: Annotated[str, Form()] = "",
+    modelo_video: Annotated[str, Form()] = "",
+    modelo_voz: Annotated[str, Form()] = "",
+    voz: Annotated[str, Form()] = "",
+    voz_pitch: Annotated[str, Form()] = "",
+    voz_velocidad: Annotated[str, Form()] = "",
     idioma: Annotated[str, Form()] = "auto",
     modelo_perplexity: Annotated[str, Form()] = "sonar-pro",
     linkedin_account_id: Annotated[str, Form()] = "",
@@ -230,6 +284,7 @@ async def create_job(
     instagram_account_id: Annotated[str, Form()] = "",
     facebook_account_id: Annotated[str, Form()] = "",
     facebook_page_id: Annotated[str, Form()] = "",
+    tiktok_account_id: Annotated[str, Form()] = "",
     redes: Annotated[str, Form()] = "",
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
@@ -256,12 +311,16 @@ async def create_job(
     elif tipo_post in ("reel", "historia"):
         formato = tipo_post
     media_origin = (media_origin or "generar").strip().lower()
-    if media_origin not in ("generar", "subir"):
+    if media_origin not in ("generar", "subir", "fotos"):
         media_origin = "generar"
     historia_formato = (historia_formato or "imagen").strip().lower()
     if historia_formato not in ("imagen", "video"):
         historia_formato = "imagen"
-    # El modo "subir" solo aplica a reel/historia (en post siempre se genera).
+    # El recorrido a partir de fotos (image-to-video) es siempre un Reel.
+    if media_origin == "fotos":
+        tipo_post = "reel"
+        formato = "reel"
+    # Los modos "subir"/"fotos" solo aplican a reel/historia (en post siempre se genera).
     if tipo_post == "post":
         media_origin = "generar"
 
@@ -286,6 +345,7 @@ async def create_job(
     upload_filename = ""
     final_media_bytes = b""
     final_media_filename = ""
+    photo_files: list[tuple[bytes, str]] = []
     if media_origin == "subir":
         # El medio final (video/imagen ya hecho) se publica tal cual; el caption se
         # escribe en manual_text y pasa por el writer (source_type se fuerza a "manual").
@@ -298,6 +358,18 @@ async def create_job(
         if not final_media_bytes:
             raise HTTPException(status_code=400, detail="El archivo a publicar está vacío")
         final_media_filename = final_media_file.filename or "media.mp4"
+    elif media_origin == "fotos":
+        # Recorrido image-to-video: varias fotos → transiciones foto→foto → un reel.
+        # El caption se escribe en manual_text y pasa por el writer (source_type manual).
+        source_type = "manual"
+        if not manual_text.strip():
+            raise HTTPException(status_code=400, detail="Falta el texto/caption del reel")
+        for f in (photos or []):
+            b = await f.read()
+            if b:
+                photo_files.append((b, f.filename or f"foto-{len(photo_files)}.jpg"))
+        if len(photo_files) < 2:
+            raise HTTPException(status_code=400, detail="Sube al menos 2 fotos para armar el recorrido")
     elif source_type == "youtube":
         if not youtube_url.strip():
             raise HTTPException(status_code=400, detail="Falta la URL de YouTube")
@@ -317,6 +389,9 @@ async def create_job(
         "source_type": source_type,
         "youtube_url": youtube_url,
         "manual_text": manual_text,
+        # Contextos opcionales para dirigir el video y la voz por separado (reel manual).
+        "contexto_video": contexto_video.strip(),
+        "contexto_voz": contexto_voz.strip(),
         "upload_filename": upload_filename,
         "tono": tono,
         "tono_linkedin": tono_linkedin,
@@ -330,10 +405,27 @@ async def create_job(
         "formato_instagram": "carrusel" if formato == "carrusel" else "imagen-unica",
         "carrusel_slides": max(3, min(6, carrusel_slides)),
         "tipo_medio": tipo_medio,
+        # Duración total buscada del video (segundos); 0 = 1 solo segmento (default del
+        # modelo). Clamp 0–60. La app arma esa duración concatenando segmentos.
+        "duracion_video": max(0, min(60, duracion_video)),
+        # Estilo de cámara del recorrido de fotos (image-to-video).
+        "camara_estilo": camara_estilo if camara_estilo in ("dolly", "orbit", "pan") else "dolly",
         "tipo_post": tipo_post,
         "media_origin": media_origin,
         "historia_formato": historia_formato,
         "fuente_imagen": fuente_imagen if fuente_imagen in ("higgsfield", "template") else "higgsfield",
+        # Set de estilo de las plantillas (1-3). Aplica a plantillas directas y al
+        # fallback del MCP; no afecta la generación con Higgsfield.
+        "template_set": max(1, min(3, template_set)),
+        # Modelos de generación por post (vacío = default del .env). Se validan
+        # contra el catálogo curado; un id desconocido cae al default en silencio.
+        "modelo_imagen": modelo_imagen.strip() if modelo_imagen.strip() in model_catalog.IMAGE_MODELS else "",
+        "modelo_video": modelo_video.strip() if modelo_video.strip() in model_catalog.VIDEO_MODELS else "",
+        "modelo_voz": modelo_voz.strip() if modelo_voz.strip() in model_catalog.TTS_MODELS else "",
+        # Voz en off elegida en el form: valor combinado "voice_type:voice_id" (de
+        # list_voices / GET /voices). Se separa aquí; vacío/mal formado = voz por
+        # defecto del .env. voz_pitch/voz_velocidad ajustan tono y velocidad.
+        **_parse_voice(voz, voz_pitch, voz_velocidad),
         "idioma": idioma,
         "modelo_perplexity": modelo_perplexity,
         "linkedin_account_id": linkedin_account_id.strip(),
@@ -341,6 +433,7 @@ async def create_job(
         "instagram_account_id": instagram_account_id.strip(),
         "facebook_account_id": facebook_account_id.strip(),
         "facebook_page_id": facebook_page_id.strip(),
+        "tiktok_account_id": tiktok_account_id.strip(),
         # Redes destino (checkboxes del form) ya filtradas por el formato: historia
         # y reel solo existen en Instagram y Facebook (LinkedIn se omite).
         "redes": redes_ok,
@@ -349,7 +442,8 @@ async def create_job(
         "publicar": publicar,
     }
     job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename,
-                   final_media_bytes=final_media_bytes, final_media_filename=final_media_filename)
+                   final_media_bytes=final_media_bytes, final_media_filename=final_media_filename,
+                   photo_files=photo_files)
     jobs[job["id"]] = job
     asyncio.create_task(run_pipeline(job))
     return {"job_id": job["id"]}
@@ -370,7 +464,7 @@ async def stream_job(job_id: str):
                 yield "data: {\"step\": \"ping\"}\n\n"
                 continue
             yield f"data: {json.dumps(event)}\n\n"
-            if event.get("step") in ("done", "error"):
+            if event.get("step") in ("done", "error", "preview"):
                 break
 
     return StreamingResponse(
@@ -406,6 +500,7 @@ def _job_snapshot(job: dict) -> dict:
         "li_media_urls": job.get("_li_media_urls", []),
         "ig_media_urls": job.get("_ig_media_urls", []),
         "fb_media_urls": job.get("_fb_media_urls", []),
+        "tk_media_urls": job.get("_tk_media_urls", []),
         "result": job["result"],
         "error_msg": job["error_msg"],
     }
@@ -424,17 +519,65 @@ async def edit_job(
     linkedin_text: Annotated[str, Form()] = "",
     instagram_text: Annotated[str, Form()] = "",
     facebook_text: Annotated[str, Form()] = "",
+    # Campos del PREVIEW editable (opcionales, default None = no tocar). El default
+    # None distingue "no enviado" (revisión normal) de "vaciado" — así la pantalla de
+    # revisión, que solo manda los *_text, no borra el image_text ni los prompts.
+    image_hook: Annotated[str | None, Form()] = None,
+    image_slides: Annotated[str | None, Form()] = None,       # una frase por línea
+    video_prompt: Annotated[str | None, Form()] = None,
+    video_style: Annotated[str | None, Form()] = None,
+    video_storyboard: Annotated[str | None, Form()] = None,   # un shot por línea
+    video_voiceover: Annotated[str | None, Form()] = None,    # una línea hablada por shot
 ):
     if job_id not in jobs:
         raise HTTPException(status_code=404)
     job = jobs[job_id]
+    posts = job["posts"]
     if linkedin_text:
-        job["posts"]["linkedin_text"] = linkedin_text
+        posts["linkedin_text"] = linkedin_text
     if instagram_text:
-        job["posts"]["instagram_text"] = instagram_text
+        posts["instagram_text"] = instagram_text
     if facebook_text:
-        job["posts"]["facebook_text"] = facebook_text
-    return {"posts": job["posts"]}
+        posts["facebook_text"] = facebook_text
+
+    # image_text (copy de los visuales): hook + frases de slides (una por línea).
+    if image_hook is not None or image_slides is not None:
+        img = dict(posts["image_text"]) if isinstance(posts.get("image_text"), dict) else {}
+        if image_hook is not None:
+            img["hook"] = image_hook.strip()
+        if image_slides is not None:
+            img["slides"] = [l.strip() for l in image_slides.splitlines() if l.strip()]
+        posts["image_text"] = img
+
+    # Prompts del video (para la generación text-to-video + voz en off).
+    if video_prompt is not None:
+        posts["video_prompt"] = video_prompt.strip()
+    if video_style is not None:
+        posts["video_style"] = video_style.strip()
+    if video_storyboard is not None:
+        posts["video_storyboard"] = [l.strip() for l in video_storyboard.splitlines() if l.strip()]
+    if video_voiceover is not None:
+        posts["video_voiceover"] = [l.strip() for l in video_voiceover.splitlines() if l.strip()]
+    return {"posts": posts}
+
+
+@app.post("/jobs/{job_id}/generate")
+async def generate_job_media(job_id: str):
+    """Reanuda un job pausado en el preview: arranca la fase de generación de medios.
+
+    Solo válido cuando el job está en "preview" (fase de escritura terminada). Lanza
+    la fase de media en segundo plano; el frontend sigue el avance por el SSE normal.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    job = jobs[job_id]
+    if job["status"] != "preview":
+        raise HTTPException(
+            status_code=409,
+            detail="El job no está en preview (ya se generó el contenido o aún no está listo).",
+        )
+    asyncio.create_task(resume_media(job))
+    return {"job_id": job_id, "status": "running"}
 
 
 @app.get("/jobs/{job_id}/image/{key}")

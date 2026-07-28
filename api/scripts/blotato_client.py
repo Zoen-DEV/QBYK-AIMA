@@ -23,6 +23,21 @@ from pathlib import Path
 MAX_IG_HASHTAGS = 5
 BASE_URL = "https://backend.blotato.com/v2"
 
+# TikTok exige TODOS estos campos en `target` (sin ellos la API responde 400
+# "body.post.target must have required property ..."). Los valores son los de una
+# publicación normal; `publish_post(tiktok_options=...)` los ajusta por post.
+# privacyLevel admite: PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS |
+# FOLLOWER_OF_CREATOR | SELF_ONLY.
+TIKTOK_TARGET_DEFAULTS = {
+    "privacyLevel": "PUBLIC_TO_EVERYONE",
+    "disabledComments": False,
+    "disabledDuet": False,
+    "disabledStitch": False,
+    "isBrandedContent": False,  # contenido pagado por un tercero
+    "isYourBrand": False,       # promoción de la marca propia
+    "isAiGenerated": True,      # disclosure obligatorio: el clip lo genera la app
+}
+
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -277,6 +292,7 @@ def publish_post(
     page_id: str | None = None,
     media_type: str | None = None,
     cover_image_url: str | None = None,
+    tiktok_options: dict | None = None,
 ) -> dict:
     """
     Publish or schedule a post.
@@ -291,6 +307,8 @@ def publish_post(
                 media publishes as a Reel or Story instead of a feed post. None/omitted =
                 normal feed post (image/carousel/video). IG reels accept a
                 `cover_image_url`. LinkedIn has no mediaType (no reels/stories).
+    tiktok_options: TikTok only. Overrides sobre TIKTOK_TARGET_DEFAULTS (privacidad y
+                    flags de disclosure), que la API exige completos en `target`.
     Returns Blotato response with 'postSubmissionId'.
     """
     if platform == "instagram":
@@ -305,6 +323,9 @@ def publish_post(
         target["mediaType"] = media_type
         if platform == "instagram" and media_type == "reel" and cover_image_url:
             target["coverImageUrl"] = cover_image_url
+    if platform == "tiktok":
+        target.update(TIKTOK_TARGET_DEFAULTS)
+        target.update(tiktok_options or {})
 
     post_body: dict = {
         "accountId": account_id,

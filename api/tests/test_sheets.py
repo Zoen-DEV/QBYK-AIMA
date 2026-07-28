@@ -1,8 +1,10 @@
-"""Tests del parseo del sheet (bulk): columna `formato` multi-red y triggers.
+"""Tests del parseo del sheet (bulk): columna `formato` multi-red y fuentes.
 
 Cubre el mapeo formato → tipo_post/redes (historia y reel no existen en
-LinkedIn), el trigger `archivo_url` y la compatibilidad con el encabezado viejo
-`formato_instagram`.
+LinkedIn), las fuentes por fila (`youtube_url` / `texto`) y la compatibilidad
+con el encabezado viejo `formato_instagram`. El trigger de archivo por URL
+(`archivo_url`) está diferido en el bulk; solo se testea la clasificación del
+archivo remoto (plumbing conservado en `remote_file.py`).
 """
 import csv
 import io
@@ -25,7 +27,6 @@ def _base_row(**overrides) -> dict:
     row = {
         "youtube_url": "https://www.youtube.com/watch?v=abc123",
         "texto": "",
-        "archivo_url": "",
         "tono": "",
         "objetivo": "",
         "tipo_medio": "imagen",
@@ -46,11 +47,13 @@ def _base_row(**overrides) -> dict:
 
 def test_networks_for_format_matrix():
     all_nets = list(networks.NETWORKS)
-    assert networks.networks_for_format("imagen-unica", all_nets) == all_nets
-    assert networks.networks_for_format("carrusel", all_nets) == all_nets
+    feed = ["linkedin", "instagram", "facebook"]  # los formatos de imagen no incluyen TikTok
+    assert networks.networks_for_format("imagen-unica", all_nets) == feed
+    assert networks.networks_for_format("carrusel", all_nets) == feed
     assert networks.networks_for_format("historia", all_nets) == ["instagram", "facebook"]
-    assert networks.networks_for_format("reel", all_nets) == ["instagram", "facebook"]
-    # Formato desconocido/vacío no filtra nada.
+    # reel suma TikTok (video vertical) a Instagram y Facebook.
+    assert networks.networks_for_format("reel", all_nets) == ["instagram", "facebook", "tiktok"]
+    # Formato desconocido/vacío no agrega redes fuera de las de feed.
     assert networks.networks_for_format("", ["linkedin"]) == ["linkedin"]
 
 
@@ -106,21 +109,21 @@ def test_legacy_formato_instagram_header_still_works():
     assert p["formato_instagram"] == "carrusel"
 
 
-# ── Trigger archivo_url ───────────────────────────────────────────────────────
+# ── Fuentes por fila (youtube_url / texto) ────────────────────────────────────
 
-def test_archivo_url_row_becomes_archivo_source():
-    row = _base_row(youtube_url="", archivo_url="https://example.com/nota.ogg")
+def test_texto_row_becomes_texto_source():
+    row = _base_row(youtube_url="", texto="hola mundo")
     specs, warnings = sheets.parse_sheet(_csv_bytes([row]), "posts.csv")
     assert len(specs) == 1
     spec = specs[0]
-    assert spec["source"] == "archivo"
-    assert spec["params"]["source_type"] == "archivo"
-    assert spec["params"]["archivo_url"] == "https://example.com/nota.ogg"
-    assert spec["label"] == "https://example.com/nota.ogg"
+    assert spec["source"] == "texto"
+    assert spec["params"]["source_type"] == "texto"
+    assert spec["upload_bytes"] == b"hola mundo"
+    assert spec["label"] == "hola mundo"
 
 
 def test_multiple_sources_prefers_youtube_with_warning():
-    row = _base_row(texto="hola mundo", archivo_url="https://example.com/doc.pdf")
+    row = _base_row(texto="hola mundo")
     specs, warnings = sheets.parse_sheet(_csv_bytes([row]), "posts.csv")
     assert specs[0]["params"]["source_type"] == "youtube"
     assert any("se usa 'youtube_url'" in w for w in warnings)
@@ -131,6 +134,33 @@ def test_row_without_any_source_is_skipped():
     specs, warnings = sheets.parse_sheet(_csv_bytes([row]), "posts.csv")
     assert specs == []
     assert any("se omite" in w for w in warnings)
+
+
+# ── Modelos de generación por fila ────────────────────────────────────────────
+
+def test_modelo_columns_parse():
+    row = _base_row(modelo_imagen="gpt_image_2", modelo_video="seedance_2_0",
+                    modelo_voz="elevenlabs")
+    specs, _ = sheets.parse_sheet(_csv_bytes([row]), "posts.csv")
+    p = specs[0]["params"]
+    assert p["modelo_imagen"] == "gpt_image_2"
+    assert p["modelo_video"] == "seedance_2_0"
+    assert p["modelo_voz"] == "elevenlabs"
+
+
+def test_modelo_vacio_usa_default():
+    specs, _ = sheets.parse_sheet(_csv_bytes([_base_row()]), "posts.csv")
+    p = specs[0]["params"]
+    assert p["modelo_imagen"] == ""
+    assert p["modelo_video"] == ""
+    assert p["modelo_voz"] == ""
+
+
+def test_modelo_invalido_cae_al_default_con_warning():
+    row = _base_row(modelo_imagen="dall-e-9")
+    specs, warnings = sheets.parse_sheet(_csv_bytes([row]), "posts.csv")
+    assert specs[0]["params"]["modelo_imagen"] == ""
+    assert any("modelo_imagen" in w for w in warnings)
 
 
 # ── Plantilla ─────────────────────────────────────────────────────────────────
@@ -144,7 +174,8 @@ def test_template_has_new_columns_and_parses_back():
     ws = wb["Posts"]
     headers = [c.value for c in ws[1]]
     assert headers == sheets.COLUMNS
-    assert "formato" in headers and "archivo_url" in headers
+    assert "formato" in headers
+    assert "archivo_url" not in headers
     assert "formato_instagram" not in headers
 
     # Las filas de ejemplo de la propia plantilla deben parsear sin errores.
