@@ -244,7 +244,7 @@ def extraer(fotos: list[tuple[bytes, str]], *, cfg) -> ResultadoExtraccion:
     if not llm_json.vision_disponible(cfg):
         raise ExtraccionNoDisponible(
             "La extracción necesita un modelo que lea imágenes: configura ANTHROPIC_API_KEY "
-            "en el .env (Perplexity Sonar no lee imágenes)."
+            "o PERPLEXITY_API_KEY en el .env de la raíz del repo."
         )
 
     cfg_ex = prompt_config.identity_extract()

@@ -98,7 +98,29 @@ contra el esquema.
   ([`api/prompts/identity_extract.json`](../api/prompts/identity_extract.json)) aporta el
   encuadre creativo — mismo reparto que en `prompt_architect`.
 
-Requiere `ANTHROPIC_API_KEY`: Perplexity Sonar no lee imágenes.
+### Qué proveedor lee las fotos
+
+Sirve **cualquiera de los dos**, `ANTHROPIC_API_KEY` o `PERPLEXITY_API_KEY` (Anthropic
+primero, como en el resto del proyecto). La Sonar API acepta bloques `image_url` con data
+URI; el comentario de `llm_json` que decía lo contrario venía de cuando no era así.
+
+Cada proveedor recibe el layout de bloques que documenta el suyo, no un formato común
+inventado: Anthropic numera cada imagen (`Image 1:`) y deja el texto al final —sin
+etiquetas tiende a describir solo la última cuando la pregunta es sobre el conjunto—, y
+Perplexity recibe el texto primero y las imágenes detrás, que es el único shape que su guía
+documenta. Los dos cuerpos están fijados en `tests/test_llm_vision.py`, porque no hay forma
+de probarlos contra los endpoints reales sin gastar.
+
+En Perplexity las imágenes se tarifan como `(ancho × alto) / 750` tokens de entrada. Con la
+reducción a 1024 px son ~1.000 tokens por foto, así que una extracción de 6 fotos ronda los
+6.000 tokens de entrada. El tracking lo recoge solo: llegan como `input_tokens` en el `usage`
+que devuelve la API.
+
+**El QA de texto de las imágenes generadas (`image_text_qa`) sigue exigiendo Anthropic a
+propósito.** Perplexity podría hacerlo, pero encenderlo añadiría una llamada de visión por
+imagen generada, en todos los posts, a quien hoy lo tiene apagado sin saberlo. Es una
+decisión aparte; para tomarla, `image_text_qa.disponible` solo tiene que volver a delegar en
+`llm_json.vision_disponible`.
 
 ## Integración con la generación
 

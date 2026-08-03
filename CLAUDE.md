@@ -155,7 +155,12 @@ manuales en [`docs/identidades-visuales.md`](docs/identidades-visuales.md).
 - **`image_style` sigue ganando a `tono_visual`**: la identidad fija paleta, tipografía y
   referencias (lo que hace reconocible a la marca entre posts) y el tratamiento fotográfico lo
   sigue eligiendo el LLM por post. Es una decisión, no un pendiente.
-- `identity_extract.py` saca una identidad de 5–10 fotos con el modelo de visión. Las fotos se
+- `identity_extract.py` saca una identidad de 5–10 fotos con el modelo de visión —sirve
+  **cualquiera de los dos proveedores**: la Sonar API acepta bloques `image_url`, aunque cada uno
+  recibe el layout de bloques que documenta el suyo (`test_llm_vision.py` fija los dos cuerpos).
+  El QA de texto de las imágenes (`image_text_qa`) sigue pidiendo Anthropic **a propósito**:
+  abrirlo a Perplexity añadiría una llamada por imagen generada a quien hoy lo tiene apagado, y
+  eso se decide aparte. Las fotos se
   revisan **antes** de llamar al modelo (4 u 11 no cuestan nada) y **no se guardan** en ningún
   sitio. Un JSON que no valida se reintenta UNA vez con los errores del validador como feedback y
   luego falla limpio. Las reglas del esquema las escribe la app (`_reglas_esquema`) desde las

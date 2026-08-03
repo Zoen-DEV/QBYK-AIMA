@@ -129,7 +129,13 @@ def _anthropic_json(system: str, user, api_key: str, *, max_tokens: int) -> tupl
     return loads_loose(raw), _anthropic_usage(getattr(msg, "usage", None))
 
 
-def _perplexity_json(system: str, user: str, api_key: str, *, max_tokens: int) -> tuple[dict, dict | None]:
+def _perplexity_json(system: str, user, api_key: str, *, max_tokens: int) -> tuple[dict, dict | None]:
+    """`user` es un string (camino de texto) o una lista de content blocks (con imágenes).
+
+    El camino de texto manda el string PELADO, exactamente como antes de que existieran
+    las imágenes: es el que usa todo el pipeline y no hay razón para cambiarle el formato
+    del cuerpo.
+    """
     body = json.dumps({
         "model": PERPLEXITY_MODEL,
         "max_tokens": max_tokens,
@@ -167,11 +173,18 @@ def complete_json(system: str, user: str, *, cfg, max_tokens: int = 1200) -> tup
 
 
 def vision_disponible(cfg) -> bool:
-    """True si hay un modelo de VISIÓN disponible (solo Anthropic; Sonar no lee imágenes)."""
-    return bool(getattr(cfg, "anthropic_api_key", ""))
+    """True si hay algún proveedor que lea imágenes.
+
+    Los DOS leen imágenes. Sonar no lo hacía cuando se escribió este módulo, pero la
+    Sonar API acepta bloques `image_url` desde hace tiempo, así que quedarse en "solo
+    Anthropic" dejaba sin extractor a quien solo tiene la key de Perplexity — que es la
+    configuración por defecto del proyecto.
+    """
+    return bool(getattr(cfg, "anthropic_api_key", "") or getattr(cfg, "perplexity_api_key", ""))
 
 
 def _bloque_imagen(image: bytes, media_type: str) -> dict:
+    """Bloque de imagen de Anthropic (`source.base64`)."""
     return {
         "type": "image",
         "source": {
@@ -180,6 +193,12 @@ def _bloque_imagen(image: bytes, media_type: str) -> dict:
             "data": base64.b64encode(image).decode("ascii"),
         },
     }
+
+
+def _bloque_imagen_pplx(image: bytes, media_type: str) -> dict:
+    """Bloque de imagen de Perplexity (`image_url` con data URI, formato OpenAI)."""
+    datos = base64.b64encode(image).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{datos}"}}
 
 
 def complete_json_vision(system: str, user: str, image: bytes, *, media_type: str = "image/png",
@@ -193,20 +212,33 @@ def complete_json_vision(system: str, user: str, image: bytes, *, media_type: st
 
 def complete_json_vision_multi(system: str, user: str, images: list[tuple[bytes, str]], *,
                                cfg, max_tokens: int = 1500) -> tuple[dict, dict | None]:
-    """Como `complete_json_vision` pero con VARIAS imágenes. Requiere Anthropic.
+    """Como `complete_json_vision` pero con VARIAS imágenes. Sirve cualquiera de los dos
+    proveedores (Anthropic primero, como en el resto del módulo).
 
-    `images` es una lista de `(bytes, media_type)`. Cada imagen va precedida de su
-    número: cuando el prompt habla del CONJUNTO ("lo que comparten estas fotos"), sin
-    etiquetas el modelo tiende a describir solo la última. El texto va al final, que es
-    el orden que mejor funciona cuando la pregunta se refiere a todas.
+    `images` es una lista de `(bytes, media_type)`.
+
+    Cada proveedor recibe el layout de bloques que documenta el suyo, y no un formato
+    común inventado:
+
+    - **Anthropic** numera cada imagen (`Image 1:`) y deja el texto al final. Cuando el
+      prompt habla del CONJUNTO ("lo que comparten estas fotos"), sin etiquetas el modelo
+      tiende a describir solo la última.
+    - **Perplexity** sigue el ejemplo de su guía al pie de la letra —el texto primero y
+      las imágenes detrás, sin bloques de texto intercalados— porque es el único shape
+      que su API documenta y no hay margen para probar variantes contra el endpoint real.
     """
-    if not getattr(cfg, "anthropic_api_key", ""):
-        raise LLMNoDisponible("La lectura de imágenes necesita ANTHROPIC_API_KEY")
     if not images:
         raise ValueError("No se pasó ninguna imagen")
-    content: list[dict] = []
-    for i, (datos, media_type) in enumerate(images, 1):
-        content.append({"type": "text", "text": f"Image {i}:"})
-        content.append(_bloque_imagen(datos, media_type))
-    content.append({"type": "text", "text": user})
-    return _anthropic_json(system, content, cfg.anthropic_api_key, max_tokens=max_tokens)
+    if getattr(cfg, "anthropic_api_key", ""):
+        content: list[dict] = []
+        for i, (datos, media_type) in enumerate(images, 1):
+            content.append({"type": "text", "text": f"Image {i}:"})
+            content.append(_bloque_imagen(datos, media_type))
+        content.append({"type": "text", "text": user})
+        return _anthropic_json(system, content, cfg.anthropic_api_key, max_tokens=max_tokens)
+    if getattr(cfg, "perplexity_api_key", ""):
+        bloques = [{"type": "text", "text": user}]
+        bloques += [_bloque_imagen_pplx(datos, mt) for datos, mt in images]
+        return _perplexity_json(system, bloques, cfg.perplexity_api_key, max_tokens=max_tokens)
+    raise LLMNoDisponible(
+        "La lectura de imágenes necesita ANTHROPIC_API_KEY o PERPLEXITY_API_KEY")

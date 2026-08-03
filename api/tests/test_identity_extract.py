@@ -34,9 +34,12 @@ _ROTA = {**_IDENTIDAD, "color_acento": "hot pink (#FF00AA)"}
 
 
 class _Cfg:
-    def __init__(self, con_vision: bool = True):
-        self.anthropic_api_key = "test-key" if con_vision else ""
-        self.perplexity_api_key = "otra" if not con_vision else ""
+    """`con_vision=False` es **sin ninguna key**: los dos proveedores leen imágenes, así
+    que quedarse solo con la de Perplexity ya no deja al extractor sin modelo."""
+
+    def __init__(self, con_vision: bool = True, proveedor: str = "anthropic"):
+        self.anthropic_api_key = "test-key" if con_vision and proveedor == "anthropic" else ""
+        self.perplexity_api_key = "test-key" if con_vision and proveedor == "perplexity" else ""
 
 
 def _foto(ancho: int = 800, alto: int = 600, fmt: str = "JPEG") -> bytes:
@@ -127,11 +130,21 @@ def test_un_gif_no_es_formato_admitido():
 
 # ── Sin modelo de visión ──────────────────────────────────────────────────────
 
-def test_sin_modelo_de_vision_falla_claro(modelo):
+def test_sin_ninguna_key_falla_claro(modelo):
     with pytest.raises(ie.ExtraccionNoDisponible) as exc:
         ie.extraer(_fotos(), cfg=_Cfg(con_vision=False))
-    assert "ANTHROPIC_API_KEY" in str(exc.value)
+    assert "ANTHROPIC_API_KEY" in str(exc.value) and "PERPLEXITY_API_KEY" in str(exc.value)
     assert modelo.llamadas == 0
+
+
+@pytest.mark.parametrize("proveedor", ["anthropic", "perplexity"])
+def test_basta_con_cualquiera_de_los_dos_proveedores(modelo, proveedor):
+    """La configuración por defecto del proyecto es solo-Perplexity: si el extractor
+    exigiera Anthropic, la feature nacería inservible para quien la use así."""
+    modelo.respuestas = [dict(_IDENTIDAD)]
+    res = ie.extraer(_fotos(), cfg=_Cfg(proveedor=proveedor))
+    assert vi.validar(res.identidad) == []
+    assert modelo.llamadas == 1
 
 
 # ── Caso feliz ────────────────────────────────────────────────────────────────
@@ -284,8 +297,16 @@ def test_endpoint_si_el_modelo_no_acierta_da_502_con_el_detalle(cliente, modelo)
     assert "tercer color" in res.json()["detail"]
 
 
-def test_endpoint_sin_modelo_de_vision_da_503(cliente, monkeypatch, modelo):
+def test_endpoint_sin_ninguna_key_da_503(cliente, monkeypatch, modelo):
     monkeypatch.setattr(api, "load_config", lambda: _Cfg(con_vision=False))
     res = cliente.post("/identities/extract", files=_multipart(6))
     assert res.status_code == 503
     assert modelo.llamadas == 0
+
+
+def test_endpoint_funciona_solo_con_perplexity(cliente, monkeypatch, modelo):
+    monkeypatch.setattr(api, "load_config", lambda: _Cfg(proveedor="perplexity"))
+    modelo.respuestas = [dict(_IDENTIDAD)]
+    res = cliente.post("/identities/extract", files=_multipart(6))
+    assert res.status_code == 200
+    assert res.json()["identity_json"] == vi.normalizar(_IDENTIDAD)
