@@ -89,6 +89,51 @@ _OAUTH_ENDPOINTS = {
 #   barato), soul_location (fondos/escenas), recraft_v4_1 (marca/producto, soporta 4:5).
 DEFAULT_IMAGE_MODEL = "nano_banana_pro"
 DEFAULT_IMAGE_ASPECT = "1:1"
+# Corte defensivo del prompt de imagen: es NUESTRO, no un límite documentado del MCP
+# (el brief de 9 secciones de `prompt_architect` ronda los 2900 caracteres ≈ 750 tokens,
+# nada para un modelo de esta clase). Debe quedar POR ENCIMA de
+# `prompts/architect.json` → `validacion.max_caracteres`: si truncara, lo que se pierde
+# es la última sección, que son justo los negativos. Si Higgsfield rechazara un prompt
+# largo, el submit falla visible (RuntimeError → aviso en el job) y se baja este número.
+_MAX_PROMPT_CHARS = 3200
+# Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
+# (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
+# scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado
+# un 25% y recortándole el 20% del ancho: se publicaba una recomposición ciega y
+# ablandada. Pidiéndolo nativo, el modelo compone para el marco final.
+FEED_IMAGE_ASPECT = "4:5"
+
+# Capacidades por modelo de imagen — verificadas contra el catálogo en vivo con
+# `cd api/scripts && python mcp_bootstrap.py --models image` (jul 2026). Re-verificar
+# con ese mismo comando si Higgsfield cambia el catálogo; un modelo ausente de esta
+# tabla se trata como "solo lo básico" (prompt + aspecto, sin extras), que es lo que
+# siempre funcionó.
+#   aspects: TODOS los aspectos que acepta el modelo. Lo que no está en la lista no
+#            se le pide nunca: se cae por `_ASPECT_FALLBACKS` (vertical primero, para
+#            no volver al cuadrado escalado).
+#   resolution: opción de resolución a pedir, "" si el modelo no acepta el parámetro.
+#            2k CUESTA LO MISMO que 1k (preflight get_cost: 2 créditos en los dos) y
+#            1k queda por debajo del lienzo de 1080x1350, así que 2k es calidad gratis.
+#   reference_role: rol de `medias` para pasar una imagen de entrada ("" = el modelo
+#            no acepta `medias`). OJO: en el catálogo NO existe un rol de "estilo".
+#            El único que exponen estos modelos es `image`, y todos están tagueados
+#            `image-to-image`: la imagen que se pasa es la que se EDITA, no una guía
+#            de paleta. Usarlo para "que los slides se parezcan a la portada" devuelve
+#            la portada re-encuadrada e ignora la escena propia del slide — por eso
+#            `image_reference_slides` está apagado por defecto.
+_ALL_RATIOS = ("1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21:9")
+_OPENAI_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3")
+_IMAGE_MODEL_CAPS: dict[str, dict] = {
+    "nano_banana_pro": {"aspects": _ALL_RATIOS, "resolution": "2k", "reference_role": "image"},
+    "nano_banana_2": {"aspects": _ALL_RATIOS, "resolution": "2k", "reference_role": "image"},
+    "nano_banana": {"aspects": _ALL_RATIOS, "resolution": "", "reference_role": "image_references"},
+    "gpt_image_2": {"aspects": _OPENAI_RATIOS, "resolution": "2k", "reference_role": "image"},
+    "z_image": {"aspects": ("1:1", "4:3", "3:4", "16:9", "9:16"), "resolution": "", "reference_role": ""},
+}
+_FALLBACK_CAPS = {"aspects": ("1:1",), "resolution": "", "reference_role": ""}
+# Si el aspecto pedido no está soportado: primero el vertical más cercano (recortarlo
+# quita alto pero no escala), y solo al final el cuadrado (que sí obliga al upscale).
+_ASPECT_FALLBACKS = ("3:4", "1:1")
 # TODO: confirmar con `mcp_bootstrap.py --test-video`. kling3_0_turbo es el
 # text-to-video rápido citado en la descripción de generate_video.
 DEFAULT_VIDEO_MODEL = "kling3_0_turbo"
@@ -487,9 +532,51 @@ async def _poll_only(job_id: str, deadline: int) -> str:
 
 # ── API pública (síncrona, espejo de higgsfield_client) ───────────────────────
 
-def submit_image(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, model: str = "") -> dict:
+def image_caps(model: str = "") -> dict:
+    """Capacidades verificadas del modelo de imagen (o las mínimas si no está en la tabla)."""
+    return _IMAGE_MODEL_CAPS.get(model or image_model(), _FALLBACK_CAPS)
+
+
+def image_aspect(preferred: str = FEED_IMAGE_ASPECT, *, model: str = "") -> str:
+    """Aspecto realmente pedible a `model`: el preferido si lo soporta, si no el
+    mejor vertical disponible, y en último caso 1:1 (que recorta image_overlay)."""
+    aspects = image_caps(model)["aspects"]
+    if preferred in aspects:
+        return preferred
+    return next((a for a in _ASPECT_FALLBACKS if a in aspects), "1:1")
+
+
+def image_reference_role(model: str = "") -> str:
+    """Rol de `medias` para pasar una referencia de estilo ("" si el modelo no acepta)."""
+    return image_caps(model)["reference_role"]
+
+
+def _image_params(prompt: str, aspect_ratio: str, model: str, reference: str = "") -> dict:
+    """Params de generate_image: lo básico + los extras que el modelo soporta.
+
+    Espejo de `_video_params`. Los extras salen de `_IMAGE_MODEL_CAPS`, así que a un
+    modelo que no los acepta nunca se le manda un parámetro desconocido (un param de
+    más puede tumbar el submit entero).
+    """
+    m = model or image_model()
+    caps = image_caps(m)
+    params: dict = {"model": m, "prompt": (prompt or "")[:_MAX_PROMPT_CHARS],
+                    "aspect_ratio": aspect_ratio}
+    if caps["resolution"]:
+        params["resolution"] = caps["resolution"]
+    # Imagen de entrada: el job_id de una generación anterior. Con el rol `image` de
+    # estos modelos esto es IMAGE-TO-IMAGE (se edita esa imagen), no una referencia de
+    # paleta — ver la nota de `_IMAGE_MODEL_CAPS`. No cambia el costo (preflight
+    # get_cost: mismos créditos con y sin `medias`).
+    if reference and caps["reference_role"]:
+        params["medias"] = [{"value": reference, "role": caps["reference_role"]}]
+    return params
+
+
+def submit_image(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, model: str = "",
+                 reference: str = "") -> dict:
     """Envía una generación de imagen. Devuelve un handle para pollear luego."""
-    params = {"model": model or image_model(), "prompt": (prompt or "")[:2000], "aspect_ratio": aspect_ratio}
+    params = _image_params(prompt, aspect_ratio, model, reference)
     job_id = _run_coro(_submit_only("generate_image", params))
     return {"job_id": job_id, "prompt": prompt}
 
@@ -499,10 +586,19 @@ def poll_image(handle: dict, *, deadline: int = _POLL_DEADLINE) -> str:
     return _run_coro(_poll_only(handle["job_id"], deadline))
 
 
-def generate_image(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, model: str = "") -> list[str]:
+def generate_image(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, model: str = "",
+                   reference: str = "") -> list[str]:
     """Envía y bloquea hasta que la imagen esté lista. Devuelve [url]."""
-    params = {"model": model or image_model(), "prompt": (prompt or "")[:2000], "aspect_ratio": aspect_ratio}
+    params = _image_params(prompt, aspect_ratio, model, reference)
     return [_run_coro(_generate("generate_image", params, _POLL_DEADLINE))]
+
+
+def generate_image_job(prompt: str, *, aspect_ratio: str = DEFAULT_IMAGE_ASPECT, model: str = "",
+                       reference: str = "") -> dict:
+    """Como generate_image pero conserva el job_id: es el identificador que se pasa
+    en `medias` para que las imágenes siguientes usen esta como referencia visual."""
+    params = _image_params(prompt, aspect_ratio, model, reference)
+    return _run_coro(_generate_job("generate_image", params, _POLL_DEADLINE))
 
 
 def _video_params(prompt: str, aspect_ratio: str, duration: int | None,

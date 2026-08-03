@@ -7,14 +7,24 @@ interface to job_runner so the pipeline stays provider-agnostic:
   generate_base(prompt, *, aspect_ratio="1:1") -> src
                                        Blocking. The shared base image (reused by
                                        LinkedIn, IG single, carousel slide 0).
-                                       `aspect_ratio` lets a caller request 9:16
-                                       (IG Story). Raises only if generation fails
-                                       with no usable fallback.
-  prewarm_extras(prompts) -> handles   Start generating the extra carousel slides
-                                       (info slides + credits). Returns opaque
-                                       handles.
+                                       `aspect_ratio` is what the caller *wants*
+                                       (4:5 feed, 9:16 story); the backend downgrades
+                                       it to the best ratio its model supports.
+                                       Raises only if generation fails with no
+                                       usable fallback.
+  base_reference -> str                Reference id of the base image ("" when the
+                                       base didn't come from the provider), passed
+                                       back in as `reference` so the slides are
+                                       generated looking at the cover.
+  prewarm_extras(prompts, *, aspect_ratio, reference) -> handles
+                                       Start generating the extra carousel slides
+                                       (todos de info). Returns opaque handles.
   resolve(handle) -> src               Blocking. Wait for one prewarmed handle
                                        and return its final image source.
+  generate_one(prompt, *, aspect_ratio, reference) -> src
+                                       Blocking. Una generación suelta que NO toca
+                                       `base_reference`. La usa el reintento del QA
+                                       de texto para rehacer un solo slide.
 
 A "src" is either an http(s) URL (Higgsfield output) or a local filesystem path
 (a bundled template). image_overlay._fetch_base accepts both transparently.
@@ -28,11 +38,10 @@ Backend:
     Higgsfield is unavailable or fails. There is no standalone paid service to
     call; when no Higgsfield credentials are set we serve templates directly.
 
-Template assignment (confirmed product decision — one template per slide type so
-a fallback carousel still looks varied):
+Template assignment (una plantilla por tipo de slide):
   - base / hook (LinkedIn, IG single, carousel slide 0)  -> template-1.png
-  - info / argument slides                               -> template-2.png
-  - credits / closing slide (last extra)                 -> template-3.png
+  - info / argument slides (todos los extras)            -> template-2.png
+El carrusel ya no tiene slide de créditos, así que template-3.png quedó sin uso.
 """
 
 from pathlib import Path
@@ -44,7 +53,7 @@ import higgsfield_mcp as hfmcp   # MCP oficial (OAuth) — backend activo, créd
 # scripts/ is api/scripts/, so go up one level to api/ then into assets/templates.
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "assets" / "templates"
 
-# Role index within a set: 1 = base/hook, 2 = info/argument, 3 = credits/closing.
+# Role index within a set: 1 = base/hook, 2 = info/argument (3 = créditos, retirado).
 # El usuario elige uno de 3 SETS de estilo por post (template_set 1-3). Cada set es
 # una carpeta set-{n}/ con sus template-1/2/3.png. Layout y fallback:
 #   - set-{n}/template-{role}.png            (estilo propio del set)
@@ -73,9 +82,27 @@ def _template_file(role_idx: int, set_n: int) -> str:
             return str(p)
     raise RuntimeError(
         f"Template de respaldo no encontrado: {fname} (set {set_n}). "
-        "Coloca template-1.png, template-2.png y template-3.png (1080x1080) en "
+        "Coloca template-1.png y template-2.png (1080x1080) en "
         "api/assets/templates/ (y en set-2/ y set-3/ para variar el estilo por set)."
     )
+
+
+def es_plantilla(src: str) -> bool:
+    """True si `src` es uno de nuestros PNG de respaldo (y no una imagen generada).
+
+    Es lo que decide quién pone el texto de la pieza: en una imagen generada lo
+    imprimió el modelo desde el prompt y volver a dibujarlo encima lo duplicaría;
+    una plantilla llega muda y hay que dibujárselo. Se compara contra el directorio
+    de plantillas —no "¿es una ruta local?"— porque una salida del proveedor también
+    puede ser un archivo local (un mock en los tests, un backend que descargue a
+    disco) y esa sí trae el texto puesto.
+    """
+    if not src:
+        return False
+    try:
+        return Path(src).resolve().is_relative_to(_TEMPLATES_DIR)
+    except (OSError, ValueError):
+        return False
 
 
 def _short_reason(exc: Exception) -> str:
@@ -101,8 +128,9 @@ class TemplateProvider:
     """Offline fallback backend: serves bundled local template images.
 
     Used directly when no Higgsfield credentials are configured, and as the
-    per-image fallback inside HiggsfieldProvider. Returns local file paths;
-    image_overlay renders the copy on top exactly as it would over a URL.
+    per-image fallback inside HiggsfieldProvider. Returns local file paths; el PNG
+    llega mudo (no pasó por ningún modelo), así que el texto de la pieza se lo
+    dibuja después `image_overlay` — ver `es_plantilla`.
     """
 
     name = "template"
@@ -121,25 +149,29 @@ class TemplateProvider:
         self._warnings = []
         return w
 
+    # Las plantillas locales no son generaciones: no hay job_id que referenciar.
+    base_reference = ""
+
     def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
         # Base / hook slide = role 1 del set elegido. Las plantillas locales son 1:1;
-        # el aspect solicitado (p. ej. 9:16 para historia) lo aplica el overlay al
-        # hacer center-crop, así que aquí se ignora.
+        # el aspect solicitado (p. ej. 4:5 de feed o 9:16 de historia) lo aplica el
+        # overlay al hacer center-crop, así que aquí se ignora.
         return _template_file(1, self._set)
 
-    def prewarm_extras(self, prompts: list[str]) -> list:
-        # No async work — return one handle per extra slide. The last extra is the
-        # credits/closing slide; the rest are info slides. Encode that in the handle.
-        handles: list[dict] = []
-        n = len(prompts)
-        for i in range(n):
-            kind = "credits" if i == n - 1 else "info"
-            handles.append({"template_kind": kind})
-        return handles
+    def generate_one(self, prompt: str, *, aspect_ratio: str = "1:1", reference: str = "") -> str:
+        # Regeneración suelta (la usa el reintento del QA de texto). El PNG es
+        # siempre el mismo: lo que cambia por slide es el texto que le dibuja
+        # después `image_overlay`, no la plantilla.
+        return _template_file(2, self._set)
+
+    def prewarm_extras(self, prompts: list[str], *, aspect_ratio: str = "1:1",
+                       reference: str = "") -> list:
+        # No async work — un handle por slide extra. Todos son slides de info (el
+        # carrusel ya no tiene slide de créditos), así que van a la misma plantilla.
+        return [{} for _ in prompts]
 
     def resolve(self, handle: dict) -> str:
-        kind = handle.get("template_kind", "info")
-        return _template_file(3 if kind == "credits" else 2, self._set)
+        return _template_file(2, self._set)
 
 
 class HiggsfieldProvider:
@@ -182,22 +214,36 @@ class HiggsfieldProvider:
             print(f"   [aviso] Higgsfield (imagen base) falló: {e}. Fallback a plantilla local.")
             return self._fallback.generate_base(prompt, aspect_ratio=aspect_ratio)
 
-    def prewarm_extras(self, prompts: list[str]) -> list:
-        n = len(prompts)
+    # El Cloud API legacy no expone el job_id como referencia de estilo.
+    base_reference = ""
+
+    def generate_one(self, prompt: str, *, aspect_ratio: str = "1:1", reference: str = "") -> str:
+        """Una generación suelta (reintento del QA de texto), con el fallback de siempre."""
+        try:
+            url = hf.generate_image(
+                prompt, api_key=self._key, api_secret=self._secret,
+                aspect_ratio=aspect_ratio, resolution=self._resolution, model=self._model,
+            )[0]
+            self._hf_generations += 1
+            return url
+        except Exception as e:
+            self._warnings.append(_short_reason(e))
+            print(f"   [aviso] Higgsfield (regeneración) falló: {e}. Fallback a plantilla local.")
+            return self._fallback.generate_one(prompt, aspect_ratio=aspect_ratio)
+
+    def prewarm_extras(self, prompts: list[str], *, aspect_ratio: str = "1:1",
+                       reference: str = "") -> list:
         handles: list[dict] = []
         for i, prompt in enumerate(prompts):
-            # Track slide kind so a fallback picks the right template.
-            kind = "credits" if i == n - 1 else "info"
             try:
                 handle = hf.submit_image(
                     prompt, api_key=self._key, api_secret=self._secret,
-                    aspect_ratio="1:1", resolution=self._resolution, model=self._model,
+                    aspect_ratio=aspect_ratio, resolution=self._resolution, model=self._model,
                 )
-                handle["template_kind"] = kind
             except Exception as e:
                 # Don't warn yet — warn once at resolve time, attributed to the slide.
                 print(f"   [aviso] Higgsfield (envío slide {i + 2}) falló: {e}. Ese slide usará plantilla local.")
-                handle = {"fallback_template": True, "template_kind": kind, "fallback_reason": _short_reason(e)}
+                handle = {"fallback_template": True, "fallback_reason": _short_reason(e)}
             handles.append(handle)
         return handles
 
@@ -235,10 +281,19 @@ class MCPProvider:
         self._fallback = TemplateProvider(template_set)
         self._warnings: list[str] = []
         self._hf_generations = 0
+        # job_id de la portada: es lo que se pasa en `medias` para que los slides del
+        # carrusel se generen MIRANDO la portada (coherencia de paleta y luz real, no
+        # solo prometida en el texto del prompt). Vacío si la portada no salió del MCP.
+        self._base_job_id = ""
 
     @property
     def hf_generations(self) -> int:
         return self._hf_generations
+
+    @property
+    def base_reference(self) -> str:
+        """job_id de la portada generada, usable como referencia de estilo ("" si no hay)."""
+        return self._base_job_id
 
     def pop_warnings(self) -> list[str]:
         w = self._warnings
@@ -246,28 +301,70 @@ class MCPProvider:
         return w
 
     def generate_base(self, prompt: str, *, aspect_ratio: str = "1:1") -> str:
+        # El aspecto se negocia con las capacidades del modelo: se pide el mejor que
+        # soporte (4:5 en el feed) y nunca uno que vaya a rebotar el submit.
+        aspect = hfmcp.image_aspect(aspect_ratio, model=self._image_model)
         try:
-            url = hfmcp.generate_image(prompt, aspect_ratio=aspect_ratio, model=self._image_model)[0]
+            job = hfmcp.generate_image_job(prompt, aspect_ratio=aspect, model=self._image_model)
             self._hf_generations += 1
-            return url
+            self._base_job_id = job.get("job_id", "")
+            return job["url"]
         except Exception as e:
             self._warnings.append(_short_reason(e))
             print(f"   [aviso] MCP (imagen base) falló: {e}. Fallback a plantilla local.")
+            self._base_job_id = ""
             return self._fallback.generate_base(prompt, aspect_ratio=aspect_ratio)
 
-    def prewarm_extras(self, prompts: list[str]) -> list:
-        n = len(prompts)
+    def generate_one(self, prompt: str, *, aspect_ratio: str = "1:1", reference: str = "") -> str:
+        """Una generación suelta, sin tocar la referencia de la portada.
+
+        La usa el reintento del QA de texto: rehacer UN slide no puede cambiar el
+        `base_reference` que comparten los demás. Si el submit falla con referencia,
+        se reintenta sin ella antes de caer a plantilla (mismo criterio que los slides).
+        """
+        aspect = hfmcp.image_aspect(aspect_ratio, model=self._image_model)
+        for ref in ([reference, ""] if reference else [""]):
+            try:
+                job = hfmcp.generate_image_job(prompt, aspect_ratio=aspect,
+                                               model=self._image_model, reference=ref)
+                self._hf_generations += 1
+                return job["url"]
+            except Exception as e:
+                print(f"   [aviso] MCP (regeneración{' con referencia' if ref else ''}) falló: {e}")
+                ultimo = e
+        self._warnings.append(_short_reason(ultimo))
+        return self._fallback.generate_one(prompt, aspect_ratio=aspect_ratio)
+
+    def prewarm_extras(self, prompts: list[str], *, aspect_ratio: str = "1:1",
+                       reference: str = "") -> list:
+        aspect = hfmcp.image_aspect(aspect_ratio, model=self._image_model)
         handles: list[dict] = []
         for i, prompt in enumerate(prompts):
-            kind = "credits" if i == n - 1 else "info"
-            try:
-                handle = hfmcp.submit_image(prompt, aspect_ratio="1:1", model=self._image_model)
-                handle["template_kind"] = kind
-            except Exception as e:
-                print(f"   [aviso] MCP (envío slide {i + 2}) falló: {e}. Ese slide usará plantilla local.")
-                handle = {"fallback_template": True, "template_kind": kind, "fallback_reason": _short_reason(e)}
-            handles.append(handle)
+            handles.append(self._submit_slide(prompt, i, aspect=aspect, reference=reference))
         return handles
+
+    def _submit_slide(self, prompt: str, i: int, *, aspect: str, reference: str) -> dict:
+        """Envía un slide; si falla con extras, reintenta con lo mínimo antes de rendirse.
+
+        La referencia visual y el aspecto vertical salen de una tabla de capacidades
+        verificada contra el catálogo, pero si el catálogo cambió (o el server rechaza
+        la referencia por lo que sea) preferimos un slide generado sin referencia antes
+        que una plantilla local: perder la coherencia es mucho más barato que perder la
+        imagen.
+        """
+        try:
+            return hfmcp.submit_image(prompt, aspect_ratio=aspect, model=self._image_model,
+                                      reference=reference)
+        except Exception as e:
+            if not reference:
+                print(f"   [aviso] MCP (envío slide {i + 2}) falló: {e}. Ese slide usará plantilla local.")
+                return {"fallback_template": True, "fallback_reason": _short_reason(e)}
+            print(f"   [aviso] MCP (envío slide {i + 2}) falló con referencia: {e}. Reintento sin referencia.")
+        try:
+            return hfmcp.submit_image(prompt, aspect_ratio=aspect, model=self._image_model)
+        except Exception as e:
+            print(f"   [aviso] MCP (envío slide {i + 2}) falló también sin referencia: {e}. Plantilla local.")
+            return {"fallback_template": True, "fallback_reason": _short_reason(e)}
 
     def resolve(self, handle: dict) -> str:
         if handle.get("fallback_template"):

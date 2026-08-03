@@ -33,7 +33,17 @@ class Config:
     # scripts/mcp_bootstrap.py, que deja el token store en api/.hf_oauth.json.
     higgsfield_mcp_token_store: str = ""
     higgsfield_mcp_image_model: str = "nano_banana_pro"
-    higgsfield_mcp_video_model: str = "kling3_0_turbo"
+    # Default de TEXT-TO-VIDEO (reel, historia en video, tipo_medio=video). Seedance
+    # 2.0 encabeza los rankings de calidad/física de 2026 y es el que menos artefactos
+    # de anatomía y anclaje produce; cuesta 3x Kling 3.0 Turbo (4.5 vs 1.5 cr/seg), y
+    # esa es la decisión: priorizar calidad. Para volver atrás, HIGGSFIELD_MCP_VIDEO_MODEL
+    # =kling3_0_turbo en el .env (o elegir el modelo por post en el form / el sheet).
+    higgsfield_mcp_video_model: str = "seedance_2_0"
+    # Default del recorrido de fotos (image-to-video con start_image/end_image). Va
+    # aparte a propósito: esa rama depende de que el modelo acepte `medias`, y lo
+    # único verificado en producción es Kling 3.0 Turbo. No moverlo a Seedance sin
+    # probar antes un recorrido real de 2 fotos.
+    higgsfield_mcp_walkthrough_model: str = "kling3_0_turbo"
     # Voz en off + subtítulos de los reels generados (tools generate_audio +
     # explainer_video del MCP). REEL_VOICEOVER=0 apaga la voz y vuelve al
     # stitching mudo con ffmpeg. La voz por defecto la elige el server; para
@@ -48,6 +58,36 @@ class Config:
     # no los "etiqueta de papel" del server. Este valor actúa como on/off: none|off|no|0
     # los desactiva (queda solo la voz); cualquier otro valor los deja activados.
     higgsfield_subtitle_font: str = "on"
+    # ── Texto de la pieza ─────────────────────────────────────────────────────
+    # image_text_in_prompt (default ON): el texto (hook de portada, idea de cada
+    # slide) viaja DENTRO del prompt y lo renderiza Higgsfield al generar la imagen.
+    # Es el único camino: el paso de dibujarlo encima con Pillow se retiró. Apagarlo
+    # devuelve el prompt clásico de una frase con "sin texto" e imágenes limpias.
+    image_text_in_prompt: bool = True
+    # Capa de arquitectura de prompt (api/prompt_architect.py): convierte el prompt
+    # genérico en uno estructurado de 9 secciones. Apagarla vuelve al prompt de una
+    # sola frase. La auto-crítica es el segundo llamado al LLM que puntúa el prompt
+    # contra el rubric y lo reescribe si algo baja del umbral (cuesta tokens).
+    prompt_architect: bool = True
+    prompt_architect_critique: bool = True
+    # QA de visión post-generación: comprueba que el texto impreso coincide con el
+    # esperado (acentos incluidos) y reintenta reforzando la instrucción.
+    image_text_qa: bool = True
+    # Coherencia del carrusel.
+    #   - image_reference_slides: pasa la PORTADA en `medias` al generar cada slide.
+    #     APAGADO por defecto, y no es una preferencia estética: en el catálogo en vivo
+    #     (`mcp_bootstrap.py --models image`) el ÚNICO rol de `medias` que exponen
+    #     nano_banana_*/gpt_image_2 es `image`, y esos modelos están tagueados
+    #     `image-to-image`. Es decir: la portada no entra como referencia de estilo
+    #     sino como la imagen A EDITAR, así que cada slide volvía re-encuadrado de la
+    #     portada —misma foto, mismo objeto, distinto recorte— ignorando su propia
+    #     escena. Encenderlo solo tiene sentido si algún día aparece un rol de estilo
+    #     (`style`/`style_reference`) en el catálogo.
+    #   - image_grade_match: iguala el color de cada slide al de la portada con Pillow
+    #     (sin créditos). Junto con la dirección de arte compartida y el lockup
+    #     tipográfico, es lo que sostiene la coherencia del set sin clonar la imagen.
+    image_reference_slides: bool = False
+    image_grade_match: bool = True
     # Speech-to-text (for the "audio" source). Two engines:
     #   "api"   — OpenAI-compatible Whisper endpoint (OpenAI default, or Groq).
     #   "local" — faster-whisper running on this machine (free, offline, no key).
@@ -98,6 +138,9 @@ class Config:
         return Path(store).exists()
 
 
+_TRUTHY = ("1", "true", "yes", "on", "si", "sí")
+
+
 def load_config() -> Config:
     blotato = os.environ.get("BLOTATO_API_KEY", "")
     if not blotato:
@@ -120,7 +163,9 @@ def load_config() -> Config:
         higgsfield_video_segment_seconds=int(os.environ.get("HIGGSFIELD_VIDEO_SEGMENT_SECONDS", "") or "5"),
         higgsfield_mcp_token_store=os.environ.get("HIGGSFIELD_MCP_TOKEN_STORE", ""),
         higgsfield_mcp_image_model=os.environ.get("HIGGSFIELD_MCP_IMAGE_MODEL", "") or "nano_banana_pro",
-        higgsfield_mcp_video_model=os.environ.get("HIGGSFIELD_MCP_VIDEO_MODEL", "") or "kling3_0_turbo",
+        higgsfield_mcp_video_model=os.environ.get("HIGGSFIELD_MCP_VIDEO_MODEL", "") or "seedance_2_0",
+        higgsfield_mcp_walkthrough_model=(os.environ.get("HIGGSFIELD_MCP_WALKTHROUGH_MODEL", "")
+                                          or "kling3_0_turbo"),
         reel_voiceover=(os.environ.get("REEL_VOICEOVER", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         higgsfield_mcp_tts_model=os.environ.get("HIGGSFIELD_MCP_TTS_MODEL", "") or "seed_audio",
@@ -128,6 +173,20 @@ def load_config() -> Config:
         higgsfield_tts_voice_id=os.environ.get("HIGGSFIELD_TTS_VOICE_ID", "").strip(),
         higgsfield_subtitle_font=(os.environ.get("HIGGSFIELD_SUBTITLE_FONT", "").strip().lower()
                                   or "on"),
+        image_text_in_prompt=(os.environ.get("IMAGE_TEXT_IN_PROMPT", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        prompt_architect=(os.environ.get("PROMPT_ARCHITECT", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        prompt_architect_critique=(os.environ.get("PROMPT_ARCHITECT_CRITIQUE", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_text_qa=(os.environ.get("IMAGE_TEXT_QA", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        # Apagado por defecto: con los modelos actuales `medias` es image-to-image y
+        # clona la portada en cada slide (ver el comentario del dataclass).
+        image_reference_slides=(os.environ.get("IMAGE_REFERENCE_SLIDES", "") or "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+        image_grade_match=(os.environ.get("IMAGE_GRADE_MATCH", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
         # "local" uses faster-whisper offline; anything else (default) uses the
         # hosted OpenAI-compatible endpoint below.
         transcription_engine=(os.environ.get("TRANSCRIPTION_ENGINE", "") or "api").lower(),

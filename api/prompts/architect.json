@@ -1,0 +1,121 @@
+{
+  "_comment": "Configuración del PromptArchitect: las 9 secciones obligatorias del prompt final, las plantillas deterministas (las que NO se delegan al modelo) y las reglas de validación. La lógica vive en api/prompt_architect.py y no hardcodea nada de este archivo. Reparto: este archivo dice CÓMO se coloca la pieza (bandas, escala, márgenes, negativos); brand.json dice QUÉ es la marca (paleta, tipografía, acento).",
+  "version": "2",
+
+  "aspect_por_defecto": "4:5",
+  "idioma_por_defecto": "es",
+
+  "_comment_secciones": "1, 4, 5 y 9 las escribe la APP con plantillas deterministas. La 5 (tipografía) pasó de `llm` a `app` en la v2: cuando la escribía el modelo, cada post inventaba su propia fuente y escala, así que no había identidad entre posts ni jerarquía de póster dentro del carrusel.",
+  "secciones": [
+    {"clave": "pieza",       "etiqueta": "PIECE & FORMAT",       "origen": "app"},
+    {"clave": "sujeto",      "etiqueta": "SUBJECT & SCENE",      "origen": "llm"},
+    {"clave": "composicion", "etiqueta": "COMPOSITION",          "origen": "llm+app"},
+    {"clave": "texto",       "etiqueta": "TEXT TO RENDER",       "origen": "app"},
+    {"clave": "tipografia",  "etiqueta": "TYPOGRAPHY",           "origen": "app"},
+    {"clave": "luz",         "etiqueta": "LIGHTING & PALETTE",   "origen": "llm"},
+    {"clave": "estilo",      "etiqueta": "STYLE & REFERENCES",   "origen": "llm"},
+    {"clave": "camara",      "etiqueta": "CAMERA / RENDER",      "origen": "llm"},
+    {"clave": "negativos",   "etiqueta": "NEGATIVE",             "origen": "app"}
+  ],
+
+  "_comment_piezas": "La pieza se declara como PÓSTER DISEÑADO, no como fotografía. Pedir 'editorial photography' con un hueco libre es exactamente lo que producía una foto de stock con un caption encima: el modelo compone una foto y mete el texto donde le queda sitio. Declarando composite (base fotográfica + capa tipográfica) el modelo trata el tipo como parte del diseño. El 'full bleed' entró aquí al ver en producción que unos slides salían a sangre y otros con una banda de color liso arriba y abajo (un passe-partout): la v2 decía 'art-directed as print', y 'print' + 'banda plana' es la receta de una lámina montada. Es la sección 1, la más autoritativa del brief, así que el sangrado se declara acá y se repite en composición y negativos.",
+  "piezas": {
+    "portada": "Designed poster, social carousel cover, {aspect}: full-bleed photographic base with a typographic layer locked over it — not a photo with a caption.",
+    "contenido": "Designed poster, content slide of the same carousel, {aspect}: same full-bleed treatment, grid and type margins as the cover, one type tier smaller."
+  },
+
+  "_comment_zonas": "Esqueleto de póster COMPARTIDO por portada y slides — es lo que hace que el set se lea como un sistema: titular en la banda alta, segunda línea en la banda baja, sujeto en la banda central. Antes la portada usaba el tercio inferior y los slides el superior, y además el margen se pedía como 'safe margin' sin cuantificar: de ahí los titulares cortados por el borde. Los porcentajes son la corrección de ese defecto y no deben quitarse.",
+  "zonas_texto": {
+    "portada": {
+      "zona": "the upper band, between the 8% top margin and the 42% height line",
+      "zona_kicker": "the bottom band, just above the 8% bottom margin",
+      "alineacion": "flush left",
+      "ancho": "up to 84% of the width",
+      "margen": "the 8% safe margin on all four sides"
+    },
+    "contenido": {
+      "zona": "the upper band, between the 8% top margin and the 38% height line",
+      "zona_kicker": "the bottom band, just above the 8% bottom margin",
+      "alineacion": "flush left",
+      "ancho": "up to 84% of the width",
+      "margen": "the 8% safe margin on all four sides"
+    }
+  },
+
+  "idiomas": {
+    "es": "Spanish",
+    "en": "English"
+  },
+
+  "texto": {
+    "instruccion": "render this exact text: \"{titular}\"",
+    "instruccion_con_kicker": "render this exact headline: \"{titular}\", plus this exact second line at ~40% of its size: \"{kicker}\"",
+    "detalle": "Language: {idioma}; {acentos}. Copy it character by character — never translate, abbreviate, hyphenate or re-wrap. Largest element in the frame, {alineacion} in the reserved clear zone: {zona}, {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside {margen} — nothing touches or is cut by a frame edge. These are the ONLY words in the image.",
+    "detalle_kicker": "The second line locks into {zona_kicker}, same alignment and safe area.",
+    "detalle_acentos": "keep every accent and diacritic exactly as written",
+    "detalle_sin_acentos": "no accented characters in this string",
+    "refuerzo": "TEXT ACCURACY AND FRAMING ARE THE PRIMARY REQUIREMENT of this render: spell the quoted string character by character, keep every accent, fit it whole inside the safe area with nothing cropped, and print no other glyph anywhere."
+  },
+
+  "_comment_tipografia": "Sección 5, determinista. `escala` es lo que separa una pieza de diseñador de un caption: sin altura declarada el modelo pone cuerpo de pie de foto. `acento` es la plancha/palabra en color de la referencia — un solo span, si no se convierte en confeti. `acento_explicito` es el que marcó el usuario con **dobles asteriscos** en la revisión previa: cuando existe manda sobre la elección automática, y los asteriscos NUNCA llegan al render (se quitan al normalizar la spec).",
+  "tipografia": {
+    "plantilla": "{display}. {escala} Set solid, flush left, optical alignment, no hyphenation; {color}. {acento}",
+    "escala": {
+      "portada": "Each headline line stands 13-16% of the frame height, broken over 2-3 lines.",
+      "contenido": "Each headline line stands 9-12% of the frame height, broken over 2-3 lines."
+    },
+    "acento": "One word only — the most load-bearing of the string — in {color_acento}; the rest in the headline color.",
+    "acento_explicito": "Exactly this fragment — \"{acento}\" — in {color_acento}; every other word stays in the headline color.",
+    "secundaria": "Second line: {secundaria}."
+  },
+
+  "_comment_composicion_zona": "Cláusula que la app pega SIEMPRE a la composición. En la v1 decía 'keep focal elements out of it': eso garantizaba el look 'foto arriba, texto en la banda'. La v2 declaró el lockup de póster (tipo arriba y abajo, sujeto en el centro) con el solape controlado, que es lo que integra tipo e imagen. La v3 corrige la palabra que rompía la pieza: 'flat'. Para un modelo de imagen 'flat band' es un RECTÁNGULO DE COLOR LISO, no una zona tranquila de la foto — de ahí que algunos slides salieran con un passe-partout hueso (#EDEAE0 está en la paleta, así que lo pintaba con la marca) y otros a sangre, según cómo resolviera la ambigüedad esa tirada. El aire se sigue pidiendo, pero se dice DE QUÉ está hecho: sombra, desenfoque, superficie desnuda. Conserva los marcadores 'clear zone'/'negative space' que exige el validador.",
+  "composicion_zona": "Poster lockup, full bleed to all four edges: the upper and bottom bands are uncluttered clear zones for the type — negative space made of the photograph itself (shadow, defocus, bare surface), never panels of flat colour; anchor the subject in the central band between them, lit so its silhouette separates from the type, overlapping it only where the frame falls to near-black.",
+
+  "_comment_continuidad_set": "Lo que mantiene unido al carrusel ahora que los slides NO se generan pasando la portada en `medias`. Aquella vía parecía coherencia y era otra cosa: con estos modelos `medias` es image-to-image, así que cada slide volvía siendo la portada re-encuadrada. La continuidad se declara entonces por texto y en las dos direcciones: lo que se COMPARTE (set, superficies, luz, paleta, óptica) y lo que tiene que CAMBIAR (el objeto protagonista y la posición de cámara). Sin la segunda mitad, el modelo repite el objeto de la portada por su cuenta. Solo se pega a los slides.",
+  "continuidad_set": "SET CONTINUITY: same room, surfaces, light and palette as the carousel cover ({escena_portada}) — but a DIFFERENT hero object, camera position and framing; never the cover restaged or re-cropped.",
+
+  "respaldos": {
+    "_comment": "Se usan cuando no hay LLM disponible o su respuesta viene incompleta. Producen un prompt válido (9 secciones) sin llamar a nadie. `tipografia` ya no está aquí: la escribe la app siempre.",
+    "sujeto": "{prompt_base}",
+    "composicion": "One clear focal hierarchy: the subject centred in the middle band, secondary elements falling away in depth, edges level.",
+    "luz": "Single hard source raking from above, deep falloff into near-black, visible contact shadow; palette held to {paleta}.",
+    "estilo": "{tono_visual}. Art direction: {referencias}.",
+    "camara": "50mm equivalent, f/4, subject sharp against a dark background, natural micro-texture and fine grain."
+  },
+
+  "_comment_negativos": "El segundo grupo son los rótulos DENTRO de la escena. Un 'no words beyond the quoted string' genérico no los frenaba: el modelo seguía escribiendo pseudo-texto en las pantallas, los paneles y las etiquetas del objeto (en producción salían monitores con 'EOARFAM' y perillas rotuladas 'SHUMAD/ER'), que es lo que delata una imagen generada. Hay que nombrarles la superficie concreta y dar la alternativa (curvas, marcas, gráficos sin palabras), porque prohibir a secas un rótulo en una pantalla suele producir una pantalla apagada. El negativo del sangrado ('no borders, frames or split panels') ya estaba y NO alcanzaba solo: la composición pedía bandas 'flat' al mismo tiempo, y ante la contradicción el modelo sigue la instrucción positiva. Por eso este negativo se explicita aquí pero la corrección de fondo va en las secciones 1 y 3.",
+  "negativos": [
+    "no words or glyphs beyond the quoted string",
+    "no lettering cropped, clipped or bleeding past the frame edge",
+    "screens, panels, dials, labels, packaging, spines and paper inside the scene carry NO readable words, numbers or menus — only unlabelled graphics: curves, waveforms, tick marks, plain color fields",
+    "no invented or garbled pseudo-text anywhere in the photographed scene",
+    "no watermarks",
+    "no lorem ipsum or placeholder lettering",
+    "no deformed or extra hands",
+    "no fake logos",
+    "no borders, frames, mattes or bands of flat colour at any edge"
+  ],
+
+  "adjetivos_prohibidos": [
+    "beautiful", "amazing", "modern", "stunning", "gorgeous", "epic",
+    "incredible", "awesome", "breathtaking", "eye-catching", "sleek", "vibrant"
+  ],
+
+  "validacion": {
+    "_comment": "max_caracteres va por debajo del corte de higgsfield_mcp._MAX_PROMPT_CHARS: un prompt truncado pierde justo la sección de negativos. Subió de 1950 a 3000 en la v2: las secciones deterministas (póster + área segura + tipografía) crecieron ~200 caracteres y el presupuesto anterior ya estaba saturado (1888 de 1950 en el camino de respaldo), así que con 2500 la poda se comía el anclaje concreto de las secciones creativas — justo lo que evita que la imagen salga genérica. Con 3000 el caso peor entraba sin podar; subió a 3100 al añadirse la cláusula de continuidad de set en los slides, que en el peor caso empujaba la poda hasta romper la paleta a mitad del paréntesis. En la v3 sube a 3150: declarar el sangrado en las secciones 1, 3 y 9 costó ~110 caracteres fijos en TODOS los prompts (se pagó parte quitando 'art-directed as print' de la sección 1, que además era el propio guiño al passe-partout), y sin este margen el peor caso —slide con kicker Y continuidad de set— se pasaba del techo incluso podado a 10 palabras: ahí el validador tira el prompt entero y la imagen sale con el prompt base, sin bloque de texto. Sigue 50 caracteres por debajo del corte del cliente, así que un prompt válido nunca llega a truncarse. OJO: la poda ya era agresiva antes de la v3 (14-18 palabras en el caso típico); si hay que dar más aire a las creativas, el techo real a subir es higgsfield_mcp._MAX_PROMPT_CHARS, que es una cota nuestra —el catálogo no declara maxLength para `prompt`— y no un límite documentado de Higgsfield. max_palabras_seccion acota cada sección creativa para que el total quepa.",
+    "min_caracteres": 400,
+    "max_caracteres": 3150,
+    "max_palabras_bloque": 8,
+    "max_palabras_seccion": 26,
+    "continuidad_set_palabras": 12,
+    "marcas_aire_negativo": ["negative space", "clear zone", "reserved", "empty band"],
+    "marcas_area_segura": ["safe margin", "safe area"]
+  },
+
+  "llm": {
+    "modelo_max_tokens": 1200,
+    "sistema": "You are a senior art director writing production prompts for a text-to-image model that WILL render typography into the image. You never write fluff: every clause carries a concrete, verifiable visual fact (material, era, geography, angle, measurable quantity). You answer with JSON only.",
+    "instruccion": "Rewrite the weak base prompt below into the creative sections of a structured art-direction brief. The piece is a DESIGNED POSTER: a photographic base with a typographic layer locked over it. The app owns the format, the text block, the typography and the negatives — you never write those.\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}\n\nWrite every value in ENGLISH (the model follows English best), 15-26 words each, dense prose — not keyword lists. Anything past 26 words gets cut, so spend the budget on concrete facts.\n- sujeto: ONE concrete hero object, poster-style. Name the actual thing, its material, wear and era, the geographic or cultural context when the topic implies one, what it rests on, and the shot angle. NEVER a category label (\"modern data center\", \"business meeting\", \"abstract technology background\") — pick a real, nameable thing.\n- composicion: how the frame is organised around that hero object in the central band — focal hierarchy, depth layers, where the eye enters. The photograph is FULL BLEED: it reaches past all four edges, so never compose a border, matte, margin or band of flat colour. Do NOT describe the text zones: the app appends them verbatim.\n- luz: a single hard key light with direction, source and hour, its falloff into the near-black surround, the rim or spill that separates the subject from the type, and the palette using the brand colors below (name the hex values).\n- estilo: the art-direction lineage in concrete terms (film-poster still, industrial reportage, isometric technical illustration...) plus the visual references supplied.\n- camara: focal length, aperture and depth of field, sensor or film character, texture and grain.\n\nHARD RULES:\n- Do NOT include the text to render, the typography or the negatives in any section: the app writes those blocks itself.\n- BANNED empty adjectives unless immediately backed by a concrete detail: {adjetivos_prohibidos}.\n- No people as the main subject; no hands doing fine work; the hero object rests on a named surface and casts a contact shadow.\n- Stay faithful to the topic and angle: a viewer who knows the content must see why this image was chosen."
+  }
+}

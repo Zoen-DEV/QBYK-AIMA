@@ -191,6 +191,12 @@ export default function ProgressView({ jobId, apiUrl }: { jobId: string; apiUrl:
           if (status === "chunk") {
             return { ...s, chunks: (s.chunks || "") + text };
           }
+          // Un "done" no baja un "warn": el paso terminó, pero lo hizo con un aviso
+          // (sin transcripción, escritura incompleta) y ese aviso es justo lo que hay
+          // que leer antes de gastar créditos. Solo un "error" lo reemplaza.
+          if (status === "done" && s.status === "warn") {
+            return s;
+          }
           return {
             ...s,
             status: status as StepStatus,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import PublishBar from "./PublishBar";
+import { RegenerateButton, conVersion } from "./RegenerateImage";
 
 interface Props {
   jobId: string;
@@ -9,8 +10,11 @@ interface Props {
     has_li_hook: boolean;
     has_fb_hook: boolean;
     has_ig_single: boolean;
+    has_ig_story?: boolean;
     has_ig_carousel: boolean;
     ig_slides: string[];
+    // Imágenes que se pueden rehacer de a una; lo decide el backend (formato + redes).
+    regenerables?: string[];
     blotato_urls: { linkedin: string; instagram: string[]; facebook: string };
   };
   video?: { url?: string; provider?: string; notice?: string; cost?: { credits?: number; usd?: number; segments?: number; seconds?: number; voice?: boolean } | null };
@@ -71,6 +75,8 @@ function PostCard({
   saving,
   imageUrl,
   extraImageUrls,
+  imageKeys,
+  regenControl,
   videoUrl,
   wordRange,
   verticalMedia,
@@ -83,6 +89,10 @@ function PostCard({
   saving: boolean;
   imageUrl?: string;
   extraImageUrls?: string[];
+  // Subkeys en el MISMO orden que las imágenes mostradas: es lo que permite
+  // rehacer justo la que se está mirando.
+  imageKeys?: string[];
+  regenControl?: (subkey: string) => React.ReactNode;
   videoUrl?: string;
   wordRange: [number, number];
   // Medio vertical 9:16 (reel/historia): el medio va en una columna y el caption
@@ -93,6 +103,8 @@ function PostCard({
   const [slideIdx, setSlideIdx] = useState(0);
 
   const allImages = imageUrl ? [imageUrl, ...(extraImageUrls || [])] : extraImageUrls || [];
+  // Control para rehacer la imagen que se está viendo (null si no aplica).
+  const regen = regenControl?.((imageKeys || [])[slideIdx] || "") ?? null;
 
   // El bloque de texto (vista + edición) es idéntico en ambos layouts.
   const textBlock = editing ? (
@@ -151,7 +163,7 @@ function PostCard({
         </div>
         <div className="md:flex md:items-stretch">
           {(videoUrl || allImages.length > 0) && (
-            <div className="bg-gray-950 flex items-center justify-center p-4 md:w-72 md:flex-shrink-0">
+            <div className="bg-gray-950 flex flex-col items-center justify-center gap-3 p-4 md:w-72 md:flex-shrink-0">
               {videoUrl ? (
                 <video
                   src={videoUrl}
@@ -166,6 +178,7 @@ function PostCard({
                   className="w-full max-h-[30rem] rounded-xl object-contain bg-black"
                 />
               )}
+              {!videoUrl && regen}
             </div>
           )}
           <div className="p-5 border-t border-gray-800 md:flex-1 md:border-t-0 md:border-l">
@@ -199,10 +212,13 @@ function PostCard({
       {!videoUrl && allImages.length > 0 && (
         <div className="bg-gray-950">
           <div className="relative">
+            {/* Las imágenes de feed son 4:5: `object-cover` recortaba el copy que
+                renderiza el modelo. Se muestran completas (alto acotado, ancho
+                proporcional y centrado) para poder revisar el texto impreso. */}
             <img
               src={allImages[slideIdx]}
               alt={`Visual ${platform} ${slideIdx + 1}`}
-              className="w-full object-cover max-h-80"
+              className="mx-auto block w-auto max-w-full max-h-[32rem] object-contain"
             />
             {allImages.length > 1 && (
               <>
@@ -247,6 +263,14 @@ function PostCard({
             )}
           </div>
 
+          {/* Rehacer la imagen que se está viendo — descartar una mala cuesta una
+              generación, no el post entero. */}
+          {regen && (
+            <div className="flex items-center justify-end px-3 py-2 border-t border-gray-800">
+              {regen}
+            </div>
+          )}
+
           {/* Thumbnail strip — all slides visible at a glance */}
           {allImages.length > 1 && (
             <div className="flex gap-2 overflow-x-auto p-3 border-t border-gray-800">
@@ -259,7 +283,7 @@ function PostCard({
                     i === slideIdx ? "border-brand-500" : "border-transparent opacity-60 hover:opacity-100"
                   }`}
                 >
-                  <img src={url} alt={`Slide ${i + 1}`} className="w-14 h-14 object-cover" />
+                  <img src={url} alt={`Slide ${i + 1}`} className="h-16 w-auto object-contain" />
                 </button>
               ))}
             </div>
@@ -306,22 +330,48 @@ export default function ReviewCards({
   const doTiktok = redes ? redes.includes("tiktok") : false;
   const networkCount = [doLinkedIn, doInstagram, doFacebook, doTiktok].filter(Boolean).length;
 
-  const liImageUrl = images.has_li_hook ? `${apiUrl}/jobs/${jobId}/image/li-hook` : (liMediaUrls[0] || "");
-  const fbImageUrl = images.has_fb_hook ? `${apiUrl}/jobs/${jobId}/image/fb-hook` : (fbMediaUrls[0] || "");
-  const igSingleUrl = images.has_ig_single ? `${apiUrl}/jobs/${jobId}/image/ig-single` : (igMediaUrls[0] || "");
+  // Marca de tiempo de la última regeneración por imagen: la URL de la API no
+  // cambia al rehacerla, así que sin esto el navegador seguiría mostrando la vieja.
+  const [bust, setBust] = useState<Record<string, number>>({});
+  const bustear = (keys: string[]) => {
+    const t = Date.now();
+    setBust((b) => ({ ...b, ...Object.fromEntries(keys.map((k) => [k, t])) }));
+  };
+  const apiImage = (key: string) => conVersion(`${apiUrl}/jobs/${jobId}/image/${key}`, bust[key]);
+
+  const liImageUrl = images.has_li_hook ? apiImage("li-hook") : (liMediaUrls[0] || "");
+  const fbImageUrl = images.has_fb_hook ? apiImage("fb-hook") : (fbMediaUrls[0] || "");
+  const igSingleUrl = images.has_ig_single ? apiImage("ig-single") : (igMediaUrls[0] || "");
+  // La historia es una sola imagen vertical compartida por Instagram y Facebook.
+  const storyUrl = images.has_ig_story ? apiImage("ig-story") : (igMediaUrls[0] || fbMediaUrls[0] || "");
   // Slides del carrusel: los comparten todas las redes (IG nativo, LinkedIn
   // document carousel, Facebook multi-foto), así que sirven para las tres cards.
   const slideUrls = images.ig_slides.length > 0
-    ? images.ig_slides.map((k) => `${apiUrl}/jobs/${jobId}/image/${k}`)
+    ? images.ig_slides.map((k) => apiImage(k))
     : igMediaUrls.length > 1 ? igMediaUrls : (liMediaUrls.length > 1 ? liMediaUrls : fbMediaUrls);
 
   const isCarousel = params.formato === "carrusel" || params.formato_instagram === "carrusel";
+
+  // Rehacer una imagen suelta: el backend dice cuáles se pueden (formato + redes) y
+  // devuelve cuáles cambiaron — rehacer la portada de un post de imagen única cambia
+  // la de las tres redes, porque las tres salen de la misma base.
+  const regenerables = images.regenerables || [];
+  const regenControl = (subkey: string) =>
+    subkey && regenerables.includes(subkey) ? (
+      <RegenerateButton apiUrl={apiUrl} jobId={jobId} subkey={subkey} onDone={bustear} />
+    ) : null;
 
   // Reel e Historia usan medio vertical 9:16 → cada card va en dos columnas
   // (medio | caption) y las cards se apilan una arriba de otra a ancho completo,
   // para que el texto del caption tenga espacio de lectura.
   const tipoPost = (params.tipo_post as string) || "post";
   const isVertical = tipoPost === "reel" || tipoPost === "historia";
+  // Historia en imagen: una sola imagen vertical, la misma para Instagram y Facebook.
+  const esHistoriaImagen = tipoPost === "historia" && !videoUrl;
+
+  // Subkeys en el orden en que cada card muestra sus imágenes.
+  const keysFeed = (red: "li-hook" | "fb-hook" | "ig-single") =>
+    isCarousel ? images.ig_slides : esHistoriaImagen ? ["ig-story"] : [red];
 
   async function savePost(field: "linkedin_text" | "instagram_text" | "facebook_text", value: string) {
     setSaving(true);
@@ -360,6 +410,8 @@ export default function ReviewCards({
             saving={saving}
             imageUrl={videoUrl || isCarousel ? undefined : liImageUrl}
             extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
+            imageKeys={keysFeed("li-hook")}
+            regenControl={regenControl}
             videoUrl={videoUrl || undefined}
             wordRange={[150, 300]}
           />
@@ -372,8 +424,10 @@ export default function ReviewCards({
             onTextChange={setIgText}
             onSave={() => savePost("instagram_text", igText)}
             saving={saving}
-            imageUrl={videoUrl || isCarousel ? undefined : igSingleUrl}
+            imageUrl={videoUrl || isCarousel ? undefined : (esHistoriaImagen ? storyUrl : igSingleUrl)}
             extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
+            imageKeys={keysFeed("ig-single")}
+            regenControl={regenControl}
             videoUrl={videoUrl || undefined}
             verticalMedia={isVertical}
             wordRange={[80, 150]}
@@ -387,8 +441,10 @@ export default function ReviewCards({
             onTextChange={setFbText}
             onSave={() => savePost("facebook_text", fbText)}
             saving={saving}
-            imageUrl={videoUrl || isCarousel ? undefined : fbImageUrl}
+            imageUrl={videoUrl || isCarousel ? undefined : (esHistoriaImagen ? storyUrl : fbImageUrl)}
             extraImageUrls={videoUrl ? undefined : (isCarousel ? slideUrls : undefined)}
+            imageKeys={keysFeed("fb-hook")}
+            regenControl={regenControl}
             videoUrl={videoUrl || undefined}
             verticalMedia={isVertical}
             wordRange={[80, 180]}

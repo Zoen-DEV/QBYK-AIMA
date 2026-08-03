@@ -1,169 +1,68 @@
 """
-Image overlay - renders text over a base image (a provider URL or a local
-template path).
+Preparación de la imagen para cada red: recorte al aspecto de destino, texto de la
+pieza cuando toca dibujarlo, y grade común.
 
-Used by the repurpose-youtube-video skill to produce Instagram carousels with the
-fixed 3-slide format (Hook / Info / Credits), Instagram single images with a
-title overlay, and a LinkedIn 4:5 image with a hook overlay.
+El texto (hook de portada, idea de cada slide) lo renderiza **el propio modelo** al
+generar la imagen: viaja dentro del prompt que arma `prompt_architect`. Ese es el
+camino normal y este módulo no lo toca. Pero cuando la imagen NO sale del modelo
+—sin token OAuth, la generación falló, o el usuario eligió "plantillas"— la pieza es
+un PNG de respaldo que no dice nada, y el post se publicaba con una foto muda donde
+tenía que ir el titular. Para ese caso —y solo para ese— vuelve una capa de texto
+con Pillow: quien llama (`job_runner`) pasa el lockup ya resuelto **únicamente**
+cuando la fuente es una plantilla nuestra, así una imagen generada nunca se
+sobreimprime dos veces.
 
-Dependencies:
+Lo que hace el módulo, en orden:
+
+  1. traer la imagen base (URL del proveedor o plantilla local),
+  2. recortarla centrada al aspecto que espera cada red (feed 4:5, historia 9:16),
+  3. dibujar el lockup de marca si el llamador lo pidió (solo plantillas),
+  4. igualar el color de los slides al de la portada (`match_grade`).
+
+Dependencias:
   Pillow  ->  python -m pip install Pillow
 
-Font resolution order (per call, given a `tone`):
-  1. OVERLAY_FONT_PATH env var (if set, must point to a .ttf/.otf) — a user
-     override always wins, regardless of tone.
-  2. font.ttf / font-bold.ttf next to this script (drop-in override)
-  3. Tone mapping (embedded OFL fonts in assets/fonts/):
-     - educativo / personal  -> Montserrat (variable, pinned 400/700)
-     - inspiracional         -> Poppins (static Regular/Bold)
-  4. Platform defaults:
-     - Windows : C:\\Windows\\Fonts\\arialbd.ttf  /  arial.ttf
-     - macOS   : /System/Library/Fonts/Helvetica.ttc
-     - Linux   : /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf  /  DejaVuSans.ttf
-  5. Pillow's default bitmap font (last resort - looks rough, prints a warning)
+API pública:
+  render_feed(src, texto=None)  -> bytes   imagen de feed 1080x1350 (4:5): portada,
+                                slides y las imágenes únicas de LinkedIn / IG / Facebook
+  render_story(src, texto=None) -> bytes   historia vertical 1080x1920 (9:16)
+  match_grade(png, reference)   -> bytes
 
-Public API (all accept an optional `tone` that selects the typeface):
-  render_hook(base_url, title, *, lang="es", tone="educativo") -> bytes                    (IG carousel slide 1, 1080x1080)
-  render_info(base_url, body_lines, *, lang="es", tone="educativo") -> bytes               (IG carousel slide 2, 1080x1080)
-  render_credits(base_url, channel, video_title, *, lang="es", tone="educativo") -> bytes  (IG carousel slide 3, 1080x1080)
-  render_single(base_url, title, *, lang="es", tone="inspiracional") -> bytes              (IG single image, 1080x1080)
-  render_linkedin_hook(base_url, title, *, lang="es", tone="educativo") -> bytes           (LinkedIn 4:5, 1080x1350)
-  render_story(base_url, title, *, lang="es", tone="inspiracional") -> bytes               (IG Story 9:16, 1080x1920)
+`texto` es el lockup a dibujar (o None = no dibujar nada):
 
-All renderers return PNG bytes. Pass them to bc.upload_media_local() to get a
-Blotato-hosted public URL usable in mediaUrls.
+  {"titular": str, "kicker": str, "acento": str,
+   "rol": "portada" | "contenido",
+   "color_texto": str, "color_acento": str}    # admiten "#RRGGBB" o una frase que lo contenga
+
+`src` puede ser una URL http(s) (salida del proveedor) o una ruta local (plantilla de
+respaldo). Todo devuelve PNG; se sube con `bc.upload_media_local()` para obtener la
+URL pública de Blotato que va en `mediaUrls`.
 """
 
 import io
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageStat
 except ImportError as e:
     raise RuntimeError(
         "[error] Pillow no está instalado. Ejecuta: python -m pip install Pillow"
     ) from e
 
 
-# ── Font resolution ────────────────────────────────────────────────────────────
+# ── Lienzos ────────────────────────────────────────────────────────────────────
 #
-# A font is chosen per call by TONE (the objective never touches typography):
-#   - educativo / personal -> Montserrat   (variable TTF, weight pinned 400/700)
-#   - inspiracional        -> Poppins      (static Regular / Bold)
-# A user override (OVERLAY_FONT_PATH or a drop-in font.ttf/font-bold.ttf) always
-# wins, regardless of tone.
+# El lienzo del feed es 4:5 (el formato vertical que aceptan Instagram —imagen única
+# y carrusel—, LinkedIn y Facebook, y el que más pantalla ocupa en el scroll). Antes
+# era 1:1 y el 4:5 de LinkedIn se fabricaba escalando ese cuadrado; ahora la imagen
+# se pide ya en 4:5 y el lienzo es el mismo para todas las redes de feed.
 
-_FONTS_DIR = Path(__file__).parent.parent / "assets" / "fonts"
-
-# Each entry: (path, variation_weight_or_None). A variation_weight means the file
-# is a variable font and Pillow must pin that weight axis at render time.
-_TONE_FONTS: dict[str, dict[bool, tuple[Path, int | None]]] = {
-    "montserrat": {
-        False: (_FONTS_DIR / "Montserrat-Variable.ttf", 400),
-        True: (_FONTS_DIR / "Montserrat-Variable.ttf", 700),
-    },
-    "poppins": {
-        False: (_FONTS_DIR / "Poppins-Regular.ttf", None),
-        True: (_FONTS_DIR / "Poppins-Bold.ttf", None),
-    },
-}
-
-# Tone -> embedded family. Unknown tones fall back to Montserrat (neutral/pro).
-_TONE_TO_FAMILY = {
-    "educativo": "montserrat",
-    "personal": "montserrat",
-    "inspiracional": "poppins",
-}
-
-# Cache key includes family/weight so different tones don't collide.
-_FONT_CACHE: dict[tuple[str, bool, int], ImageFont.ImageFont] = {}
-_DEFAULT_WARNED = False
-
-
-def _override_paths(bold: bool) -> list[Path]:
-    """User overrides that win over the tone mapping (returned in priority order)."""
-    here = Path(__file__).parent
-    paths: list[Path] = []
-    override = os.environ.get("OVERLAY_FONT_PATH", "").strip()
-    if override:
-        paths.append(Path(override))
-    paths.append(here / ("font-bold.ttf" if bold else "font.ttf"))
-    return paths
-
-
-def _system_paths(bold: bool) -> list[Path]:
-    """Last-resort platform fonts (used only if embedded + overrides all fail)."""
-    if sys.platform.startswith("win"):
-        winfonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-        return [
-            winfonts / ("arialbd.ttf" if bold else "arial.ttf"),
-            winfonts / ("segoeuib.ttf" if bold else "segoeui.ttf"),
-        ]
-    if sys.platform == "darwin":
-        return [Path("/System/Library/Fonts/Helvetica.ttc")]
-    return [
-        Path("/usr/share/fonts/truetype/dejavu/" + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")),
-        Path("/usr/share/fonts/truetype/liberation/" + ("LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf")),
-    ]
-
-
-def _try_load(path: Path, size: int, weight: int | None) -> ImageFont.FreeTypeFont | None:
-    """Load `path` at `size`; pin the variable-font weight axis if `weight` is set."""
-    if not path.exists():
-        return None
-    try:
-        font = ImageFont.truetype(str(path), size=size)
-    except (OSError, ValueError):
-        return None
-    if weight is not None:
-        try:
-            font.set_variation_by_axes([weight])
-        except (OSError, ValueError, AttributeError):
-            # Not a variable font (or weight axis missing) — use as-is.
-            pass
-    return font
-
-
-def _load_font(size: int, *, bold: bool, tone: str = "educativo") -> ImageFont.ImageFont:
-    """Resolve a font for `size`/`bold`, biased by `tone` (Montserrat vs Poppins).
-
-    A user override always wins; then the tone-mapped embedded family; then the
-    system font; finally Pillow's bitmap default.
-    """
-    global _DEFAULT_WARNED
-    family = _TONE_TO_FAMILY.get((tone or "").lower(), "montserrat")
-    key = (family, bold, size)
-    if key in _FONT_CACHE:
-        return _FONT_CACHE[key]
-
-    # 1. User overrides (no weight pinning — assumed a complete face).
-    for path in _override_paths(bold):
-        font = _try_load(path, size, None)
-        if font is not None:
-            _FONT_CACHE[key] = font
-            return font
-
-    # 2. Tone-mapped embedded family (Montserrat is variable -> pin the weight).
-    emb_path, weight = _TONE_FONTS[family][bold]
-    font = _try_load(emb_path, size, weight)
-    if font is not None:
-        _FONT_CACHE[key] = font
-        return font
-
-    # 3. Platform fonts.
-    for path in _system_paths(bold):
-        font = _try_load(path, size, None)
-        if font is not None:
-            _FONT_CACHE[key] = font
-            return font
-
-    if not _DEFAULT_WARNED:
-        print("[aviso] No se encontró ninguna fuente embebida ni del sistema — usando fuente bitmap por defecto (calidad reducida).")
-        _DEFAULT_WARNED = True
-    return ImageFont.load_default()
+_FEED_W, _FEED_H = 1080, 1350
+_STORY_W, _STORY_H = 1080, 1920
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -186,12 +85,11 @@ def _is_local_path(src: str) -> bool:
     return not src.lower().startswith(("http://", "https://"))
 
 
-def _fetch_base(url: str, target_size: tuple[int, int] = (1080, 1080)) -> Image.Image:
+def _fetch_base(url: str, target_size: tuple[int, int] = (_FEED_W, _FEED_H)) -> Image.Image:
     """Load the base image and return it as an RGB Pillow image of `target_size`.
 
     `url` may be an http(s) URL (provider output) or a local filesystem path
-    (template fallback). Defaults to 1080x1080 (IG square). Pass (1080, 1350)
-    for LinkedIn 4:5. Center-crops to preserve composition.
+    (template fallback). Center-crops to preserve composition.
     """
     if _is_local_path(url):
         img = Image.open(url).convert("RGB")
@@ -212,305 +110,347 @@ def _fetch_base(url: str, target_size: tuple[int, int] = (1080, 1080)) -> Image.
     return img
 
 
-def _add_gradient(img: Image.Image, *, position: str = "bottom", strength: int = 200) -> Image.Image:
-    """Overlay a black-to-transparent gradient so text reads cleanly.
-
-    position: "bottom" | "top" | "full" | "center"
-    strength: max alpha (0-255). 200 is strong but not opaque.
-    """
-    w, h = img.size
-    grad = Image.new("L", (1, h), 0)
-    px = grad.load()
-    for y in range(h):
-        t = y / (h - 1)
-        if position == "bottom":
-            alpha = int(strength * (t ** 1.6))
-        elif position == "top":
-            alpha = int(strength * ((1 - t) ** 1.6))
-        elif position == "center":
-            alpha = int(strength * (1 - abs(t - 0.5) * 2) ** 1.6)
-        else:  # full
-            alpha = strength
-        px[0, y] = alpha
-    grad = grad.resize((w, h), Image.LANCZOS)
-    black = Image.new("RGB", (w, h), (0, 0, 0))
-    img = img.copy()
-    img.paste(black, (0, 0), grad)
-    return img
-
-
-def _wrap(text: str, font: ImageFont.ImageFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
-    """Word-wrap `text` to fit within `max_width` pixels for the given font."""
-    words = text.split()
-    if not words:
-        return []
-    lines: list[str] = []
-    cur = words[0]
-    for w in words[1:]:
-        trial = cur + " " + w
-        if draw.textlength(trial, font=font) <= max_width:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = w
-    lines.append(cur)
-    return lines
-
-
-def _draw_block(
-    draw: ImageDraw.ImageDraw,
-    lines: list[str],
-    font: ImageFont.ImageFont,
-    *,
-    xy: tuple[int, int],
-    line_spacing: int = 12,
-    fill=(255, 255, 255),
-    align: str = "left",
-    max_width: int | None = None,
-) -> int:
-    """Draw `lines` starting at xy. Returns the y-coordinate after the block."""
-    x, y = xy
-    for line in lines:
-        if align == "center" and max_width is not None:
-            line_w = draw.textlength(line, font=font)
-            draw_x = x + (max_width - line_w) / 2
-        else:
-            draw_x = x
-        draw.text((draw_x, y), line, font=font, fill=fill)
-        bbox = font.getbbox(line)
-        y += (bbox[3] - bbox[1]) + line_spacing
-    return y
-
-
 def _to_png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
-# ── Slide renderers (IG 1080x1080) ─────────────────────────────────────────────
+# ── Texto sobre las plantillas de respaldo ─────────────────────────────────────
 #
-# Layout convention:
-#   - Safe margin of 80px on each side
-#   - Hook = big title centered + small subline
-#   - Info = stacked bullet points with a small heading
-#   - Credits = "Video original" + channel + handle, centered
-#   - Single = title at bottom over gradient
+# El layout imita el mismo lockup de póster que el prompt le pide al modelo
+# (`prompts/architect.json`): titular en la banda alta, segunda línea anclada al pie,
+# caja alta, alineado a la izquierda, todo dentro del área segura del 8%. Así una
+# tirada que cayó a plantilla se lee como el resto del set y no como otra cosa.
+#
+# Los colores son los de la marca y llegan de fuera (`brand.json` vía job_runner):
+# editar ese archivo tiene que seguir cambiando el look de TODOS los posts, también
+# el de los que caen a plantilla.
 
-_MARGIN = 80
-_INNER_W = 1080 - 2 * _MARGIN  # 920
+_MARGEN = 0.08          # área segura: el mismo 8% por lado que declara el brief
+_ANCHO = 0.84           # ancho máximo del bloque de texto (84% del cuadro)
+# Cuerpo del titular como fracción del alto. Queda algo por debajo del 13-16% que el
+# brief le pide al modelo porque acá el texto cae sobre una foto genérica que no
+# reservó aire para él: pasarse de cuerpo lo empuja contra el sujeto de la plantilla.
+_CUERPO = {"portada": 0.135, "contenido": 0.105}
+_CUERPO_MIN = 0.050     # por debajo de esto ya no es un póster, es un pie de foto
+_CUERPO_KICKER = 0.45   # la segunda línea, ~la mitad del titular (igual que en el prompt)
+_MAX_LINEAS = 3
+_INTERLINEA = 0.92      # "set solid": el display se compone con la interlínea cerrada
+# Hasta dónde puede bajar el titular: la banda alta del lockup, por rol.
+_BANDA_ALTA = {"portada": 0.42, "contenido": 0.38}
 
+_COLOR_TEXTO = (237, 234, 224)   # respaldo si la marca no trae un hex legible
+_HEX_RE = re.compile(r"#([0-9a-fA-F]{6})")
 
-def render_hook(base_url: str, title: str, *, lang: str = "es", tone: str = "educativo") -> bytes:
-    """Slide 1 - bold title centered, minimal subline."""
-    img = _fetch_base(base_url)
-    img = _add_gradient(img, position="full", strength=140)
-    draw = ImageDraw.Draw(img)
-
-    font_size = 82
-    title_font = _load_font(font_size, bold=True, tone=tone)
-    subline_font = _load_font(34, bold=False, tone=tone)
-
-    title_lines = _wrap(title, title_font, _INNER_W, draw)
-    while len(title_lines) > 4 and font_size > 50:
-        font_size -= 6
-        title_font = _load_font(font_size, bold=True, tone=tone)
-        title_lines = _wrap(title, title_font, _INNER_W, draw)
-
-    total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 14
-    start_y = (1080 - total_h) // 2 - 30
-    _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=14, align="center", max_width=_INNER_W)
-
-    # "»" y no "→": Poppins (tono inspiracional) no trae el glifo U+2192 y rendía
-    # un tofu; "»" existe en las dos fuentes embebidas (Montserrat y Poppins).
-    subline = "Desliza »" if lang == "es" else "Swipe »"
-    sub_w = draw.textlength(subline, font=subline_font)
-    draw.text(((1080 - sub_w) / 2, 1080 - _MARGIN - 50), subline, font=subline_font, fill=(255, 255, 255))
-
-    return _to_png_bytes(img)
+# Fuente: la embebida en assets/fonts (la misma que quema los subtítulos del reel).
+# La marca pide una grotesca condensada pesada; Montserrat no es condensada, así que
+# se pesa al máximo (900) y se compone en caja alta. `OVERLAY_FONT_PATH` permite
+# apuntar a la fuente real de la marca sin tocar código.
+_FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+_FUENTE_EMBEBIDA = _FONTS_DIR / "Montserrat-Variable.ttf"
+_PESO_TITULAR = 900
+_PESO_KICKER = 700
+_FONT_CACHE: dict[tuple[int, int], "ImageFont.ImageFont"] = {}
+_AVISO_FUENTE = False
 
 
-def render_info(base_url: str, text, *, lang: str = "es", tone: str = "educativo") -> bytes:
-    """Info slide - ONE big idea, vertically centered, lots of air.
+def _paths_fuente() -> list[Path]:
+    """Candidatas en orden de prioridad: override del usuario, embebida, sistema."""
+    paths: list[Path] = []
+    override = os.environ.get("OVERLAY_FONT_PATH", "").strip()
+    if override:
+        paths.append(Path(override))
+    paths.append(_FUENTE_EMBEBIDA)
+    if sys.platform.startswith("win"):
+        winfonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        paths += [winfonts / "arialbd.ttf", winfonts / "segoeuib.ttf"]
+    elif sys.platform == "darwin":
+        paths.append(Path("/System/Library/Fonts/Helvetica.ttc"))
+    else:
+        paths += [Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+                  Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf")]
+    return paths
 
-    `text` is a single closed sentence (a string). For backwards compatibility it
-    also accepts a list of strings, in which case they're joined into one idea.
-    No repeated "DE QUÉ VA"/"THE IDEA" heading (it screamed "template"); a thin
-    accent rule under the text gives a clean structural cue instead.
+
+def _fuente(size: int, *, peso: int):
+    """Fuente de `size` px con el peso pedido (si el archivo es variable).
+
+    Sin ninguna fuente utilizable cae a la bitmap de Pillow: fea, pero el texto sale.
+    Una plantilla muda es peor que una plantilla con el titular en Arial.
     """
-    if isinstance(text, (list, tuple)):
-        text = " ".join(str(t).strip() for t in text if str(t).strip())
-    text = (text or "").strip()
-
-    img = _fetch_base(base_url)
-    img = _add_gradient(img, position="center", strength=180)
-    draw = ImageDraw.Draw(img)
-
-    # One large statement. Scale the font down only if it would overflow the height.
-    font_size = 72
-    body_font = _load_font(font_size, bold=True, tone=tone)
-    lines = _wrap(text, body_font, _INNER_W, draw)
-    while len(lines) > 5 and font_size > 46:
-        font_size -= 6
-        body_font = _load_font(font_size, bold=True, tone=tone)
-        lines = _wrap(text, body_font, _INNER_W, draw)
-
-    line_h = body_font.getbbox("Ag")[3] - body_font.getbbox("Ag")[1]
-    line_spacing = 18
-    text_h = len(lines) * line_h + max(0, len(lines) - 1) * line_spacing
-
-    # Vertically center the whole block (text + accent rule).
-    rule_gap = 40
-    rule_h = 6
-    total_h = text_h + rule_gap + rule_h
-    y = (1080 - total_h) // 2
-
-    for line in lines:
-        line_w = draw.textlength(line, font=body_font)
-        draw.text(((1080 - line_w) / 2, y), line, font=body_font, fill=(255, 255, 255))
-        y += line_h + line_spacing
-
-    # Thin centered accent rule (structural cue without a repeated label).
-    y += rule_gap - line_spacing
-    rule_w = 90
-    draw.rectangle([(1080 - rule_w) / 2, y, (1080 + rule_w) / 2, y + rule_h], fill=(255, 200, 90))
-
-    return _to_png_bytes(img)
+    global _AVISO_FUENTE
+    key = (size, peso)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
+    for path in _paths_fuente():
+        if not path.exists():
+            continue
+        try:
+            font = ImageFont.truetype(str(path), size=size)
+        except (OSError, ValueError):
+            continue
+        try:
+            font.set_variation_by_axes([peso])
+        except (OSError, ValueError, AttributeError):
+            pass   # no es variable (o no tiene eje de peso): se usa tal cual
+        _FONT_CACHE[key] = font
+        return font
+    if not _AVISO_FUENTE:
+        print("[aviso] Sin fuentes utilizables — el texto de las plantillas sale con la "
+              "fuente bitmap por defecto (calidad reducida).")
+        _AVISO_FUENTE = True
+    return ImageFont.load_default()
 
 
-def render_credits(base_url: str, channel: str, video_title: str, *, lang: str = "es", tone: str = "educativo") -> bytes:
-    """Slide 3 - source attribution centered."""
-    img = _fetch_base(base_url)
-    img = _add_gradient(img, position="full", strength=170)
-    draw = ImageDraw.Draw(img)
-
-    label_font = _load_font(34, bold=False, tone=tone)
-    font_size = 56
-    title_font = _load_font(font_size, bold=True, tone=tone)
-    channel_font = _load_font(46, bold=True, tone=tone)
-    cta_font = _load_font(36, bold=False, tone=tone)
-
-    label = "VIDEO ORIGINAL" if lang == "es" else "ORIGINAL VIDEO"
-    # Sin el emoji 🔗: ninguna de las fuentes embebidas trae glifos emoji (tofu).
-    cta = "Link en bio" if lang == "es" else "Link in bio"
-
-    # Compute block height first to center vertically
-    title_lines = _wrap(video_title, title_font, _INNER_W, draw)
-    while len(title_lines) > 4 and font_size > 36:
-        font_size -= 4
-        title_font = _load_font(font_size, bold=True, tone=tone)
-        title_lines = _wrap(video_title, title_font, _INNER_W, draw)
-
-    label_h = label_font.getbbox(label)[3] - label_font.getbbox(label)[1]
-    title_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 12
-    channel_h = channel_font.getbbox(channel)[3] - channel_font.getbbox(channel)[1]
-    cta_h = cta_font.getbbox(cta)[3] - cta_font.getbbox(cta)[1]
-    gap = 40
-    total = label_h + gap + title_h + gap + channel_h + gap * 2 + cta_h
-    y = (1080 - total) // 2
-
-    # Label
-    w = draw.textlength(label, font=label_font)
-    draw.text(((1080 - w) / 2, y), label, font=label_font, fill=(220, 220, 220))
-    y += label_h + gap
-
-    # Title (centered, wrapped)
-    y = _draw_block(draw, title_lines, title_font, xy=(_MARGIN, y), line_spacing=12, align="center", max_width=_INNER_W)
-    y += gap - 12
-
-    # Channel name
-    w = draw.textlength(channel, font=channel_font)
-    draw.text(((1080 - w) / 2, y), channel, font=channel_font, fill=(255, 200, 90))
-    y += channel_h + gap * 2
-
-    # CTA
-    w = draw.textlength(cta, font=cta_font)
-    draw.text(((1080 - w) / 2, y), cta, font=cta_font, fill=(255, 255, 255))
-
-    return _to_png_bytes(img)
+def _color(valor, defecto: tuple[int, int, int]) -> tuple[int, int, int]:
+    """`"#C9F227"` o `"acid lime (#C9F227)"` → (201, 242, 39). Sin hex: el defecto."""
+    m = _HEX_RE.search(str(valor or ""))
+    if not m:
+        return defecto
+    h = m.group(1)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def render_single(base_url: str, title: str, *, lang: str = "es", tone: str = "inspiracional") -> bytes:
-    """Instagram single image - title overlay at the bottom over a gradient."""
-    img = _fetch_base(base_url)
-    img = _add_gradient(img, position="bottom", strength=210)
-    draw = ImageDraw.Draw(img)
+def _wrap(palabras: list[str], font, ancho: int, draw) -> list[list[str]]:
+    """Reparte `palabras` en líneas que quepan en `ancho` px (devuelve listas de palabras).
 
-    font_size = 68
-    title_font = _load_font(font_size, bold=True, tone=tone)
-    title_lines = _wrap(title, title_font, _INNER_W, draw)
-    while len(title_lines) > 3 and font_size > 44:
-        font_size -= 4
-        title_font = _load_font(font_size, bold=True, tone=tone)
-        title_lines = _wrap(title, title_font, _INNER_W, draw)
-
-    total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 12
-    start_y = 1080 - _MARGIN - total_h - 10
-    _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=12, align="left", max_width=_INNER_W)
-
-    return _to_png_bytes(img)
-
-
-# ── LinkedIn renderer (1080x1350, 4:5) ─────────────────────────────────────────
-
-_LI_W = 1080
-_LI_H = 1350
-_LI_INNER_W = _LI_W - 2 * _MARGIN  # 920
-
-
-def render_linkedin_hook(base_url: str, title: str, *, lang: str = "es", tone: str = "educativo") -> bytes:
-    """LinkedIn 4:5 image with hook overlay at the bottom over a gradient.
-
-    The 4:5 canvas is taller than 1:1, so the gradient covers a larger bottom
-    band and the title sits in that band with strong contrast.
+    Se devuelven las palabras y no la línea armada para poder colorear el acento
+    palabra por palabra sin volver a partir el texto.
     """
-    img = _fetch_base(base_url, target_size=(_LI_W, _LI_H))
-    img = _add_gradient(img, position="bottom", strength=215)
-    draw = ImageDraw.Draw(img)
-
-    font_size = 72
-    title_font = _load_font(font_size, bold=True, tone=tone)
-    title_lines = _wrap(title, title_font, _LI_INNER_W, draw)
-    while len(title_lines) > 4 and font_size > 46:
-        font_size -= 4
-        title_font = _load_font(font_size, bold=True, tone=tone)
-        title_lines = _wrap(title, title_font, _LI_INNER_W, draw)
-
-    total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 14
-    start_y = _LI_H - _MARGIN - total_h - 20
-    _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=14, align="left", max_width=_LI_INNER_W)
-
-    return _to_png_bytes(img)
+    if not palabras:
+        return []
+    lineas: list[list[str]] = [[palabras[0]]]
+    for palabra in palabras[1:]:
+        prueba = " ".join(lineas[-1] + [palabra])
+        if draw.textlength(prueba, font=font) <= ancho:
+            lineas[-1].append(palabra)
+        else:
+            lineas.append([palabra])
+    return lineas
 
 
-# ── Instagram Story renderer (1080x1920, 9:16) ─────────────────────────────────
+def _indices_acento(palabras: list[str], acento: str) -> set[int]:
+    """Índices de las palabras que van en color de acento (la primera coincidencia).
 
-_STORY_W = 1080
-_STORY_H = 1920
-_STORY_INNER_W = _STORY_W - 2 * _MARGIN  # 920
-
-
-def render_story(base_url: str, title: str, *, lang: str = "es", tone: str = "inspiracional") -> bytes:
-    """Instagram Story (9:16) with a hook overlay over a full gradient.
-
-    The 9:16 canvas is taller than a feed image; the title sits in the lower third
-    (above the safe area for IG's UI) with a strong gradient for contrast.
+    Se compara sin acentos gráficos ni puntuación para que el fragmento marcado por
+    el usuario (`**así**`) coincida aunque el titular haya cambiado de caja.
     """
-    img = _fetch_base(base_url, target_size=(_STORY_W, _STORY_H))
-    img = _add_gradient(img, position="bottom", strength=215)
-    draw = ImageDraw.Draw(img)
+    objetivo = [_clave(p) for p in (acento or "").split() if _clave(p)]
+    if not objetivo:
+        return set()
+    claves = [_clave(p) for p in palabras]
+    for i in range(len(claves) - len(objetivo) + 1):
+        if claves[i:i + len(objetivo)] == objetivo:
+            return set(range(i, i + len(objetivo)))
+    return set()
 
-    font_size = 80
-    title_font = _load_font(font_size, bold=True, tone=tone)
-    title_lines = _wrap(title, title_font, _STORY_INNER_W, draw)
-    while len(title_lines) > 5 and font_size > 50:
-        font_size -= 4
-        title_font = _load_font(font_size, bold=True, tone=tone)
-        title_lines = _wrap(title, title_font, _STORY_INNER_W, draw)
 
-    total_h = sum((title_font.getbbox(l)[3] - title_font.getbbox(l)[1]) for l in title_lines) + (len(title_lines) - 1) * 16
-    # Lower third, leaving ~300px safe margin from the bottom (IG story UI / CTA).
-    start_y = _STORY_H - 320 - total_h
-    _draw_block(draw, title_lines, title_font, xy=(_MARGIN, start_y), line_spacing=16, align="left", max_width=_STORY_INNER_W)
+def _clave(palabra: str) -> str:
+    return re.sub(r"[^0-9a-zà-öø-ÿñ]+", "", (palabra or "").casefold())
 
+
+def _cuerpo_de(font, defecto: int) -> int:
+    """Cuerpo en px de una fuente (la bitmap de respaldo no expone `size`)."""
+    return int(getattr(font, "size", 0) or defecto)
+
+
+def _alto_linea(font) -> int:
+    try:
+        ascent, descent = font.getmetrics()
+    except AttributeError:      # fuente bitmap
+        cuerpo = _cuerpo_de(font, 16)
+        ascent, descent = cuerpo, max(2, cuerpo // 4)
+    return ascent + descent
+
+
+def _bloque(texto: str, *, font_maker, cuerpo: int, cuerpo_min: int, ancho: int,
+            alto_max: int, max_lineas: int, draw) -> tuple[list[list[str]], object, int]:
+    """Ajusta el cuerpo hasta que el texto entre en `max_lineas` y en `alto_max`.
+
+    Devuelve (líneas, fuente, alto del bloque). Si ni con el cuerpo mínimo entra, se
+    devuelve el mínimo: un titular apretado sigue siendo mejor que ningún titular.
+    """
+    palabras = texto.split()
+    size = cuerpo
+    while True:
+        font = font_maker(size)
+        lineas = _wrap(palabras, font, ancho, draw)
+        alto = int(_alto_linea(font) * _INTERLINEA * len(lineas))
+        if (len(lineas) <= max_lineas and alto <= alto_max) or size <= cuerpo_min:
+            return lineas, font, alto
+        size = max(cuerpo_min, int(size * 0.92))
+
+
+def _dibujar_bloque(draw, lineas: list[list[str]], font, *, x: int, y: int, avance: int,
+                    color, color_acento, indices: set[int]) -> None:
+    i = 0
+    for linea in lineas:
+        dx = x
+        for palabra in linea:
+            draw.text((dx, y), palabra, font=font,
+                      fill=color_acento if i in indices else color)
+            dx += draw.textlength(palabra + " ", font=font)
+            i += 1
+        y += avance
+
+
+def _scrim(img: Image.Image, bandas: list[tuple[int, int]], *, fuerza: int = 170) -> Image.Image:
+    """Oscurece las bandas donde va el texto, con un desvanecido a los lados.
+
+    La plantilla es una foto cualquiera: no reservó aire para el tipo como sí hace
+    el modelo cuando el prompt se lo pide, así que sin esto el titular se pierde
+    sobre las zonas claras. Se oscurece solo la banda del texto (no el cuadro
+    entero) para no aplanar la imagen.
+    """
+    if not bandas:
+        return img
+    w, h = img.size
+    fade = max(1, int(h * 0.10))
+    mascara = Image.new("L", (1, h), 0)
+    px = mascara.load()
+    for y in range(h):
+        alpha = 0
+        for y0, y1 in bandas:
+            if y0 <= y <= y1:
+                alpha = max(alpha, fuerza)
+            else:
+                d = (y0 - y) if y < y0 else (y - y1)
+                if d < fade:
+                    alpha = max(alpha, int(fuerza * (1 - d / fade)))
+        px[0, y] = alpha
+    mascara = mascara.resize((w, h))
+    out = img.copy()
+    out.paste(Image.new("RGB", (w, h), (0, 0, 0)), (0, 0), mascara)
+    return out
+
+
+def _dibujar_texto(img: Image.Image, texto: dict) -> Image.Image:
+    """Compone el lockup de marca sobre la plantilla ya recortada.
+
+    Best-effort de punta a punta: cualquier fallo devuelve la imagen tal cual. Una
+    plantilla sin texto es un post pobre; una excepción acá es un post perdido.
+    """
+    try:
+        titular = " ".join((texto.get("titular") or "").split()).upper()
+        kicker = " ".join((texto.get("kicker") or "").split()).upper()
+        if not titular and not kicker:
+            return img
+        if not titular:                      # sin titular, el kicker sube a titular
+            titular, kicker = kicker, ""
+
+        w, h = img.size
+        mx, my = round(w * _MARGEN), round(h * _MARGEN)
+        ancho = round(w * _ANCHO)
+        rol = "contenido" if (texto.get("rol") or "portada") == "contenido" else "portada"
+        color = _color(texto.get("color_texto"), _COLOR_TEXTO)
+        # Sin color de acento declarado, el titular va entero en el color del texto.
+        acento = _color(texto.get("color_acento"), color)
+
+        draw = ImageDraw.Draw(img)
+        cuerpo = int(h * _CUERPO[rol])
+        cuerpo_min = int(h * _CUERPO_MIN)
+        lineas, font, alto = _bloque(
+            titular, font_maker=lambda s: _fuente(s, peso=_PESO_TITULAR), cuerpo=cuerpo,
+            cuerpo_min=cuerpo_min, ancho=ancho, alto_max=int(h * _BANDA_ALTA[rol]) - my,
+            max_lineas=_MAX_LINEAS, draw=draw,
+        )
+        avance = int(_alto_linea(font) * _INTERLINEA)
+
+        bandas = [(my, my + alto)]
+        lineas_k: list[list[str]] = []
+        font_k = None
+        alto_k = 0
+        if kicker:
+            # La segunda línea se ancla al pie, no debajo del titular: eso es lo que
+            # separa el póster de una foto con caption (misma regla que el prompt).
+            lineas_k, font_k, alto_k = _bloque(
+                kicker, font_maker=lambda s: _fuente(s, peso=_PESO_KICKER),
+                cuerpo=max(cuerpo_min, int(_cuerpo_de(font, cuerpo) * _CUERPO_KICKER)),
+                cuerpo_min=max(12, cuerpo_min // 2), ancho=ancho,
+                alto_max=int(h * 0.22), max_lineas=2, draw=draw,
+            )
+            bandas.append((h - my - alto_k, h - my))
+
+        img = _scrim(img, bandas)
+        draw = ImageDraw.Draw(img)
+        # El acento se busca en los dos bloques: `dividir_texto` puede haber dejado la
+        # palabra marcada en la segunda línea, y ahí también es la que manda.
+        marcado = texto.get("acento") or ""
+        _dibujar_bloque(draw, lineas, font, x=mx, y=my, avance=avance, color=color,
+                        color_acento=acento,
+                        indices=_indices_acento([p for l in lineas for p in l], marcado))
+        if lineas_k and font_k is not None:
+            _dibujar_bloque(draw, lineas_k, font_k, x=mx, y=h - my - alto_k,
+                            avance=int(_alto_linea(font_k) * _INTERLINEA), color=color,
+                            color_acento=acento,
+                            indices=_indices_acento([p for l in lineas_k for p in l], marcado))
+        return img
+    except Exception as e:
+        print(f"   [aviso] No se pudo dibujar el texto sobre la plantilla: {e}")
+        return img
+
+
+# ── Renderers ──────────────────────────────────────────────────────────────────
+#
+# Dos, no cinco: desde que el texto lo pone el modelo, lo único que distingue a una
+# imagen de LinkedIn de una de Instagram o de un slide del carrusel es el aspecto de
+# destino, y el del feed es el mismo para las tres redes.
+
+
+def render_feed(src: str, texto: dict | None = None) -> bytes:
+    """Imagen de feed 1080x1350 (4:5): portada, slide del carrusel o imagen única.
+
+    `texto` (opcional) es el lockup a dibujar: lo pasa `job_runner` SOLO cuando la
+    fuente es una plantilla de respaldo, que llega muda.
+    """
+    img = _fetch_base(src, target_size=(_FEED_W, _FEED_H))
+    if texto:
+        img = _dibujar_texto(img, texto)
     return _to_png_bytes(img)
+
+
+def render_story(src: str, texto: dict | None = None) -> bytes:
+    """Historia vertical 1080x1920 (9:16). `texto`: ver `render_feed`."""
+    img = _fetch_base(src, target_size=(_STORY_W, _STORY_H))
+    if texto:
+        img = _dibujar_texto(img, texto)
+    return _to_png_bytes(img)
+
+
+# ── Grade común del carrusel ───────────────────────────────────────────────────
+#
+# Red de seguridad estética: aunque los slides se generen con la portada como
+# referencia y con la misma dirección de arte, el modelo puede derivar en exposición
+# o temperatura. Igualar la media y el contraste por canal a los de la portada une el
+# set sin gastar créditos. Los topes son deliberadamente conservadores: esto corrige
+# una deriva, no reinterpreta la imagen — un slide legítimamente más oscuro debe
+# seguir siéndolo.
+
+_GRADE_MAX_GAIN = 0.18   # ±18% de contraste por canal
+_GRADE_MAX_SHIFT = 18.0  # ±18 niveles (de 255) de desplazamiento de la media
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
+
+
+def match_grade(png: bytes, reference: bytes) -> bytes:
+    """Acerca el color de `png` al de `reference` (media y contraste por canal).
+
+    Devuelve PNG. Correcciones acotadas por `_GRADE_MAX_GAIN`/`_GRADE_MAX_SHIFT`.
+    """
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    ref = Image.open(io.BytesIO(reference)).convert("RGB")
+    st_img = ImageStat.Stat(img)
+    st_ref = ImageStat.Stat(ref)
+
+    lut: list[int] = []
+    for c in range(3):
+        mean_i, mean_r = st_img.mean[c], st_ref.mean[c]
+        std_i, std_r = st_img.stddev[c], st_ref.stddev[c]
+        # Un canal plano (std ~0) no tiene contraste que igualar: solo se desplaza.
+        gain = _clamp(std_r / std_i, 1 - _GRADE_MAX_GAIN, 1 + _GRADE_MAX_GAIN) if std_i > 1.0 else 1.0
+        target = mean_i + _clamp(mean_r - mean_i, -_GRADE_MAX_SHIFT, _GRADE_MAX_SHIFT)
+        lut.extend(int(round(_clamp((v - mean_i) * gain + target, 0, 255))) for v in range(256))
+    return _to_png_bytes(img.point(lut))

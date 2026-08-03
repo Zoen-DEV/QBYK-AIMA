@@ -1,0 +1,22 @@
+{
+  "_comment": "Marca por defecto que recibe el PromptArchitect. Este archivo dice QUÉ es la marca (paleta, familia tipográfica, acento, tratamiento fotográfico); CÓMO se coloca en el cuadro (escala, bandas, márgenes) vive en architect.json. Editar aquí cambia el look de TODOS los posts sin tocar código. Un post puede pisar `tono_visual` con el `image_style` que escribe el LLM, pero NO la paleta ni la tipografía: eso es identidad, no creatividad por pieza.",
+  "version": "2",
+
+  "paleta": ["#0B0C0E", "#EDEAE0", "#C9F227"],
+  "paleta_nombres": ["near-black", "bone white", "acid lime"],
+  "color_texto": "bone white (#EDEAE0) on the near-black",
+  "color_acento": "acid lime (#C9F227)",
+
+  "_comment_tipografia": "La familia es marca y la escribe la app en la sección 5 (antes la inventaba el LLM en cada post y no había identidad entre posts). Una grotesca condensada pesada en caja alta es lo que sostiene la escala de póster; una sans neutra tipo Inter/Helvetica devuelve el look de 'caption pegado sobre una foto'.",
+  "tipografia": "ultra-condensed heavy display grotesque, ALL CAPS, tight tracking (Druk / Compacta / Anton class)",
+  "tipografia_secundaria": "same face, bold, tracking opened",
+
+  "tono_visual": "cinematic poster still: one spotlit subject on a near-black field, hard rim light, deep falloff, heavy vignette",
+  "aspect_ratio": "4:5",
+
+  "referencias": [
+    "film-poster art direction: one hero object under a hard spotlight",
+    "condensed-display magazine covers where the type is the layout",
+    "product-launch keynote stills: one object, one hard light, black surround"
+  ]
+}

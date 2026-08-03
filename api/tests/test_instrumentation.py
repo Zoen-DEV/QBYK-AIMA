@@ -73,7 +73,7 @@ def test_higgsfield_counts_only_successful_generations(monkeypatch):
 
     # resolve con éxito (poll_image) → +1
     monkeypatch.setattr(image_provider.hf, "poll_image", lambda *a, **k: "http://img/slide.png")
-    assert prov.resolve({"id": "x", "template_kind": "info"}) == "http://img/slide.png"
+    assert prov.resolve({"id": "x"}) == "http://img/slide.png"
     assert prov.hf_generations == 2
 
 
@@ -90,7 +90,7 @@ def test_higgsfield_does_not_count_fallbacks(monkeypatch):
     assert prov.hf_generations == 0
 
     # resolve de un handle que ya venía marcado como fallback → NO cuenta.
-    prov.resolve({"fallback_template": True, "template_kind": "credits"})
+    prov.resolve({"fallback_template": True})
     assert prov.hf_generations == 0
 
 

@@ -1,6 +1,7 @@
 """Tests del armado del prompt final de cada segmento text-to-video en job_runner:
 el look compartido (`video_style`) se anexa a todos los beats para que los clips,
-generados por separado, corten como un solo video."""
+generados por separado, corten como un solo video, y la cláusula de anclaje físico
+va en TODOS (incluido el beat editado a mano o el fallback genérico)."""
 
 import job_runner as jr
 
@@ -18,6 +19,12 @@ def test_segment_prompt_falls_back_to_default_style():
     assert p.endswith(jr._NO_TEXT_SUFFIX)
 
 
+def test_segment_prompt_always_carries_grounding():
+    """El anclaje físico va aunque el beat venga editado a mano y sin estilo."""
+    for beat, style in (("A coin drops.", "shot on 35mm"), ("A coin drops.", "")):
+        assert jr._GROUNDING_SUFFIX in jr._segment_prompt(beat, style)
+
+
 def test_segment_prompt_strips_whitespace():
     p = jr._segment_prompt("  beat  ", "  style  ")
-    assert p == f"beat style {jr._NO_TEXT_SUFFIX}"
+    assert p == f"beat style {jr._GROUNDING_SUFFIX} {jr._NO_TEXT_SUFFIX}"

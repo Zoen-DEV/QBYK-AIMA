@@ -17,19 +17,55 @@ if (job.status === "review" || job.status === "done") return Astro.redirect(`/jo
 if (job.status !== "preview") return Astro.redirect(`/jobs/${id}`);
 
 const posts = job.posts || {};
-const showLi = !!posts.linkedin_text;
-const showIg = !!posts.instagram_text;
-const showFb = !!posts.facebook_text;
+// Qué captions pide el job, decidido por el backend (`needs.captions`) y NO por si
+// el modelo los entregó: con el caption vacío el textarea no se pintaba, así que la
+// red destino se quedaba sin texto Y sin sitio donde escribirlo. Se conserva el
+// respaldo por contenido para jobs viejos, cuyo snapshot no trae `captions`.
+const needsCaptions: string[] = Array.isArray(job.needs?.captions) ? job.needs.captions : [];
+const quiere = (campo: string, texto: unknown) =>
+  needsCaptions.length > 0 ? needsCaptions.includes(campo) : !!texto;
+const showLi = quiere("linkedin_text", posts.linkedin_text);
+const showIg = quiere("instagram_text", posts.instagram_text);
+const showFb = quiere("facebook_text", posts.facebook_text);
+
+// Qué necesita ESTE job, decidido por el backend (misma fuente que el escritor y el
+// lint). Las tarjetas se dibujan a partir de esto y NO de lo que el modelo entregó:
+// cuando la escritura devuelve los prompts vacíos, el aviso pide escribirlos acá abajo
+// y antes "acá abajo" no existía — la tarjeta entera desaparecía por estar vacía.
+const needs = job.needs || {};
+const showImage: boolean = !!needs.imagenes;
+const showImagePrompts = showImage;
+const showVideo: boolean = !!needs.video;
+const faltan: string[] = Array.isArray(needs.faltan) ? needs.faltan : [];
 
 const imageText =
   posts.image_text && typeof posts.image_text === "object" ? posts.image_text : null;
 const imgHook = imageText?.hook || "";
 const imgSlides: string[] = Array.isArray(imageText?.slides) ? imageText.slides : [];
-const showImage = !!(imgHook || imgSlides.length);
+
+// Cuántos campos de texto de slide pintar. Sale de los slides del carrusel (portada +
+// n-1 de info), no de lo que el modelo haya entregado: si entregó de menos, el usuario
+// tiene que ver los huecos vacíos para poder llenarlos — que es justo lo que avisa el
+// lint de arriba. Fuera del carrusel no hay slides.
+const nInfoSlides: number = Number(needs.n_info) || 0;
+
+// Prompts visuales de las imágenes (la escena que genera el modelo, en inglés).
+const imgPrompt: string = posts.image_prompt || "";
+const imgStyle: string = posts.image_style || "";
+const imgSlidePrompts: string[] = Array.isArray(posts.image_slide_prompts)
+  ? posts.image_slide_prompts
+  : [];
+// ¿La imagen lleva texto? Lo renderiza el propio modelo desde el prompt
+// (IMAGE_TEXT_IN_PROMPT). Apagado, el copy de los visuales se guarda pero no se
+// imprime: hay que decirlo donde se edita, para que nadie ajuste un texto que no
+// va a ver.
+const textOverlayOn: boolean = job.images?.text_overlay !== false;
 
 const storyboard: string[] = Array.isArray(posts.video_storyboard) ? posts.video_storyboard : [];
 const voiceover: string[] = Array.isArray(posts.video_voiceover) ? posts.video_voiceover : [];
-const showVideo = storyboard.length > 0 || !!posts.video_prompt;
+// Filas que tienen que verse aunque el modelo no haya entregado nada: un shot por
+// segmento pedido, para poder escribir a mano el que falte.
+const nShots: number = Math.max(Number(needs.n_shots) || 0, storyboard.length, voiceover.length);
 
 const inputCls =
   "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 transition resize-y";
@@ -48,6 +84,35 @@ const inputCls =
         <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
       <span>Estos son los textos y prompts generados. Edítalos si quieres antes de generar las imágenes/el video — así no gastas créditos en algo que aún no te convence.</span>
+    </div>
+
+    {/* Lint de los prompts: lo que va a pasar si se genera así (escenas repetidas,
+        clichés prohibidos, escenas que faltan y se rellenan con el título). Se pinta
+        desde JS con los avisos del servidor y se refresca mientras se edita. */}
+    <div id="lint-box" class="mb-3 space-y-2"></div>
+
+    {/* Reintento manual de la escritura: cuando el modelo devolvió campos visuales
+        vacíos, esto vuelve a pedírselos (solo los que faltan) en vez de obligar a
+        relanzar el post o a escribir los prompts a mano. Guarda antes lo editado,
+        así el reintento completa los huecos sin pisar lo que ya se escribió. */}
+    <div id="rewrite-box" class="mb-6 hidden">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
+        <div class="flex-1 min-w-[16rem]">
+          <p class="text-sm text-gray-300">¿Prefieres que lo escriba el modelo?</p>
+          <p class="text-[11px] text-gray-500 mt-0.5">
+            Le vuelve a pedir <span id="rewrite-count"></span> sin tocar los captions ni lo que ya
+            hayas editado. Cuesta una llamada al LLM; no gasta créditos de imagen.
+          </p>
+        </div>
+        <button type="button" id="rewrite-btn"
+          class="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Reintentar escritura
+        </button>
+      </div>
+      <p class="text-[11px] text-amber-400/80 mt-2 hidden" id="rewrite-error"></p>
     </div>
 
     <form id="preview-form" class="space-y-6">
@@ -80,15 +145,71 @@ const inputCls =
           <div>
             <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Texto sobre las imágenes</h2>
             <p class="text-[11px] text-gray-500 mt-1">Lo que va impreso en la portada y los slides (no es el caption).</p>
+            <p class="text-[11px] text-gray-500 mt-1">
+              Encierra una palabra o frase entre <code class="text-gray-400">**dobles asteriscos**</code> para
+              elegir qué se pinta en el color de acento. Sin marcas, lo elige el modelo. Los asteriscos
+              no se imprimen.
+            </p>
+            {!textOverlayOn && (
+              <p class="text-[11px] text-amber-400/90 mt-1">
+                Desactivado (IMAGE_TEXT_IN_PROMPT=0): las imágenes se generan limpias. Se guarda lo
+                que escribas, pero no se imprime hasta reactivarlo.
+              </p>
+            )}
           </div>
           <label class="block">
             <span class="text-xs text-gray-400 mb-1 block">Portada (hook)</span>
             <textarea name="image_hook" rows="2" class={inputCls}>{imgHook}</textarea>
           </label>
-          {imgSlides.length > 0 && (
+          {/* Un campo por slide (antes: un textarea con una idea por línea). Se ve qué
+              texto va en qué imagen, y el índice del campo conserva la posición: vaciar
+              el slide 2 lo deja vacío en vez de correr el 3 a su lugar. */}
+          {nInfoSlides > 0 && (
+            <div class="space-y-3">
+              <span class="text-xs text-gray-400 block">Texto de cada slide</span>
+              <p class="text-[11px] text-gray-500 -mt-2">
+                Una idea por slide, en secuencia: cada una avanza sobre la anterior y la última
+                remata. Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                (<code class="text-gray-400">Titular — apoyo</code>): lo de antes va grande arriba y
+                lo de después, pequeño, al pie. La raya no se imprime.
+              </p>
+              {Array.from({ length: nInfoSlides }).map((_, i) => (
+                <label class="flex items-start gap-3">
+                  <span class="text-[11px] text-gray-500 font-mono mt-2.5 w-14 flex-shrink-0">Slide {i + 2}</span>
+                  <textarea name={`image_slide_text_${i}`} rows="2" class={inputCls}>{imgSlides[i] || ""}</textarea>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <!-- Prompts de las imágenes (escena, no el texto impreso) -->
+      {showImagePrompts && (
+        <div class="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+          <div>
+            <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Imágenes</h2>
+            <p class="text-[11px] text-gray-500 mt-1">
+              La escena que va a generar el modelo (en inglés), sacada de la transcripción. El
+              encuadre de cada slide, la composición y el "sin texto" los agrega la app.
+            </p>
+          </div>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Portada</span>
+            <textarea name="image_prompt" rows="3" class={inputCls}>{imgPrompt}</textarea>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">
+              Dirección de arte <span class="text-gray-600">(luz, material, óptica y acabado — va igual en todas las imágenes; la paleta la pone la marca)</span>
+            </span>
+            <textarea name="image_style" rows="2" class={inputCls}>{imgStyle}</textarea>
+          </label>
+          {nInfoSlides > 0 && (
             <label class="block">
-              <span class="text-xs text-gray-400 mb-1 block">Slides de info <span class="text-gray-600">(una idea por línea)</span></span>
-              <textarea name="image_slides" rows={Math.max(3, imgSlides.length)} class={inputCls}>{imgSlides.join("\n")}</textarea>
+              <span class="text-xs text-gray-400 mb-1 block">
+                Slides del carrusel <span class="text-gray-600">(una escena por línea — {nInfoSlides} en total)</span>
+              </span>
+              <textarea name="image_slide_prompts" rows={Math.max(3, nInfoSlides)} class={inputCls}>{imgSlidePrompts.join("\n")}</textarea>
             </label>
           )}
         </div>
@@ -101,23 +222,16 @@ const inputCls =
             <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Video</h2>
             <p class="text-[11px] text-gray-500 mt-1">El storyboard (en inglés) dirige la imagen de cada segmento; la voz en off (en el idioma del post) es lo que se escucha.</p>
           </div>
-          {voiceover.length > 0 && (
-            <label class="block">
-              <span class="text-xs text-gray-400 mb-1 block">Voz en off <span class="text-gray-600">(una línea hablada por segmento)</span></span>
-              <textarea name="video_voiceover" rows={Math.max(3, voiceover.length)} class={inputCls}>{voiceover.join("\n")}</textarea>
-            </label>
-          )}
-          {storyboard.length > 0 && (
-            <label class="block">
-              <span class="text-xs text-gray-400 mb-1 block">Storyboard <span class="text-gray-600">(un shot por línea, en inglés)</span></span>
-              <textarea name="video_storyboard" rows={Math.max(3, storyboard.length)} class={inputCls}>{storyboard.join("\n")}</textarea>
-            </label>
-          )}
-          {/* La voz se arma por bloques: una línea hablada por shot. Si los conteos no
-              coinciden, el reel se genera mudo — mejor avisarlo antes de gastar créditos. */}
-          {voiceover.length > 0 && storyboard.length > 0 && (
-            <p id="vo-count" class="text-[11px] text-amber-400/90 hidden"></p>
-          )}
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Voz en off <span class="text-gray-600">(una línea hablada por segmento — {nShots} en total)</span></span>
+            <textarea name="video_voiceover" rows={Math.max(3, nShots)} class={inputCls}>{voiceover.join("\n")}</textarea>
+          </label>
+          <label class="block">
+            <span class="text-xs text-gray-400 mb-1 block">Storyboard <span class="text-gray-600">(un shot por línea, en inglés — {nShots} en total)</span></span>
+            <textarea name="video_storyboard" rows={Math.max(3, nShots)} class={inputCls}>{storyboard.join("\n")}</textarea>
+          </label>
+          {/* El desajuste entre shots y líneas de voz (que deja el reel mudo) lo avisa
+              ahora el lint de arriba, junto con el resto de los problemas del guion. */}
           <details class="group">
             <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition list-none">Prompts avanzados</summary>
             <div class="mt-3 space-y-4">
@@ -147,33 +261,104 @@ const inputCls =
   </div>
 </Base>
 
-<script define:vars={{ id }}>
+<script define:vars={{ id, lintInicial: job.lint || [], faltanInicial: faltan }}>
   const form = document.getElementById("preview-form");
   const btn = document.getElementById("gen-btn");
   const errEl = document.getElementById("gen-error");
 
-  // Guion de voz vs storyboard: explainer_video arma un bloque por shot y necesita
-  // una línea hablada para cada uno. Con conteos distintos el reel sale mudo, así
-  // que se avisa mientras se edita (no bloquea: el usuario puede querer el mudo).
-  const voEl = form.querySelector('[name="video_voiceover"]');
-  const sbEl = form.querySelector('[name="video_storyboard"]');
-  const countEl = document.getElementById("vo-count");
-  const countLines = (el) => el.value.split("\n").filter((l) => l.trim()).length;
+  // ── Lint de los prompts ───────────────────────────────────────────────────
+  // Avisa de lo que el pipeline se tragaba en silencio (escenas repetidas, clichés
+  // prohibidos, escenas que faltan y se rellenan con el título) en la compuerta
+  // donde corregirlo todavía es gratis. No bloquea: se puede generar igual.
+  const lintBox = document.getElementById("lint-box");
 
-  function syncCounts() {
-    const vo = countLines(voEl);
-    const sb = countLines(sbEl);
-    countEl.classList.toggle("hidden", vo === sb);
-    if (vo !== sb) {
-      countEl.textContent = `La voz tiene ${vo} línea(s) y el storyboard ${sb} shot(s): dejá una línea hablada por shot o el reel se genera sin voz ni subtítulos.`;
+  function pintarLint(avisos) {
+    lintBox.replaceChildren();
+    for (const aviso of avisos || []) {
+      const alto = aviso.nivel === "alto";
+      const fila = document.createElement("div");
+      fila.className = `rounded-xl border px-4 py-3 text-sm flex items-start gap-2 ${
+        alto ? "bg-amber-900/30 border-amber-700/50 text-amber-300"
+             : "bg-gray-900 border-gray-800 text-gray-400"}`;
+      const icono = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icono.setAttribute("class", "w-4 h-4 flex-shrink-0 mt-0.5");
+      icono.setAttribute("fill", "none");
+      icono.setAttribute("viewBox", "0 0 24 24");
+      icono.setAttribute("stroke", "currentColor");
+      icono.setAttribute("stroke-width", "2");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("d", alto
+        ? "M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+        : "M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z");
+      icono.appendChild(path);
+      const texto = document.createElement("span");
+      texto.textContent = aviso.mensaje;
+      fila.append(icono, texto);
+      lintBox.appendChild(fila);
     }
   }
 
-  if (voEl && sbEl && countEl) {
-    voEl.addEventListener("input", syncCounts);
-    sbEl.addEventListener("input", syncCounts);
-    syncCounts();
+  pintarLint(lintInicial);
+
+  // ── Reintento manual de la escritura ──────────────────────────────────────
+  // Aparece solo cuando quedan campos visuales sin llenar, y se apaga solo en cuanto
+  // se completan (los escriba el modelo o el usuario a mano).
+  const rewriteBox = document.getElementById("rewrite-box");
+  const rewriteBtn = document.getElementById("rewrite-btn");
+  const rewriteErr = document.getElementById("rewrite-error");
+  const rewriteCount = document.getElementById("rewrite-count");
+
+  function pintarFaltantes(faltan) {
+    const n = (faltan || []).length;
+    rewriteBox.classList.toggle("hidden", n === 0);
+    rewriteCount.textContent = n === 1 ? "el campo que falta" : `los ${n} campos que faltan`;
   }
+
+  pintarFaltantes(faltanInicial);
+
+  rewriteBtn.addEventListener("click", async () => {
+    rewriteBtn.disabled = true;
+    rewriteErr.classList.add("hidden");
+    const original = rewriteBtn.innerHTML;
+    rewriteBtn.innerHTML = `<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg> Escribiendo...`;
+    try {
+      // 1) Persistir lo editado ANTES de reescribir: el reintento solo pide lo que
+      //    sigue faltando, así lo que el usuario ya escribió no se le pisa.
+      await fetch(`/api/jobs/${id}/edit`, { method: "POST", body: new FormData(form) });
+      // 2) Pedirle al modelo los campos que queden vacíos.
+      const res = await fetch(`/api/jobs/${id}/rewrite`, { method: "POST" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail || `HTTP ${res.status}`);
+      }
+      // 3) Recargar: la página se re-renderiza desde el job, ya con lo nuevo.
+      window.location.reload();
+    } catch (err) {
+      rewriteErr.textContent = `No se pudo reescribir: ${String(err.message || err)}`;
+      rewriteErr.classList.remove("hidden");
+      rewriteBtn.disabled = false;
+      rewriteBtn.innerHTML = original;
+    }
+  });
+
+  // Al editar se revisa de nuevo contra el servidor (mismo lint que el lote), pero
+  // SIN guardar: lo escrito se persiste al enviar, como siempre.
+  let lintTimer = null;
+  async function revisar() {
+    try {
+      const res = await fetch(`/api/jobs/${id}/lint`, { method: "POST", body: new FormData(form) });
+      if (!res.ok) return;
+      const data = await res.json();
+      pintarLint(data.lint);
+      pintarFaltantes(data.needs?.faltan);
+    } catch { /* el lint es informativo: si falla, se sigue editando */ }
+  }
+  form.addEventListener("input", () => {
+    clearTimeout(lintTimer);
+    lintTimer = setTimeout(revisar, 600);
+  });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();

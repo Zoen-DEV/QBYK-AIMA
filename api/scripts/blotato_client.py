@@ -186,11 +186,44 @@ def extract_youtube(url: str, *, api_key: str) -> dict:
     return _poll(f"/source-resolutions-v3/{resp['id']}", api_key=api_key, interval=3)
 
 
+def _base_code(code) -> str:
+    """"es-419" -> "es". Vacío si no hay código."""
+    return (str(code or "").strip().lower().replace("_", "-").split("-")[0])
+
+
+def _pick_transcript(tracks: list, video_lang: str):
+    """Elige el track de subtítulos en el idioma ORIGINAL del video.
+
+    Antes se pedía `languages=["es", "es-419", "es-ES", "en", ...]`, o sea: si un
+    video en inglés tenía subtítulos en español (subidos por el canal o una pista
+    traducida), se descargaban ESOS y todo el post salía en el idioma equivocado.
+
+    El idioma original se toma de los metadatos de yt-dlp y, si no vienen, del
+    primer track autogenerado: YouTube solo autogenera en el idioma hablado, así
+    que es un indicador confiable. Con el idioma decidido: manual en ese idioma →
+    autogenerado en ese idioma → manual en cualquiera → lo primero que haya.
+    """
+    base = _base_code(video_lang)
+    if not base:
+        for t in tracks:
+            if getattr(t, "is_generated", False):
+                base = _base_code(getattr(t, "language_code", ""))
+                break
+
+    def rank(t) -> tuple[int, int]:
+        same = base and _base_code(getattr(t, "language_code", "")) == base
+        generated = bool(getattr(t, "is_generated", False))
+        return (0 if same else 1, 1 if generated else 0)
+
+    return min(tracks, key=rank)
+
+
 def extract_youtube_local(url: str) -> dict:
     """
     Extract YouTube video info using yt-dlp (metadata) + youtube-transcript-api (transcript).
     No API key required. Falls back gracefully if transcript is unavailable.
-    Returns dict with: title, description, transcript, summary, keyPoints, tags, chapters.
+    Returns dict with: title, description, transcript, summary, keyPoints, tags,
+    chapters, channel, y las señales de idioma (`transcript_lang`, `source_lang`).
     """
     try:
         import yt_dlp as _ytdlp
@@ -210,21 +243,37 @@ def extract_youtube_local(url: str) -> dict:
     tags = info.get("tags") or []
     chapters = [c["title"] for c in (info.get("chapters") or []) if isinstance(c, dict) and "title" in c]
     channel = info.get("channel") or info.get("uploader") or ""
+    # Idioma declarado del video (yt-dlp): primera señal para elegir el track de
+    # subtítulos y para la detección de idioma downstream. Puede venir vacío.
+    source_lang = info.get("language") or ""
 
-    # Transcript via youtube-transcript-api
+    # Transcript via youtube-transcript-api, en el idioma original del video.
+    # Un fallo acá NO rompe la extracción (el video sigue teniendo título, descripción
+    # y tags), pero deja al pipeline escribiendo a ciegas: los posts y TODOS los prompts
+    # visuales saldrían del título. El motivo viaja en `transcript_error` para que el
+    # runner lo avise en la compuerta previa en vez de que se descubra en la imagen.
     transcript_text = ""
+    transcript_lang = ""
+    transcript_error = ""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import YouTubeTranscriptApi
         ytt = YouTubeTranscriptApi()
-        try:
-            fetched = ytt.fetch(video_id, languages=["es", "es-419", "es-ES", "en", "en-US"])
-        except (NoTranscriptFound, Exception):
-            # Try any available language
-            tl = ytt.list(video_id)
-            fetched = next(iter(tl)).fetch()
-        transcript_text = " ".join(s.text for s in fetched)
-    except Exception:
+        tracks = list(ytt.list(video_id))
+        if tracks:
+            track = _pick_transcript(tracks, source_lang)
+            fetched = track.fetch()
+            transcript_text = " ".join(s.text for s in fetched)
+            transcript_lang = (
+                getattr(fetched, "language_code", "") or getattr(track, "language_code", "") or ""
+            )
+            if not transcript_text.strip():
+                transcript_error = "el track de subtítulos vino vacío"
+        else:
+            transcript_error = "el video no tiene subtítulos publicados"
+    except Exception as e:
         transcript_text = ""
+        transcript_lang = ""
+        transcript_error = f"{type(e).__name__}: {e}"[:200]
 
     return {
         "title": title,
@@ -235,6 +284,11 @@ def extract_youtube_local(url: str) -> dict:
         "tags": tags,
         "chapters": chapters,
         "channel": channel,
+        # Señales de idioma para lang_detect (ver resolve_lang).
+        "transcript_lang": transcript_lang,
+        "source_lang": source_lang,
+        # Por qué no hay transcripción (vacío cuando sí la hay).
+        "transcript_error": transcript_error,
     }
 
 

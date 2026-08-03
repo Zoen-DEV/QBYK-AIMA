@@ -120,7 +120,7 @@ COLUMN_HELP = {
     "formato": "imagen-unica | carrusel | historia | reel. Aplica a todas las redes de la fila; si una red no soporta el formato se omite esa red (historia y reel no existen en LinkedIn). reel siempre genera video (requiere Higgsfield).",
     "carrusel_slides": "Número de 3 a 6 (solo aplica si formato = carrusel)",
     "duracion_video": "Duración del video en segundos: 10 | 20 | 30 | 45 | 60 (solo aplica si tipo_medio = video o formato = reel). Vacío = un solo clip corto. Se arma concatenando varios clips.",
-    "modelo_video": "Modelo del video. Vacío (default Kling 3.0 Turbo) | kling3_0_turbo (1.5 cr/seg) | seedance_2_0_mini (2.5) | seedance_2_0 (4.5, máxima calidad). Solo aplica si hay video (tipo_medio = video o formato = reel/historia en video).",
+    "modelo_video": "Modelo del video. Vacío (default Seedance 2.0, máxima calidad) | kling3_0_turbo (1.5 cr/seg, económico) | seedance_2_0_mini (2.5) | seedance_2_0 (4.5). Solo aplica si hay video (tipo_medio = video o formato = reel/historia en video).",
     "modelo_voz": "Voz en off de los reels. Vacío (default Seed Audio) | seed_audio (~0.007 cr/carácter) | elevenlabs (~0.003). Solo aplica a videos con voz.",
     "idioma": "auto | es | en",
     "linkedin": "¿Publicar en LinkedIn? sí | no (vacío = sí)",

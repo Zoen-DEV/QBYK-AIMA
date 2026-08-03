@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { RegenerateButton, conVersion, etiquetaSubkey } from "./RegenerateImage";
 
 interface RowResult {
   status?: string;
@@ -8,14 +9,40 @@ interface RowResult {
 
 // Snapshot del job generado (mismo shape que /jobs/{id}) usado para el preview.
 interface RowPreviewData {
-  posts: { linkedin_text?: string; instagram_text?: string; facebook_text?: string };
+  posts: {
+    linkedin_text?: string;
+    instagram_text?: string;
+    facebook_text?: string;
+    // Guion del video: editable en la compuerta de revisión previa del lote (los
+    // mismos campos que el preview del flujo individual).
+    video_prompt?: string;
+    video_style?: string;
+    video_storyboard?: string[];
+    video_voiceover?: string[];
+    // Prompts de las imágenes (escena, no el texto impreso): misma compuerta.
+    image_prompt?: string;
+    image_style?: string;
+    image_slide_prompts?: string[];
+    // Copy que el modelo IMPRIME en la pieza (hook de portada + una idea por slide).
+    image_text?: { hook?: string; slides?: string[] };
+  };
   images: {
     has_li_hook: boolean;
     has_fb_hook: boolean;
     has_ig_single: boolean;
+    has_ig_story?: boolean;
     ig_slides: string[];
+    // Imágenes que se pueden rehacer de a una desde la revisión del lote.
+    regenerables?: string[];
     blotato_urls: { linkedin?: string; instagram?: string[]; facebook?: string };
   };
+  // Avisos sobre los prompts de esta fila (mismo lint que el preview individual).
+  lint?: { campo: string; nivel: string; mensaje: string }[];
+  // Qué campos visuales pide este job y cuáles siguen vacíos. Lo decide el backend
+  // (misma fuente que el escritor y el lint): el editor dibuja sus campos a partir de
+  // esto y no de lo que el modelo entregó, para que cuando la escritura devuelva los
+  // prompts vacíos haya dónde escribirlos.
+  needs?: { imagenes?: boolean; video?: boolean; captions?: string[]; n_info?: number; n_shots?: number; faltan?: string[] };
   video?: { url?: string };
   params: Record<string, unknown>;
   li_media_urls: string[];
@@ -38,7 +65,7 @@ interface Row {
 
 interface Batch {
   id: string;
-  status: string; // running | review | publishing | done
+  status: string; // running | preview | generating | review | publishing | done
   warnings: string[];
   dry_run: boolean;
   rows: Row[];
@@ -46,6 +73,11 @@ interface Batch {
 
 const POLL_MS = 2500;
 
+// Fases en las que el lote NO avanza solo: espera una acción del usuario (o terminó).
+const STOP_POLL = new Set(["preview", "review", "done"]);
+
+// Filas que terminaron de ESCRIBIR (esperando revisión del guion, o con error).
+const WRITE_DONE = new Set(["preview", "ready", "scheduled", "published", "partial", "dry-run", "error", "done"]);
 // Filas que terminaron de GENERAR (listas para revisar, o con error de generación).
 const GEN_DONE = new Set(["ready", "scheduled", "published", "partial", "dry-run", "error", "done"]);
 // Filas que terminaron la fase de PUBLICACIÓN.
@@ -130,8 +162,12 @@ function statusMeta(status: string): { label: string; classes: string } {
   switch (status) {
     case "queued":
       return { label: "En cola", classes: "bg-gray-700/40 text-gray-300" };
+    case "writing":
+      return { label: "Escribiendo", classes: "bg-brand-500/15 text-brand-500" };
     case "generating":
       return { label: "Generando", classes: "bg-brand-500/15 text-brand-500" };
+    case "preview":
+      return { label: "Revisar guion", classes: "bg-purple-900/40 text-purple-300" };
     case "ready":
       return { label: "Listo para revisar", classes: "bg-blue-900/40 text-blue-300" };
     case "publishing":
@@ -153,52 +189,77 @@ function statusMeta(status: string): { label: string; classes: string } {
   }
 }
 
-// Las dos fases por fila: generar el contenido y publicarlo/programarlo.
+// Las tres fases por fila, espejo del flujo individual: escribir el contenido,
+// generar el medio (tras aprobar el guion) y publicar/programar.
 function rowSteps(row: Row): { label: string; status: StepStatus }[] {
   const reachedPublish = row.result && Object.keys(row.result).length > 0;
+  // Señal de que la fase de escritura llegó a producir algo: si hay texto de post,
+  // el fallo fue después (generando el medio), no escribiendo.
+  const p = row.preview?.posts;
+  const wroteOk = Boolean(p && (p.linkedin_text || p.instagram_text || p.facebook_text));
+  let write: StepStatus = "pending";
   let gen: StepStatus = "pending";
   let pub: StepStatus = "pending";
   let pubLabel = "Publicar y programar";
 
   switch (row.status) {
+    case "writing":
+      write = "running";
+      break;
+    case "preview":
+      write = "done";
+      break;
     case "generating":
+      write = "done";
       gen = "running";
       break;
     case "ready":
+      write = "done";
       gen = "done";
       break;
     case "publishing":
+      write = "done";
       gen = "done";
       pub = "running";
       break;
     case "scheduled":
     case "published":
     case "done":
+      write = "done";
       gen = "done";
       pub = "done";
       break;
     case "dry-run":
+      write = "done";
       gen = "done";
       pub = "warn";
       pubLabel = "Simulado (no se publicó)";
       break;
     case "partial":
+      write = "done";
       gen = "done";
       pub = "warn";
       break;
     case "error":
+      // El error se marca en la fase donde ocurrió: publicación si ya hubo intento,
+      // generación de medio si el guion llegó a existir, escritura si ni eso.
       if (reachedPublish) {
+        write = "done";
         gen = "done";
         pub = "error";
-      } else {
+      } else if (wroteOk) {
+        write = "done";
         gen = "error";
+      } else {
+        write = "error";
       }
       break;
-    // "queued" → ambas pendientes.
+    // "queued" → las tres pendientes.
   }
 
   return [
-    { label: "Generar contenido", status: gen },
+    { label: "Escribir", status: write },
+    { label: "Generar medio", status: gen },
     { label: pubLabel, status: pub },
   ];
 }
@@ -294,13 +355,382 @@ function NetworkPreview({
   );
 }
 
+// ── Editor de los prompts de una fila (video e imágenes) ─────────────────────
+// La compuerta previa a gastar créditos, espejo de /jobs/{id}/preview del flujo
+// individual: se edita con el MISMO endpoint (`POST /jobs/{id}/edit`), así la
+// revisión del lote no es un camino aparte que pueda divergir. Guarda al salir
+// del campo; el botón de aprobar del lote solo dispara la generación.
+// Nombre visible de cada caption en el editor del lote.
+const CAPTION_LABEL: Record<string, string> = {
+  linkedin_text: "LinkedIn",
+  instagram_text: "Instagram",
+  facebook_text: "Facebook",
+};
+
+function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
+  const p = row.preview?.posts;
+  const [storyboard, setStoryboard] = useState((p?.video_storyboard || []).join("\n"));
+  const [voiceover, setVoiceover] = useState((p?.video_voiceover || []).join("\n"));
+  const [style, setStyle] = useState(p?.video_style || "");
+  const [prompt, setPrompt] = useState(p?.video_prompt || "");
+  const [imgPrompt, setImgPrompt] = useState(p?.image_prompt || "");
+  const [imgStyle, setImgStyle] = useState(p?.image_style || "");
+  const [imgSlides, setImgSlides] = useState((p?.image_slide_prompts || []).join("\n"));
+  // Copy impreso en la pieza: el preview del individual ya lo dejaba editar acá no
+  // estaba, así que un aviso sobre el texto no se podía arreglar sin salir del lote.
+  const [imgHook, setImgHook] = useState(p?.image_text?.hook || "");
+  // Un texto por slide, en su propio campo (antes: un textarea con una idea por línea).
+  // El array conserva la POSICIÓN: vaciar el slide 2 lo deja vacío en vez de correr el
+  // 3 a su sitio. Se dimensiona con los slides del carrusel, no con lo que entregó el
+  // modelo, para que los huecos que falten se vean y se puedan llenar.
+  const needs = row.preview?.needs || {};
+  const nInfo: number = Number(needs.n_info) || 0;
+  const [imgTexts, setImgTexts] = useState<string[]>(() =>
+    Array.from({ length: nInfo }, (_, i) => (p?.image_text?.slides || [])[i] || "")
+  );
+  // Captions de las redes destino. Se dibujan desde `needs.captions` (lo que el job
+  // pide) y no desde lo que el modelo entregó: un caption vacío tiene que verse como
+  // un hueco editable, no desaparecer junto con su campo.
+  const captions: string[] = Array.isArray(needs.captions) ? needs.captions : [];
+  const capsDe = (v: RowPreviewData["posts"] | undefined): Record<string, string> => ({
+    linkedin_text: v?.linkedin_text || "",
+    instagram_text: v?.instagram_text || "",
+    facebook_text: v?.facebook_text || "",
+  });
+  const [caps, setCaps] = useState<Record<string, string>>(() => capsDe(p));
+  const [state, setState] = useState<"idle" | "saving" | "ok" | "error">("idle");
+  // Avisos sobre los prompts (escenas repetidas, clichés, escenas que faltan, shots
+  // sin línea de voz). Vienen del servidor —el mismo lint que el preview individual—
+  // y se refrescan con la respuesta de cada guardado.
+  const [lint, setLint] = useState(row.preview?.lint || []);
+  // Campos visuales que siguen vacíos: mientras haya alguno se ofrece el reintento.
+  const [faltan, setFaltan] = useState<string[]>(needs.faltan || []);
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteErr, setRewriteErr] = useState("");
+
+  const lines = (s: string) => s.split("\n").filter((l) => l.trim()).length;
+  const sbCount = lines(storyboard);
+  const voCount = lines(voiceover);
+  // Filas a mostrar del guion: las que pide el job, aunque el modelo no las entregara.
+  const nShots = Math.max(Number(needs.n_shots) || 0, sbCount, voCount);
+
+  // Video o imágenes según lo que pide la fila (un job es una cosa o la otra). Sale
+  // del backend y no de lo entregado: con la escritura vacía, antes no se dibujaba
+  // ningún campo y el aviso pedía escribir prompts en un formulario inexistente.
+  const hasVideo = !!needs.video;
+  const hasImages = !!needs.imagenes;
+  if (!p || (!hasVideo && !hasImages)) return null;
+
+  async function reescribir() {
+    if (!row.job_id) return;
+    setRewriting(true);
+    setRewriteErr("");
+    try {
+      // Se guarda primero lo editado: el reintento solo pide lo que siga faltando,
+      // así lo que ya se escribió a mano no se pisa.
+      await save();
+      const res = await fetch(`${apiUrl}/jobs/${row.job_id}/rewrite`, { method: "POST" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const np = data.posts || {};
+      setImgPrompt(np.image_prompt || "");
+      setImgStyle(np.image_style || "");
+      setImgSlides((np.image_slide_prompts || []).join("\n"));
+      setImgHook(np.image_text?.hook || "");
+      setImgTexts(Array.from({ length: nInfo }, (_, i) => (np.image_text?.slides || [])[i] || ""));
+      setStoryboard((np.video_storyboard || []).join("\n"));
+      setVoiceover((np.video_voiceover || []).join("\n"));
+      setStyle(np.video_style || "");
+      setPrompt(np.video_prompt || "");
+      setCaps(capsDe(np));
+      setLint(data.lint || []);
+      setFaltan(data.needs?.faltan || []);
+    } catch (e) {
+      setRewriteErr(String((e as Error).message || e));
+    } finally {
+      setRewriting(false);
+    }
+  }
+
+  async function save() {
+    if (!row.job_id) return;
+    setState("saving");
+    try {
+      const body = new FormData();
+      captions.forEach((c) => body.append(c, caps[c] ?? ""));
+      if (hasVideo) {
+        body.append("video_storyboard", storyboard);
+        body.append("video_voiceover", voiceover);
+        body.append("video_style", style);
+        body.append("video_prompt", prompt);
+      }
+      if (hasImages) {
+        body.append("image_prompt", imgPrompt);
+        body.append("image_style", imgStyle);
+        body.append("image_slide_prompts", imgSlides);
+        body.append("image_hook", imgHook);
+        imgTexts.forEach((t, i) => body.append(`image_slide_text_${i}`, t));
+      }
+      const res = await fetch(`${apiUrl}/jobs/${row.job_id}/edit`, { method: "POST", body });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setLint(data?.lint || []);
+      // Escribir a mano lo que faltaba también retira la oferta de reintentar.
+      setFaltan(data?.needs?.faltan || []);
+      setState("ok");
+    } catch {
+      setState("error");
+    }
+  }
+
+  const inputCls =
+    "w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-gray-200 text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono";
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-800 space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-semibold text-purple-300">
+          {hasVideo ? "Guion del video" : "Prompts de las imágenes"}
+        </span>
+        <span className="text-[11px] text-gray-500">
+          Revisa antes de generar — acá el cambio es gratis.
+        </span>
+        <span className="ml-auto text-[11px]">
+          {state === "saving" && <span className="text-gray-500">Guardando…</span>}
+          {state === "ok" && <span className="text-green-400">Guardado</span>}
+          {state === "error" && <span className="text-red-400">No se pudo guardar</span>}
+        </span>
+      </div>
+
+      {captions.length > 0 && (
+        <div className="space-y-2">
+          <span className="text-[11px] text-gray-400 block">
+            Texto de los posts <span className="text-gray-600">(el caption de cada red)</span>
+          </span>
+          {captions.map((c) => (
+            <label key={c} className="block">
+              <span className="text-[11px] text-gray-500 mb-1 block">{CAPTION_LABEL[c] || c}</span>
+              <textarea
+                value={caps[c] ?? ""}
+                rows={5}
+                className={inputCls}
+                onChange={(e) => { setCaps((v) => ({ ...v, [c]: e.target.value })); setState("idle"); }}
+                onBlur={save}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+
+      {hasImages && (
+        <>
+          {/* Copy impreso: lo renderiza el propio modelo desde el prompt, así que se
+              edita ANTES de generar, igual que en el preview del individual. */}
+          <p className="text-[11px] text-gray-500">
+            Encierra una palabra o frase entre <code className="text-gray-400">**dobles asteriscos**</code>{" "}
+            para elegir qué se pinta en el color de acento. Sin marcas, lo elige el modelo. Los
+            asteriscos no se imprimen.
+          </p>
+          <label className="block">
+            <span className="text-[11px] text-gray-400 mb-1 block">
+              Texto de la portada (lo que se imprime en la imagen)
+            </span>
+            <textarea
+              value={imgHook}
+              rows={2}
+              className={inputCls}
+              onChange={(e) => { setImgHook(e.target.value); setState("idle"); }}
+              onBlur={save}
+            />
+          </label>
+          {nInfo > 0 && (
+            <div className="space-y-2">
+              <span className="text-[11px] text-gray-400 block">Texto de cada slide</span>
+              <p className="text-[11px] text-gray-500">
+                Una idea por slide, en secuencia: cada una avanza sobre la anterior y la última
+                remata. Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                (<code className="text-gray-400">Titular — apoyo</code>): lo de antes va grande
+                arriba y lo de después, pequeño, al pie. La raya no se imprime.
+              </p>
+              {imgTexts.map((t, i) => (
+                <label key={i} className="flex items-start gap-2">
+                  <span className="text-[11px] text-gray-500 font-mono mt-2 w-12 flex-shrink-0">
+                    Slide {i + 2}
+                  </span>
+                  <textarea
+                    value={t}
+                    rows={2}
+                    className={inputCls}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setImgTexts((prev) => prev.map((x, j) => (j === i ? v : x)));
+                      setState("idle");
+                    }}
+                    onBlur={save}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+          <label className="block">
+            <span className="text-[11px] text-gray-400 mb-1 block">
+              Portada (escena en inglés, sacada de la transcripción)
+            </span>
+            <textarea
+              value={imgPrompt}
+              rows={3}
+              className={inputCls}
+              onChange={(e) => { setImgPrompt(e.target.value); setState("idle"); }}
+              onBlur={save}
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-gray-400 mb-1 block">
+              Dirección de arte — luz, material, óptica y acabado (va igual en todas las imágenes;
+              la paleta la pone la marca)
+            </span>
+            <textarea
+              value={imgStyle}
+              rows={2}
+              className={inputCls}
+              onChange={(e) => { setImgStyle(e.target.value); setState("idle"); }}
+              onBlur={save}
+            />
+          </label>
+          {nInfo > 0 && (
+            <label className="block">
+              <span className="text-[11px] text-gray-400 mb-1 block">
+                Slides del carrusel — una escena por línea ({lines(imgSlides)} de {nInfo})
+              </span>
+              <textarea
+                value={imgSlides}
+                rows={Math.max(3, nInfo)}
+                className={inputCls}
+                onChange={(e) => { setImgSlides(e.target.value); setState("idle"); }}
+                onBlur={save}
+              />
+            </label>
+          )}
+        </>
+      )}
+
+      {hasVideo && (
+        <label className="block">
+          <span className="text-[11px] text-gray-400 mb-1 block">
+            Voz en off — una línea por shot ({voCount} de {nShots})
+          </span>
+          <textarea
+            value={voiceover}
+            rows={Math.max(3, nShots)}
+            className={inputCls}
+            onChange={(e) => { setVoiceover(e.target.value); setState("idle"); }}
+            onBlur={save}
+          />
+        </label>
+      )}
+
+      {hasVideo && (
+        <label className="block">
+          <span className="text-[11px] text-gray-400 mb-1 block">
+            Storyboard (en inglés) — un shot por línea ({sbCount} de {nShots})
+          </span>
+          <textarea
+            value={storyboard}
+            rows={Math.max(3, nShots)}
+            className={inputCls}
+            onChange={(e) => { setStoryboard(e.target.value); setState("idle"); }}
+            onBlur={save}
+          />
+        </label>
+      )}
+
+      {lint.length > 0 && (
+        <ul className="space-y-1">
+          {lint.map((aviso, i) => (
+            <li
+              key={i}
+              className={`text-[11px] ${aviso.nivel === "alto" ? "text-amber-400" : "text-gray-500"}`}
+            >
+              • {aviso.mensaje}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Reintento manual de la escritura: vuelve a pedirle al modelo SOLO los campos
+          que dejó vacíos, sin relanzar la fila ni perder lo ya editado. Mismo endpoint
+          que usa el preview del individual. */}
+      {faltan.length > 0 && (
+        <div className="flex items-center gap-3 flex-wrap bg-gray-950 border border-gray-800 rounded-lg px-3 py-2">
+          <span className="text-[11px] text-gray-400 flex-1 min-w-[12rem]">
+            Faltan {faltan.length} campo(s) visual(es). Puedes escribirlos arriba o pedírselos otra
+            vez al modelo (cuesta una llamada al LLM, no créditos de imagen).
+          </span>
+          <button
+            type="button"
+            disabled={rewriting}
+            onClick={reescribir}
+            className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-100 text-[11px] font-medium py-1.5 px-3 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {rewriting ? "Escribiendo…" : "Reintentar escritura"}
+          </button>
+        </div>
+      )}
+      {rewriteErr && (
+        <p className="text-[11px] text-red-400">No se pudo reescribir: {rewriteErr}</p>
+      )}
+
+      {/* Look-lock y escena única del VIDEO: solo tienen sentido si la fila genera
+          video. En una fila de imágenes se pintaban igual, invitando a editar dos
+          campos que ese job no usa. */}
+      {hasVideo && (
+        <>
+          <label className="block">
+            <span className="text-[11px] text-gray-400 mb-1 block">Estilo visual (video_style)</span>
+            <textarea
+              value={style}
+              rows={2}
+              className={inputCls}
+              onChange={(e) => { setStyle(e.target.value); setState("idle"); }}
+              onBlur={save}
+            />
+          </label>
+
+          {/* Escena única: la usa el pipeline cuando no hay storyboard (reel de 1 shot). */}
+          <label className="block">
+            <span className="text-[11px] text-gray-400 mb-1 block">Escena principal (video_prompt)</span>
+            <textarea
+              value={prompt}
+              rows={3}
+              className={inputCls}
+              onChange={(e) => { setPrompt(e.target.value); setState("idle"); }}
+              onBlur={save}
+            />
+          </label>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Resuelve los datos de preview de una fila a las redes/medios/textos a mostrar.
 function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
+  // Marca de tiempo por imagen rehecha: la URL de la API no cambia al regenerarla.
+  // Vive acá (no en el componente principal) para que el polling del lote no la pise.
+  const [bust, setBust] = useState<Record<string, number>>({});
   const p = row.preview;
   if (!p || !row.job_id) return null;
 
   const redes = Array.isArray(p.params.redes) ? (p.params.redes as string[]) : ["linkedin", "instagram", "facebook"];
   const has = (n: string) => redes.includes(n);
+  const apiImage = (key: string) => conVersion(`${apiUrl}/jobs/${row.job_id}/image/${key}`, bust[key]);
+  const bustear = (keys: string[]) => {
+    const t = Date.now();
+    setBust((b) => ({ ...b, ...Object.fromEntries(keys.map((k) => [k, t])) }));
+  };
   // Mismo criterio que en ReviewCards: el clip se sirve vía la API (same-origin)
   // porque la URL externa de Blotato no es confiable dentro de un <video>.
   const videoUrl = p.video?.url ? `${apiUrl}/jobs/${row.job_id}/video` : "";
@@ -311,33 +741,57 @@ function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
   const tipoPost = (p.params.tipo_post as string) || "post";
   const isVertical = tipoPost === "reel" || tipoPost === "historia";
 
-  const liImg = p.images.has_li_hook ? `${apiUrl}/jobs/${row.job_id}/image/li-hook` : p.li_media_urls[0] || "";
-  const fbImg = p.images.has_fb_hook ? `${apiUrl}/jobs/${row.job_id}/image/fb-hook` : p.fb_media_urls[0] || "";
-  const igSingle = p.images.has_ig_single ? `${apiUrl}/jobs/${row.job_id}/image/ig-single` : p.ig_media_urls[0] || "";
+  const liImg = p.images.has_li_hook ? apiImage("li-hook") : p.li_media_urls[0] || "";
+  const fbImg = p.images.has_fb_hook ? apiImage("fb-hook") : p.fb_media_urls[0] || "";
+  const story = p.images.has_ig_story ? apiImage("ig-story") : "";
+  const igSingle = story || (p.images.has_ig_single ? apiImage("ig-single") : p.ig_media_urls[0] || "");
   // Slides del carrusel: compartidos por todas las redes activas de la fila.
   const slides =
     p.images.ig_slides.length > 0
-      ? p.images.ig_slides.map((k) => `${apiUrl}/jobs/${row.job_id}/image/${k}`)
+      ? p.images.ig_slides.map((k) => apiImage(k))
       : p.ig_media_urls.length > 1 ? p.ig_media_urls
       : p.li_media_urls.length > 1 ? p.li_media_urls
       : p.fb_media_urls;
 
   const liImages = videoUrl ? [] : isCarousel ? slides : liImg ? [liImg] : [];
-  const fbImages = videoUrl ? [] : isCarousel ? slides : fbImg ? [fbImg] : [];
+  const fbImages = videoUrl ? [] : isCarousel ? slides : story ? [story] : fbImg ? [fbImg] : [];
   const igImages = videoUrl ? [] : isCarousel ? slides : igSingle ? [igSingle] : [];
 
+  // Rehacer una imagen suelta de ESTA fila, con el mismo endpoint que el flujo
+  // individual. El backend dice cuáles se pueden rehacer (vacío mientras la fila no
+  // esté generada, y siempre en video: ahí la unidad de reintento no es una imagen).
+  const regenerables = row.status === "ready" ? p.images.regenerables || [] : [];
+
   return (
-    <div className={`mt-3 grid gap-3 ${isVertical ? "" : "sm:grid-cols-2"}`}>
-      {has("linkedin") && (
-        <NetworkPreview logo={<LinkedInLogo />} name="LinkedIn" text={p.posts.linkedin_text || ""} images={liImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
+    <>
+      <div className={`mt-3 grid gap-3 ${isVertical ? "" : "sm:grid-cols-2"}`}>
+        {has("linkedin") && (
+          <NetworkPreview logo={<LinkedInLogo />} name="LinkedIn" text={p.posts.linkedin_text || ""} images={liImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
+        )}
+        {has("instagram") && (
+          <NetworkPreview logo={<InstagramLogo />} name="Instagram" text={p.posts.instagram_text || ""} images={igImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
+        )}
+        {has("facebook") && (
+          <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
+        )}
+      </div>
+      {regenerables.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-gray-500">Rehacer imagen:</span>
+          {regenerables.map((k) => (
+            <RegenerateButton
+              key={k}
+              apiUrl={apiUrl}
+              jobId={row.job_id as string}
+              subkey={k}
+              label={etiquetaSubkey(k)}
+              onDone={bustear}
+              compact
+            />
+          ))}
+        </div>
       )}
-      {has("instagram") && (
-        <NetworkPreview logo={<InstagramLogo />} name="Instagram" text={p.posts.instagram_text || ""} images={igImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
-      )}
-      {has("facebook") && (
-        <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
-      )}
-    </div>
+    </>
   );
 }
 
@@ -388,6 +842,8 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
   const [elapsed, setElapsed] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   // Cambia para reanudar el polling tras aprobar (el efecto depende de él).
   const [pollKey, setPollKey] = useState(0);
   const startRef = useRef(Date.now());
@@ -408,10 +864,10 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
         if (!active) return;
         setBatch(data);
         setConnError(null);
-        // En "review" se detiene el polling (espera al usuario); approveAndPublish lo
-        // reanuda vía pollKey una vez que el POST dejó el lote en "publishing". En
-        // "done" termina. En el resto, sigue sondeando.
-        if (data.status !== "done" && data.status !== "review") timer = setTimeout(poll, POLL_MS);
+        // En las dos compuertas ("preview" y "review") se detiene el polling: la
+        // pelota está en el usuario. approveScripts/approveAndPublish lo reanudan vía
+        // pollKey una vez que el POST movió el lote de fase. En "done" termina.
+        if (!STOP_POLL.has(data.status)) timer = setTimeout(poll, POLL_MS);
       } catch (e) {
         if (!active) return;
         setConnError(e instanceof Error ? e.message : String(e));
@@ -426,18 +882,39 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
     };
   }, [batchId, apiUrl, pollKey]);
 
-  const phase = batch?.status; // running | review | publishing | done
-  const isReview = phase === "review";
+  const phase = batch?.status; // running | preview | generating | review | publishing | done
+  const isPreview = phase === "preview";      // compuerta 1: revisión de guiones
+  const isReview = phase === "review";        // compuerta 2: revisión del medio
   const isDone = phase === "done";
-  const isGenerating = phase === "running";
+  const isWriting = phase === "running";      // fase 1: escritura
+  const isGenerating = phase === "generating"; // fase 2: medio
+  const waiting = isPreview || isReview;      // el lote espera al usuario
 
-  // Cronómetro vivo mientras el lote trabaja (genera o publica). En "review" se
-  // detiene: la pelota está en el usuario.
+  // Cronómetro vivo mientras el lote trabaja. En las compuertas se detiene: la
+  // pelota está en el usuario.
   useEffect(() => {
-    if (isDone || isReview || fatal) return;
+    if (isDone || waiting || fatal) return;
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
     return () => clearInterval(t);
-  }, [isDone, isReview, fatal]);
+  }, [isDone, waiting, fatal]);
+
+  async function approveScripts() {
+    setApproving(true);
+    setApproveError(null);
+    try {
+      const res = await fetch(`${apiUrl}/sheets/batches/${batchId}/generate`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      startRef.current = Date.now(); // reinicia el cronómetro para la fase de medio
+      setPollKey((k) => k + 1);
+      setApproving(false);
+    } catch (e) {
+      setApproveError(e instanceof Error ? e.message : String(e));
+      setApproving(false);
+    }
+  }
 
   async function approveAndPublish() {
     setPublishing(true);
@@ -491,18 +968,26 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
   }
 
   const total = batch.rows.length;
-  // El progreso del hero depende de la fase: generación vs. publicación.
+  // El progreso del hero depende de la fase: escritura vs. medio vs. publicación.
+  const writeDone = batch.rows.filter((r) => WRITE_DONE.has(r.status)).length;
   const genDone = batch.rows.filter((r) => GEN_DONE.has(r.status)).length;
   const pubDone = batch.rows.filter((r) => PUB_DONE.has(r.status)).length;
-  const done = isGenerating ? genDone : pubDone;
+  const done = isWriting ? writeDone : isGenerating ? genDone : pubDone;
   const errors = batch.rows.filter((r) => NEEDS_ATTENTION.has(r.status)).length;
+  const previewRows = batch.rows.filter((r) => r.status === "preview");
   const readyRows = batch.rows.filter((r) => r.status === "ready");
   const genErrors = batch.rows.filter((r) => r.status === "error").length;
-  const percent = isReview ? 100 : total ? Math.round((done / total) * 100) : 0;
-  const active = batch.rows.find((r) => r.status === "generating" || r.status === "publishing");
+  const percent = waiting ? 100 : total ? Math.round((done / total) * 100) : 0;
+  const active = batch.rows.find(
+    (r) => r.status === "writing" || r.status === "generating" || r.status === "publishing"
+  );
 
-  const title = isGenerating
-    ? "Creando tus posts"
+  const title = isWriting
+    ? "Escribiendo tus posts"
+    : isPreview
+    ? "Revisa los guiones antes de generar"
+    : isGenerating
+    ? "Generando el contenido visual"
     : isReview
     ? "Revisa y aprueba tus posts"
     : phase === "publishing"
@@ -513,8 +998,12 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
     ? "Simulación completada"
     : "¡Listo! Tus posts están programados";
 
-  const subtitle = isGenerating
-    ? "Generamos el contenido de cada post. Puede tomar varios minutos — puedes dejar esta pestaña abierta."
+  const subtitle = isWriting
+    ? "Escribimos el texto y el guion de cada post. Todavía no gastamos créditos de generación."
+    : isPreview
+    ? "Acá el cambio es gratis: corregí el guion de video de cada fila antes de gastar créditos. Al aprobar, se generan las imágenes y los videos."
+    : isGenerating
+    ? "Generamos las imágenes y los videos de cada post. Puede tomar varios minutos — puedes dejar esta pestaña abierta."
     : isReview
     ? "Generamos todo. Revisa el contenido de cada post abajo y publícalo cuando estés conforme."
     : phase === "publishing"
@@ -525,9 +1014,13 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
     ? "Todo se generó sin publicar (dry-run)."
     : "Cada post quedó programado en su fecha y hora. Ya puedes cerrar esta pestaña.";
 
-  const heroIcon = isReview ? "done" : !isDone ? "running" : errors > 0 ? "warn" : "done";
-  const heroLabel = isGenerating
-    ? "Generando contenido…"
+  const heroIcon = waiting ? "done" : !isDone ? "running" : errors > 0 ? "warn" : "done";
+  const heroLabel = isWriting
+    ? "Escribiendo contenido…"
+    : isPreview
+    ? "Guiones escritos — pendiente de aprobación"
+    : isGenerating
+    ? "Generando imágenes y videos…"
     : isReview
     ? "Contenido generado — pendiente de aprobación"
     : phase === "publishing"
@@ -535,9 +1028,15 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
     : errors > 0
     ? "Completado con avisos"
     : "Lote completado";
+  const activityVerb =
+    active?.status === "publishing"
+      ? "Publicando y programando"
+      : active?.status === "writing"
+      ? "Escribiendo"
+      : "Generando el medio de";
   const activity = active
-    ? `${active.status === "publishing" ? "Publicando y programando" : "Generando contenido para"} el post #${active.index}`
-    : !isDone && !isReview && done < total
+    ? `${activityVerb} el post #${active.index}`
+    : !isDone && !waiting && done < total
     ? "Preparando el siguiente post…"
     : null;
 
@@ -567,7 +1066,11 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
               )}
             </div>
             <div className="text-sm text-gray-400">
-              {isGenerating
+              {isWriting
+                ? `${done} de ${total} posts escritos`
+                : isPreview
+                ? `${previewRows.length} de ${total} guiones listos para revisar`
+                : isGenerating
                 ? `${done} de ${total} posts generados`
                 : isReview
                 ? `${readyRows.length} de ${total} posts listos para publicar`
@@ -577,7 +1080,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
           </div>
           <div className="ml-auto text-right flex-shrink-0">
             <div className="text-3xl font-bold text-white tabular-nums leading-none">{percent}%</div>
-            {!isDone && !isReview && (
+            {!isDone && !waiting && (
               <div className="text-xs text-gray-500 tabular-nums mt-1 flex items-center justify-end gap-1">
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -594,7 +1097,7 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
             className="h-full bg-brand-500 rounded-full transition-all duration-700"
             style={{ width: `${percent}%` }}
           />
-          {!isDone && !isReview && (
+          {!isDone && !waiting && (
             <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/20 to-transparent" />
           )}
         </div>
@@ -606,7 +1109,51 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
           </div>
         )}
 
-        {/* Aprobación: aparece cuando el lote terminó de generar y espera al usuario */}
+        {/* Compuerta 1: guiones escritos, todavía sin gastar créditos de generación */}
+        {isPreview && (
+          <div className="mt-5 border-t border-gray-800 pt-5">
+            {genErrors > 0 && (
+              <p className="text-xs text-amber-400 mb-3">
+                {genErrors} fila(s) no se pudieron escribir y se omitirán.
+              </p>
+            )}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                onClick={approveScripts}
+                disabled={approving || previewRows.length === 0}
+                className="inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {approving ? (
+                  <>
+                    <Spinner className="w-4 h-4" />
+                    Iniciando…
+                  </>
+                ) : (
+                  <>
+                    Aprobar y generar {previewRows.length} post{previewRows.length === 1 ? "" : "s"}
+                  </>
+                )}
+              </button>
+              <a
+                href="/bulk"
+                className="inline-flex items-center justify-center text-sm text-gray-400 hover:text-gray-200 px-4 py-2.5 rounded-lg border border-gray-800 hover:border-gray-700 transition-colors"
+              >
+                Cancelar
+              </a>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              A partir de acá se consumen créditos de Higgsfield. Los cambios en los guiones se
+              guardan solos al salir de cada campo.
+            </p>
+            {approveError && (
+              <div className="mt-3 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2.5 text-red-300 text-sm">
+                {approveError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Compuerta 2: medio generado, espera aprobación para publicar */}
         {isReview && (
           <div className="mt-5 border-t border-gray-800 pt-5">
             {genErrors > 0 && (
@@ -757,6 +1304,11 @@ export default function BulkProgress({ batchId, apiUrl }: { batchId: string; api
                 <div className="mt-3 relative h-1 overflow-hidden rounded-full bg-gray-800">
                   <div className="absolute inset-y-0 left-0 w-2/5 rounded-full bg-brand-500 animate-indeterminate" />
                 </div>
+              )}
+
+              {/* Compuerta 1: prompts editables, antes de gastar créditos */}
+              {isPreview && row.status === "preview" && row.preview && (
+                <RowPromptEditor row={row} apiUrl={apiUrl} />
               )}
 
               {/* Preview del contenido generado (en revisión y mientras se publica) */}

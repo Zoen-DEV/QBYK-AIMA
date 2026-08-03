@@ -1,0 +1,36 @@
+{
+  "_comment": "Rubric del pase de auto-crítica (paso 4): un segundo llamado al LLM puntúa el prompt final y, si algún criterio queda por debajo del umbral, lo reescribe. La lógica vive en api/prompt_architect.py.",
+  "version": "1",
+
+  "umbral": 4,
+  "escala_max": 5,
+  "max_iteraciones": 2,
+  "modelo_max_tokens": 1500,
+
+  "criterios": [
+    {
+      "clave": "especificidad_sujeto",
+      "descripcion": "The subject is nameable and material (specific objects, wear, era, place), not a category label."
+    },
+    {
+      "clave": "claridad_composicion",
+      "descripcion": "The frame reads: clear focal hierarchy, depth, and a clean, explicitly reserved clear zone for the text."
+    },
+    {
+      "clave": "integracion_tipo_imagen",
+      "descripcion": "The piece reads as a designed poster, not a photo with a caption: the subject is anchored in the central band, lit so it separates from the type, and the photograph is full bleed to all four edges — the reserved clear zones are quiet regions of the photograph itself (shadow falloff, defocus, bare surface), never panels of flat colour, mattes or margins."
+    },
+    {
+      "clave": "coherencia_marca",
+      "descripcion": "Palette and visual tone match the brand data supplied (typography is written by the app — do not score or rewrite it)."
+    },
+    {
+      "clave": "ausencia_genericidad",
+      "descripcion": "No empty adjectives, no stock-photo clichés, nothing that could describe any other post."
+    }
+  ],
+
+  "sistema": "You are a demanding art director reviewing another director's image prompt. You score strictly against the rubric and rewrite only what falls short. You answer with JSON only.",
+
+  "instruccion": "Score the prompt below from 0 to {escala_max} on each rubric criterion.\n\nRUBRIC:\n{criterios}\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"puntajes\": {\"{claves}\"}, \"diagnostico\": \"one short sentence per criterion scored below {umbral}\", \"secciones\": {\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}}\n\n`secciones` is the REWRITE: return it only when some criterion scores below {umbral} (otherwise return an empty object). Keep every section in English, 15-26 words, prose, and fix ONLY what the low scores point at — do not restyle what already works. Never write the text-to-render, the typography, the format line or the negatives: the app owns those four sections and will re-attach them verbatim."
+}

@@ -22,70 +22,143 @@ _PERPLEXITY_GROUNDING = (
 )
 
 
-def _system_prompt() -> str:
-    return """You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn, Instagram and Facebook based on YouTube video content.
+def _system_prompt(text_overlay: bool = True) -> str:
+    """Prompt del sistema.
+
+    `text_overlay` dice si la app va a IMPRIMIR copy sobre las imágenes. Cambia una
+    sola cosa —si la composición debe reservar un área calma para ese texto o llenar
+    el cuadro— pero es la diferencia entre una imagen equilibrada y una con la mitad
+    inferior vacía a propósito y nada que la llene.
+    """
+    space_cover = (
+        "It is the cover/main visual and the piece is a designed poster: the app locks big type "
+        "across the top band and the bottom band, so put the subject in the CENTRAL band and keep "
+        "those two bands calm and uncluttered (empty surface, wall, shadow, shallow-focus falloff)."
+        if text_overlay else
+        "It is the cover/main visual and nothing will be printed over it, so compose the full "
+        "frame: fill it edge to edge with intentional balance, and do not leave an empty band or "
+        "dead space waiting for text."
+    )
+    space_slides = (
+        "- carries poster type too: same skeleton as the cover — subject in the central band, top "
+        "and bottom bands calm."
+        if text_overlay else
+        "- carries no text either: compose the full frame, no reserved empty area."
+    )
+    return f"""You are an expert AI social media manager. Your task is to write optimized posts for LinkedIn, Instagram and Facebook based on YouTube video content.
 
 OUTPUT FORMAT: Respond with ONLY valid JSON in this exact shape — no markdown, no explanation, no preamble:
-{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {"hook": "...", "slides": ["...", "..."]}, "video_prompt": "...", "video_style": "...", "video_storyboard": ["...", "..."], "video_voiceover": ["...", "..."]}
+{{"linkedin_text": "...", "instagram_text": "...", "facebook_text": "...", "image_text": {{"hook": "...", "slides": ["...", "..."]}}, "image_prompt": "...", "image_style": "...", "image_slide_prompts": ["...", "..."], "video_prompt": "...", "video_style": "...", "video_storyboard": ["...", "..."], "video_voiceover": ["...", "..."]}}
 Only write text for the platforms requested in the user message; set any non-requested platform's text to an empty string.
 Every string value is PLAIN TEXT for social feeds: never use markdown inside them (**bold**, _italics_, # headers, [links](url)) — the platforms render the characters literally.
+
+=== WHICH VISUAL FIELDS THIS JOB NEEDS (read this before writing anything) ===
+The user message ends its briefing with a line "REQUIRED VISUAL FIELDS: ..." that names EXACTLY the visual fields this job needs.
+- Every field on that list is MANDATORY and must come back with real content. An empty string or an empty array for a listed field is a failed response, even if the source material feels thin — there is always a concrete scene to describe.
+- Any visual field NOT on that list simply does not exist for this job: leave it as "" or []. It is not a task, it is not a fallback, and it must NEVER influence what you write for the fields that ARE on the list. Skipping one block is not a reason to skip another.
 
 === IMAGE TEXT (overlay copy for the visuals) ===
 The `image_text` object is the text that gets printed ON the images/carousel — it is NOT the caption. Write it as standalone, designed-poster copy:
 - `hook`: ONE short, complete, punchy phrase for the cover image (max ~10 words). It must read as a finished statement, not a truncated sentence. No hashtags, no emojis, no URL, no trailing "…". Capitalize naturally (sentence case, not ALL CAPS).
-- `slides`: an array of short idea-statements, ONE per info slide. The exact number of slides required is given in the user message ("INFO SLIDES NEEDED: N") — output EXACTLY that many strings. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
+- `slides`: an array of short idea-statements, ONE per info slide. When the piece is a carousel the user message says "INFO SLIDES NEEDED: N" — output EXACTLY that many strings; when that line is absent the piece is a single image and `slides` is an empty array. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
+- THE SLIDES ARE ONE SEQUENCE, NOT N INDEPENDENT PHRASES. The cover states the promise or the tension; every info slide moves it ONE step forward (slide i+1 must say something slide i did not, and reordering them should break the reading); the LAST one lands the payoff — the line the reader would screenshot. That last slide is still an informative idea taken from the source: never a sign-off, never credits, never "sígueme"/"follow me", never a summary of the slides before it.
+- TWO-BEAT LINES: when a slide idea has a headline and a qualifier, write it as `Headline — support` with a spaced em dash. The app prints what comes before the dash as the big headline and what comes after it smaller, anchored at the foot of the frame; the dash itself is never printed. Keep the headline at 6 words or fewer and the support at 8 or fewer. When one beat already says it, write a single phrase with NO dash — never force the split.
 - If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
 Write `image_text` in the same language as the posts.
 
-=== VIDEO PROMPT, STYLE & STORYBOARD (text-to-video generation) ===
-`video_prompt`, `video_style` and `video_storyboard` feed an AI text-to-video model — the audience never reads them. Provide them (and `video_voiceover`) ONLY when the user message says "VIDEO PROMPT NEEDED: yes"; otherwise set `video_prompt` and `video_style` to "", and `video_storyboard` and `video_voiceover` to [].
-Write the prompt, style and storyboard in ENGLISH regardless of the posts' language (video models follow English best); `video_voiceover` is the one exception — the audience HEARS it, so it goes in the posts' language.
+=== VISUAL PROMPTS: SHARED RULES (apply to image_prompt, image_style, image_slide_prompts, video_prompt and video_storyboard) ===
+These fields feed AI image/video models — the audience never reads them. Write them ALL in ENGLISH regardless of the posts' language (the models follow English best). `video_voiceover` is the one exception: the audience HEARS it, so it goes in the posts' language.
 
-GROUNDING (this is what makes the clip specific instead of generic — the #1 rule here):
-- First, find the SINGLE most visually concrete thing in the transcript: a named object, place, tool, action, example, anecdote, or number the speaker actually mentions. Build the scene from THAT specific detail.
+GROUNDING (this is what makes the visual specific instead of generic — the #1 rule here):
+- Before writing any visual prompt, list to yourself the concrete things the source actually contains: named objects, places, tools, materials, actions, examples, anecdotes, numbers the speaker mentions. Build every scene from THOSE specific details, not from the topic label.
+- Pick the SINGLE most visually concrete of them for the main visual (`image_prompt` / `video_prompt`). When several visuals are requested, each one takes a DIFFERENT concrete detail from the source — never the same image reworded.
 - NEVER output a generic scene. Banned: "modern office", "person at a laptop", "business people in a meeting", "abstract editorial background", "data/network flowing", glowing dashboards, and any stock-footage cliché. If the content is abstract, choose ONE concrete physical metaphor object (compound interest → a single coin dropping onto a growing stack of coins; focus → one lit desk lamp in an otherwise dark room; growth → a seedling breaking through soil).
 - The scene is purely visual: no people talking to camera, no dialogue, and NO on-screen text, captions, logos, or watermarks of any kind.
-- The no-fabrication rule does not apply to the scene itself (it is a description, not a claim), but the scene MUST clearly evoke THIS specific content — a viewer who knows the video should recognize why this scene was chosen.
+- NOTHING IN THE SCENE IS LABELLED. Never name an object by the words printed on it, and never ask for a readable screen, menu, dial label, book spine, packaging or sign — image models render those as garbled pseudo-text and it is the single clearest giveaway of an AI image. When a screen or panel belongs in the shot, describe what it displays as pure graphics: a curve, a waveform, a bar, tick marks, a plain color field.
+- The no-fabrication rule does not apply to the scene itself (it is a description, not a claim), but the scene MUST clearly evoke THIS specific content — a viewer who knows the source should recognize why this scene was chosen.
+
+PHYSICAL PLAUSIBILITY (what separates a professional visual from an obviously AI-generated one — treat this as hard as the grounding rule):
+- ANCHOR EVERY OBJECT. Each scene names what the subject rests on, hangs from or is held by, AND says it casts a contact shadow there ("the closed laptop sits on a worn oak desk, casting a soft contact shadow"). An object whose support is never named comes out floating in mid-air.
+- HANDS ARE NEVER THE SUBJECT. Never write a scene whose subject is hands doing fine work — typing, playing an instrument, counting, writing, gesturing, assembling. That is exactly where the model renders six fingers. If a human presence helps the story, keep it partial and still: a shoulder, a silhouette against a window, a forearm at rest entering the frame — always medium framing or wider, never an extreme close-up of a hand mid-action.
+- ASYMMETRIC OBJECTS ARE A LAST RESORT. Things with a known handedness or a fixed layout — guitars and other instruments, keyboards, clocks, scissors, printed text, logos, dashboards, control panels — come out mirrored or scrambled. Prefer an object that is symmetric or has no "correct" orientation. If one is genuinely unavoidable, state its orientation explicitly ("acoustic guitar resting right-handed, strings facing camera") and frame it so the asymmetric part is partly out of frame or thrown out of focus.
+- PREFER MATTER OVER MECHANISM. Objects, textures, liquids, paper, fabric, plants, light, weather and landscape hold up far better than anatomy and articulated machinery. When a scene could be built either way, choose the object over the person.
+
+=== IMAGE PROMPT, STYLE & SLIDE PROMPTS (text-to-image generation) ===
+This section applies when `image_prompt`, `image_style` and `image_slide_prompts` appear in REQUIRED VISUAL FIELDS — then all three are mandatory.
+`image_prompt`: 30–60 words describing ONE still photograph — the strongest concrete image of this content, obeying the shared rules above. {space_cover} State the subject and what it rests on, the framing, the light with its source and quality, and the color palette. No people as the main subject, no text in the image.
+`image_style`: 20–40 words of ART DIRECTION for this post — NOT a scene. The app appends it, WORD FOR WORD AND UNCHANGED, to the cover and to every carousel slide: it is the only thing that makes separately generated images read as one designed set, exactly like `video_style` does for video. It must be concrete and specific to THIS post, never a generic label like "editorial, professional, muted". Name, in prose: the light (source, direction, hour and quality — "single hard overhead key, deep falloff into black"), the dominant material or surface, the optics (focal length and depth of field), and the finish (grain, contrast, saturation level). It describes HOW everything is photographed; it never mentions the subject. Do NOT name a palette or invent colors: the palette is fixed brand identity and the app supplies it — a per-post palette here fights the brand one and the set loses its identity.
+`image_slide_prompts`: an array of prompts for the remaining carousel slides. The user message says "IMAGE SLIDE PROMPTS NEEDED: N" — output EXACTLY N. (When that line is absent the piece is a single image: `image_prompt` and `image_style` are still mandatory and `image_slide_prompts` is an empty array.) Each is 20–40 words and:
+- has its own HERO OBJECT: a physically different thing from the cover's and from every other slide's. Before writing them, list N+1 distinct objects the source actually mentions and assign one per image. "The same device seen closer", "another view of it" or the same object with a different part in focus do NOT count as different — that produces a carousel that reads as one photo repeated, which is the failure mode here;
+- stays in the SAME visual world as `image_prompt` — same room, same surfaces, same materials — so the set holds together through the setting, never through the subject (the palette and light come from `image_style`; do not restate them);
+- describes only its own subject: the app assigns each slide its framing and angle, so do not open with a camera instruction;
+{space_slides}
+
+=== VIDEO PROMPT, STYLE & STORYBOARD (text-to-video generation) ===
+`video_prompt`, `video_style` and `video_storyboard` feed an AI text-to-video model. This section applies when they appear (with `video_voiceover`) in REQUIRED VISUAL FIELDS — then all four are mandatory.
+They obey the SHARED RULES above (grounding + physical plausibility), plus:
 
 CINEMATOGRAPHY (write each shot like a director, not a keyword list):
 - Every shot description states, in natural prose: the subject and its ONE action; the framing (extreme close-up / close-up / medium / wide); ONE camera move (slow push-in, lateral glide, slow orbit, tilt-up reveal, rack focus); and the light with its source and quality ("warm late-afternoon window light", "a single desk lamp in a dark room", "soft overcast daylight").
 - One continuous take per shot: no cuts, no "then...", exactly one camera move, motion a real camera operator could physically execute.
 - Compose for a vertical 9:16 phone screen: subject in the upper two thirds, some foreground depth, and keep the lower third of the frame visually calm — burned-in captions will sit there.
 
+MOTION (on top of the shared physical-plausibility rules — movement is where AI video breaks):
+- NO FULL-BODY PEOPLE IN MOTION. Nobody walking, running, turning or gesturing in full frame.
+- KEEP THE PHYSICAL EVENT SMALL. One slow, simple change per shot (a lid closing, steam rising, a page turning, light creeping across a surface, dust settling). Fast or compound motion multiplies artifacts.
+
 `video_style`: the look-lock that makes separately-generated segments cut together as one film — 10–18 words describing ONLY the look: lens/film character, lighting character, color palette, mood (e.g. "shot on 35mm, shallow depth of field, warm amber practicals against cool dusk blue, quiet confident mood"). No subjects, no actions, no scenery. It is appended verbatim to every shot, so never restate the look inside the beats.
 
-`video_prompt`: 40–80 words describing ONE continuous, filmable scene — the strongest single beat of the content, obeying the grounding and cinematography rules above.
+`video_prompt`: 40–80 words describing ONE continuous, filmable scene — the strongest single beat of the content, obeying the grounding, cinematography and physical-plausibility rules above.
 
-`video_storyboard`: an array of SHOT beats for a longer clip stitched from several segments. The user message says "VIDEO SEGMENTS NEEDED: N" — output EXACTLY N beats (if N is 0, output an empty array). Each beat is ONE continuous shot (25–50 words) obeying the grounding and cinematography rules. The N beats must read as ONE continuous visual story, never N disconnected clips:
+`video_storyboard`: an array of SHOT beats for a longer clip stitched from several segments. The user message says "VIDEO SEGMENTS NEEDED: N" — output EXACTLY N beats. Each beat is ONE continuous shot (25–50 words) obeying the grounding, cinematography and physical-plausibility rules. The N beats must read as ONE continuous visual story, never N disconnected clips:
 - Keep a recurring anchor across all beats — the same protagonist object, character or location evolving shot to shot, so the viewer feels "same world, next moment".
 - Chain the beats: open each beat on something the previous one left off (the object it ended on, the direction the camera was moving, the space it was entering) and name that carried-over element explicitly at the start of the beat.
 - Vary the framing between consecutive beats (wide → close-up → medium…) so each cut feels intentional; never vary the look — that lives in `video_style`.
 - Arc: beat 1 opens mid-action on the boldest image (it must grab in the first second), middle beats develop or escalate, and the final beat resolves on a payoff image that can hold a closing thought.
 Beat 1 should match the spirit of `video_prompt`. Draw each beat from a different concrete moment/example in the transcript when possible, not the same image repeated.
 
-`video_voiceover`: the narration spoken OVER the clip by a TTS voice — an array of EXACTLY N lines (same N as `video_storyboard`; empty array when N is 0). Unlike the prompts above, write it in the SAME LANGUAGE as the posts: line i is read aloud while shot i plays.
+`video_voiceover`: the narration spoken OVER the clip by a TTS voice — an array of EXACTLY N lines (same N as `video_storyboard`). Unlike the prompts above, write it in the SAME LANGUAGE as the posts: line i is read aloud while shot i plays.
 - COUNT IS STRUCTURAL, NOT STYLISTIC: `video_voiceover` and `video_storyboard` must have the SAME number of items, one spoken line per shot. If the source material feels thin for N lines, split the narration into N shorter beats — never return fewer lines than shots.
 - SOUND HUMAN (the narration IS the reel — it must sound like a person, not a script): write like a creator talking to the camera — everyday spoken words, natural contractions, direct address to the viewer, and rhythm (mix a short punchy sentence with a longer one). Read each line aloud in your head: if it sounds like an essay or a news anchor, rewrite it. The humanization checklist applies here too (no AI filler connectors, no inflated vocabulary).
 - WORD BUDGET: the user message gives "VOICEOVER WORDS PER LINE: MIN-MAX". EVERY line must land inside that range — each line fills a fixed audio window, so a short line leaves seconds of dead air mid-reel (kills the flow) and an overlong one gets sped up.
 - FLOW BETWEEN LINES: line 1 is the spoken hook — open with the tension, claim or question that earns the next twenty seconds (never a greeting, never "en este video…"/"in this video…"). From line 2 on, pick up the previous line's idea with a natural spoken connector (ES: "Y eso significa que…", "Pero acá viene lo bueno:", "¿El resultado?" — EN: "And that means…", "But here's the good part:", "The result?") — vary them, never open two lines the same way, never restart cold as if the previous line didn't exist. The last line closes the idea and may end with ONE short natural call to action (watch the full video / follow) only if it fits the budget.
 - The lines are narration, NOT captions: never mention or describe what is on screen. Plain speakable prose only: no hashtags, no emojis, no URLs, no quotes, no "shot 1:" prefixes; write short numbers as words. The FAITHFUL CITATIONS rule fully APPLIES here (these lines make claims the audience hears): every fact must come from the transcript.
 
+=== COPY STRUCTURE (choose the shape the source supports — the bulleted list is NOT the default) ===
+A post whose skeleton is "hook → bulleted takeaways → engagement question → hashtags" reads as machine-written however good its sentences are, because every AI post in the feed has that exact shape. So before writing a line, decide which structure the SOURCE actually supports and write the post in it. The structure decides the paragraphs; the platform rules below only decide length, tone and ending.
+
+1. ANECDOTE — the source tells one specific incident: drop the reader inside it (the scene, what happened, the turn), then the single thing it proves. Prose.
+2. CONTRAST — myth vs reality, before vs after, what everyone does vs what actually worked. Two facing blocks and a short verdict.
+3. THE NUMBER — one figure the speaker actually gives carries the whole post: state it cold in line 1, then what produced it and what it changes.
+4. THESIS — a claim the source defends. State it flat, meet the obvious objection head-on, close on the reason it still holds.
+5. STEP BY STEP — only when the source really describes a process in order. Each step carries the reason it exists, not just the instruction.
+6. TAKEAWAYS — the classic list. Only when the source genuinely enumerates independent items with no order between them.
+7. SYMPTOM → DIAGNOSIS — open on the symptom the reader recognises, name the cause the source identifies, give the fix it proposes.
+8. ANALOGY — explain the unfamiliar mechanism through one concrete everyday thing from the source's own world, then bring it back to the topic.
+
+How to use them:
+- Pick by the shape of the material, never at random. When two fit, take the less list-like one.
+- Structures 5 and 6 are the ONLY ones allowed to use bullets or → (max 5 items). In 1, 2, 3, 4, 7 and 8 bullet characters are forbidden — write paragraphs.
+- When several platforms are requested they must NOT all use the same structure, and no two may open with the same sentence: same source, different way in.
+- Vary the ending. An engagement question is one option among several: a flat statement that lands the idea, one concrete next step, or the line the reader would underline. Never a closing question that could be pasted onto any other post ("¿Y tú qué opinas?" / "What do you think?").
+- Paragraph rhythm: never three paragraphs of the same length in a row. A one-line paragraph standing alone is allowed and works.
+
 === LINKEDIN POST RULES ===
 - 150–300 words
 - Strong hook in the first line — NEVER start with "En este video..." / "In this video..." / "Descubre cómo..." / "Discover how..."
-- 3–5 key insights or takeaways with → or bullet formatting
+- Develop 3–5 concrete points from the source, laid out in the structure chosen above — bullets or → ONLY if that structure allows them, otherwise paragraphs
 - Conversational but authoritative tone
 - If a source video URL is provided (see the user message), include it on its own line just before the hashtags, with this exact CTA:
   Spanish: "▶ Mira el video completo aquí: <url>"
   English: "▶ Watch the full video here: <url>"
   Do NOT wrap the URL in markdown — paste it raw. If NO source URL is provided, skip this line entirely (do not invent a URL or a "watch the video" CTA).
-- End with a question to spark engagement (goes after the URL line if present, before or among the hashtags)
+- Close the way the chosen structure asks (open question, flat statement or concrete next step) — it goes after the URL line if present, before or among the hashtags
 - 3–5 relevant hashtags at the very end
 
 === INSTAGRAM POST RULES ===
 - 80–150 words
 - Strong opening hook (1 sentence) — plain text, no asterisks/markdown bold
-- Short punchy sentences or bullets
+- Short punchy sentences of varied length; bullets ONLY if the chosen structure allows them
 - 3–6 emojis woven in naturally (not stacked at the end or beginning)
 - Clear call-to-action: "Link en bio" / "Link in bio" — do NOT paste the raw YouTube URL in captions
 - MAXIMUM 5 hashtags (hard limit — the platform rejects more)
@@ -93,10 +166,10 @@ Beat 1 should match the spirit of `video_prompt`. Draw each beat from a differen
 === FACEBOOK POST RULES ===
 - 80–180 words
 - Warm, conversational opening hook (1–2 sentences) — write like a person talking to their community, not a corporate brand
-- Short paragraphs; you may use 2–3 bullets but prose is fine
+- Short paragraphs, prose by default; bullets ONLY if the chosen structure allows them
 - 1–3 emojis woven in naturally (optional, never stacked)
 - If a source video URL is provided (see the user message), you MAY include it raw on its own line near the end (Facebook renders link previews); if NO source URL is provided, do not invent one
-- End with a question or a clear call-to-action
+- Close the way the chosen structure asks (question, statement or a clear call-to-action)
 - 2–4 relevant hashtags at the very end (Facebook hashtags are low-value, keep them few)
 
 === FAITHFUL CITATIONS (STRICT) ===
@@ -123,6 +196,7 @@ Apply these rules to every post silently:
    EN: "In this video/post/article…", "Discover how…", "Have you ever wondered…?", "Imagine if…", "Did you know that…?"
    If the hook matches, rewrite it to something specific and concrete from the transcript
 9. Never add content not in the transcript — humanization is stylistic only
+10. Structure check — reread the finished post: if it comes out as "hook + bulleted list + engagement question + hashtags", that IS the generic AI shape, whatever the words say. Rewrite it into one of the structures above; if the source does not enumerate independent items, the list was never the right shape for it. And if two platforms ended up with the same structure or the same opening line, rewrite one of them.
 """
 
 
@@ -164,6 +238,76 @@ def _wants_video(params: dict) -> bool:
     )
 
 
+def _wants_images(params: dict) -> bool:
+    """¿El pipeline va a generar imágenes que necesiten prompt visual del LLM?
+
+    Complemento de `_wants_video` con la misma regla: en "subir"/"fotos" el medio ya
+    existe, y un job de video no genera imágenes. Todo lo demás (post de imagen
+    única, carrusel, historia-imagen) sí. Compartida por los dos flujos.
+    """
+    if params.get("media_origin", "generar") in ("subir", "fotos"):
+        return False
+    return not _wants_video(params)
+
+
+# Presupuesto de transcripción que viaja al LLM. Con el corte plano anterior
+# (`[:6000]`) un video de 40 minutos se resumía por su intro: los datos, el hook y
+# —sobre todo— los prompts visuales salían todos del primer minuto y no del video.
+_TRANSCRIPT_BUDGET = 12000
+
+
+def _cut_at_word(text: str, *, head: bool) -> str:
+    """Recorta el trozo hasta un límite de palabra (evita cortar a mitad de token)."""
+    if head:  # se descarta el arranque parcial
+        i = text.find(" ")
+        return text[i + 1:] if 0 <= i < 40 else text
+    i = text.rfind(" ")  # se descarta el final parcial
+    return text[:i] if i > len(text) - 40 else text
+
+
+def _transcript_excerpt(transcript: str, budget: int = _TRANSCRIPT_BUDGET) -> str:
+    """Muestra representativa de TODA la transcripción, no solo del arranque.
+
+    Cuando el texto excede el presupuesto se toman tres tramos: inicio (tema y
+    gancho), medio (los ejemplos concretos, que es de donde salen los buenos
+    prompts visuales) y cierre (conclusión y CTA), separados por un marcador
+    explícito para que el modelo sepa que hay huecos y no invente continuidad.
+    """
+    t = (transcript or "").strip()
+    if len(t) <= budget:
+        return t
+    head = round(budget * 0.45)
+    mid = round(budget * 0.30)
+    tail = budget - head - mid
+    mid_start = (len(t) - mid) // 2
+    parts = [
+        _cut_at_word(t[:head], head=False),
+        _cut_at_word(_cut_at_word(t[mid_start:mid_start + mid], head=True), head=False),
+        _cut_at_word(t[len(t) - tail:], head=True),
+    ]
+    return "\n[...]\n".join(p.strip() for p in parts if p.strip())
+
+
+def _is_excerpt(content: dict) -> bool:
+    """¿La transcripción viajó recortada (tres tramos) o entera?"""
+    return len((content.get("transcript") or "").strip()) > _TRANSCRIPT_BUDGET
+
+
+def _info_slides_needed(params: dict) -> int:
+    """Slides de INFO del carrusel: la portada más `n - 1` informativos.
+
+    Misma cuenta que `n_info` en `job_runner._run_media_phase` — vive acá para que
+    el user message y la verificación de lo que entregó el LLM no puedan separarse.
+    """
+    if params.get("formato_instagram", "imagen-unica") != "carrusel":
+        return 0
+    try:
+        n = int(params.get("carrusel_slides", 3) or 3)
+    except (TypeError, ValueError):
+        n = 3
+    return max(3, min(6, n)) - 1
+
+
 def _voiceover_word_budget(params: dict) -> tuple[int, int]:
     """Rango (mín, máx) de palabras por línea de voz: lo que LLENA el bloque.
 
@@ -183,6 +327,83 @@ def _voiceover_word_budget(params: dict) -> tuple[int, int]:
     lo = max(8, round(seg * 2.2))
     hi = max(lo + 3, round(seg * 2.8))
     return lo, hi
+
+
+# ── Briefing visual: SOLO el bloque que este job necesita ─────────────────────
+# Antes se emitían las dos compuertas siempre ("IMAGE PROMPT NEEDED: yes" pegado a
+# "VIDEO PROMPT NEEDED: no", más tres recordatorios seguidos de "set ... to empty
+# strings"). Un job de imagen mandaba así una instrucción de vaciar campos justo
+# debajo de la de escribirlos, y el modelo la aplicaba al bloque equivocado: JSON
+# válido, `image_text` entero y los tres prompts de imagen en blanco — exactamente
+# lo que `_faltantes` detectaba y el reintento ciego no arreglaba, porque el prompt
+# volvía a decir lo mismo. Ahora del bloque que no aplica no se dice NADA: sus
+# campos los rellena `_parse_raw` con el vacío, no el modelo.
+
+
+def _briefing_visual(*, lang: str, wants_images: bool, wants_video: bool,
+                     n_info_slides: int, n_image_slide_prompts: int,
+                     n_video_segments: int, vo_lo: int, vo_hi: int) -> tuple[str, list[str]]:
+    """`(briefing, campos_requeridos)` para este job — sin mencionar el otro medio."""
+    lineas: list[str] = []
+    requeridos: list[str] = ["image_text.hook"]
+
+    if wants_images:
+        if n_image_slide_prompts:
+            lineas.append(f"PIECE: carousel — 1 cover + {n_info_slides} info slides.")
+            lineas.append(f"INFO SLIDES NEEDED: {n_info_slides}  (EXACTLY this many strings in "
+                          "image_text.slides, one printed idea per info slide, read as one "
+                          "sequence: each slide advances the previous one, the last lands the "
+                          "payoff)")
+            lineas.append(f"IMAGE SLIDE PROMPTS NEEDED: {n_image_slide_prompts}  (EXACTLY this "
+                          "many scenes in image_slide_prompts, one per info slide, each built "
+                          "on a DIFFERENT concrete detail of the source)")
+            requeridos += ["image_text.slides", "image_prompt", "image_style",
+                           f"image_slide_prompts (x{n_image_slide_prompts})"]
+        else:
+            lineas.append("PIECE: one single image — a cover visual, no carousel slides.")
+            requeridos += ["image_prompt", "image_style"]
+
+    if wants_video:
+        lineas.append(f"PIECE: vertical video stitched from {n_video_segments} segment(s).")
+        lineas.append(f"VIDEO SEGMENTS NEEDED: {n_video_segments}  (EXACTLY this many shot beats "
+                      "in video_storyboard, chained as one continuous visual story)")
+        lineas.append(f"VOICEOVER WORDS PER LINE: {vo_lo}-{vo_hi}  (video_voiceover: EXACTLY "
+                      f"{n_video_segments} spoken line(s) in {lang}, every line inside that range)")
+        requeridos += ["video_prompt", "video_style",
+                       f"video_storyboard (x{n_video_segments})",
+                       f"video_voiceover (x{n_video_segments})"]
+
+    return "\n".join(lineas), requeridos
+
+
+def _recordatorio_visual(*, lang: str, wants_images: bool, wants_video: bool,
+                         n_info_slides: int, n_image_slide_prompts: int,
+                         n_video_segments: int, vo_lo: int, vo_hi: int) -> str:
+    """Recordatorio final: solo el medio que este job genera."""
+    lineas: list[str] = []
+    if wants_images:
+        detalle = (f"image_text.slides must have EXACTLY {n_info_slides} item(s) and "
+                   f"image_slide_prompts EXACTLY {n_image_slide_prompts} scene(s), each on a "
+                   "DIFFERENT concrete detail of the source"
+                   if n_image_slide_prompts else
+                   "image_text.slides is an empty array (single image, no carousel slides)")
+        lineas.append(
+            "- Images: image_text.hook is a short complete cover phrase; " + detalle + ". "
+            "Write image_prompt (the single most concrete image of THIS content), image_style "
+            "(the shared art direction — light, material, optics and finish, appended unchanged "
+            "to every image; no palette) and the slide scenes in English, in the transcript's "
+            "own world. Never a generic stock scene, never text inside the image."
+        )
+    if wants_video:
+        lineas.append(
+            f"- Video: write video_prompt (single strongest beat), video_style (the look-lock "
+            f"appended to every shot) and EXACTLY {n_video_segments} beat(s) in video_storyboard, "
+            "each grounded in a concrete detail from the transcript and chained as one continuous "
+            f"visual story. video_voiceover: EXACTLY {n_video_segments} spoken line(s) in {lang}, "
+            f"{vo_lo}-{vo_hi} words each, flowing as one narration (hook → build → payoff) with "
+            "natural connectors; every fact from the transcript."
+        )
+    return "\n".join(lineas)
 
 
 def _user_message(content: dict, params: dict, clean_url: str) -> str:
@@ -206,16 +427,13 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     source_type = params.get("source_type", "youtube")
     has_url = bool((clean_url or "").strip())
 
-    # How many info slides the carousel needs (slide 0 = hook, last = credits).
+    # How many info slides the carousel needs: slide 0 = hook y TODOS los que siguen
+    # son de info (el último incluido — el carrusel ya no lleva slide de créditos).
     # El carrusel es multi-red (IG nativo, LinkedIn document carousel, FB multi-foto),
     # así que los slides se piden siempre que el formato sea carrusel.
-    if fmt_ig == "carrusel":
-        n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
-        n_info_slides = n_slides - 2
-    else:
-        n_info_slides = 0
+    n_info_slides = _info_slides_needed(params)
 
-    transcript_snippet = (content.get("transcript") or "")[:6000]
+    transcript_snippet = _transcript_excerpt(content.get("transcript") or "")
     tags = content.get("tags", [])
     chapters = content.get("chapters", [])
     channel = content.get("channel", "")
@@ -227,6 +445,10 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     special_fmt = {"reel": "reel", "historia": "story"}.get(tipo_post)
 
     wants_video = _wants_video(params)
+    # Prompts de imagen: solo cuando el pipeline va a generar imágenes. Los slides
+    # extra del carrusel llevan uno cada uno (el de portada es `image_prompt`).
+    wants_images = _wants_images(params)
+    n_image_slide_prompts = n_info_slides if wants_images else 0
     # Cuántos segmentos (shots) necesita el storyboard para llegar a la duración objetivo.
     n_video_segments = _segments_needed(params) if wants_video else 0
     # Rango de palabras por línea de voz en off: cada línea se lee sobre UNA
@@ -258,15 +480,18 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
         else "- LinkedIn: there is NO source URL — do NOT add a URL line or a 'watch the video' CTA; just the hook, insights, engagement question and 3-5 hashtags"
     )
 
+    briefing, requeridos = _briefing_visual(
+        lang=lang, wants_images=wants_images, wants_video=wants_video,
+        n_info_slides=n_info_slides, n_image_slide_prompts=n_image_slide_prompts,
+        n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi,
+    )
+
     return f"""Write posts for these platforms:
 {chr(10).join(f'- {p}' for p in platforms)}
 
 CONTENT SOURCE: {source_label}.
 Language to write in: {lang}
-INFO SLIDES NEEDED: {n_info_slides}  (output EXACTLY this many strings in image_text.slides — 0 means an empty array)
-VIDEO PROMPT NEEDED: {"yes" if wants_video else "no"}
-VIDEO SEGMENTS NEEDED: {n_video_segments}  (output EXACTLY this many shot beats in video_storyboard — 0 means an empty array)
-VOICEOVER WORDS PER LINE: {vo_lo}-{vo_hi}  (video_voiceover: exactly {n_video_segments} spoken line(s) in the posts' language, EVERY line within this range — 0 means an empty array)
+{briefing}
 {url_line}
 Channel: {channel}
 
@@ -278,20 +503,23 @@ TAGS: {tags}
 
 CHAPTERS: {chapters}
 
-TRANSCRIPT / TEXT (first 6000 chars):
+TRANSCRIPT / TEXT{" (excerpt: beginning, middle and end of the source; [...] marks a gap)" if _is_excerpt(content) else ""}:
 {transcript_snippet}
 
 {"[Note: transcript is empty — use title + description only]" if not transcript_snippet.strip() else ""}
 {_manual_context_block(params, wants_video)}
 Important reminders:
+- Only write text for the platforms listed above; set every other platform's text to an empty string
+{_off_networks_reminder(do_li, do_ig_text, do_fb)}
 - Apply the full humanization checklist before outputting
 - Verify every specific claim against the transcript above
 - Instagram: max 5 hashtags, no raw URL in caption
 {li_url_reminder}
-- image_text.slides must have EXACTLY {n_info_slides} item(s); image_text.hook is always required (a short complete cover phrase)
-- video_prompt / video_style / video_storyboard / video_voiceover: {f"write the English scene(s) tied to this content — video_prompt (single strongest beat), video_style (the shared look-lock appended to every shot) AND exactly {n_video_segments} beat(s) in video_storyboard (see VIDEO PROMPT, STYLE & STORYBOARD rules); ground every beat in a concrete detail from the transcript, never a generic stock scene, and chain the beats as one continuous visual story. video_voiceover: exactly {n_video_segments} spoken line(s) in {lang}, {vo_lo}-{vo_hi} words each, flowing as one spoken narration (hook → build → payoff) with natural connectors between lines; every fact from the transcript" if wants_video else "set video_prompt and video_style to empty strings, and video_storyboard and video_voiceover to empty arrays (no video will be generated)"}
-- Only write text for the platforms listed above; set every other platform's text to an empty string
-{_off_networks_reminder(do_li, do_ig_text, do_fb)}
+{_recordatorio_visual(lang=lang, wants_images=wants_images, wants_video=wants_video,
+                      n_info_slides=n_info_slides,
+                      n_image_slide_prompts=n_image_slide_prompts,
+                      n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi)}
+REQUIRED VISUAL FIELDS (all of them mandatory, none may come back empty): {", ".join(requeridos)}
 """
 
 
@@ -454,16 +682,45 @@ def _sanitize_posts(posts: dict) -> dict:
         if img.get("hook"):
             img["hook"] = _sanitize_text(img["hook"])
         img["slides"] = [_sanitize_text(s) for s in img.get("slides", [])]
-    for key in ("video_prompt", "video_style"):
+    for key in ("image_prompt", "image_style", "video_prompt", "video_style"):
         if posts.get(key):
             posts[key] = _sanitize_text(posts[key])
-    for key in ("video_storyboard", "video_voiceover"):
+    for key in ("image_slide_prompts", "video_storyboard", "video_voiceover"):
         if isinstance(posts.get(key), list):
             posts[key] = [_sanitize_text(s) for s in posts[key] if _sanitize_text(s)]
     return posts
 
 
-def _parse_raw(raw: str) -> dict:
+# Campos visuales que el LLM debe entregar en el NIVEL SUPERIOR del JSON. Algunos
+# modelos los anidan dentro de `image_text` (reproducido con sonar-pro): el JSON
+# parsea sin error, pero `_normalize_image_text` se queda solo con hook/slides y
+# todos los prompts se pierden en silencio. Se rescatan antes de normalizar.
+_VISUAL_KEYS = ("image_prompt", "image_style", "image_slide_prompts",
+                "video_prompt", "video_style", "video_storyboard", "video_voiceover")
+
+
+def _lift_nested_visuals(parsed: dict) -> bool:
+    """Sube al nivel superior los campos visuales que el LLM metió en `image_text`."""
+    img = parsed.get("image_text")
+    if not isinstance(img, dict):
+        return False
+    movidos = [k for k in _VISUAL_KEYS if k in img and not parsed.get(k)]
+    for key in movidos:
+        parsed[key] = img.pop(key)
+    if movidos:
+        print(f"   [aviso] El LLM anidó {', '.join(movidos)} dentro de image_text: rescatado(s).")
+    return bool(movidos)
+
+
+def _parse_raw(raw: str, diagnostico: list | None = None) -> dict:
+    """Parsea la respuesta del LLM. `diagnostico` recoge cómo se degradó el parseo.
+
+    Los códigos que puede anotar son `campos_anidados` (el JSON venía bien pero con
+    los prompts fuera de lugar, se rescataron) y `json_malformado` (no se pudo
+    parsear ni reparar: solo se recuperan los tres captions y TODO lo visual se
+    pierde). Antes esto pasaba sin dejar rastro y el preview aparecía sin prompts
+    sin que nada dijera por qué.
+    """
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -476,24 +733,28 @@ def _parse_raw(raw: str) -> dict:
         except json.JSONDecodeError:
             parsed = None
     if isinstance(parsed, dict):
+        if _lift_nested_visuals(parsed) and diagnostico is not None:
+            diagnostico.append("campos_anidados")
         # Normalize image_text in place (None when absent/unusable -> heuristic fallback downstream).
         img = _normalize_image_text(parsed.get("image_text"))
         if img is not None:
             parsed["image_text"] = img
         else:
             parsed.pop("image_text", None)
-        # video_prompt / video_style: string no vacío o nada (job_runner cae al
-        # prompt genérico / al estilo por defecto).
-        for key in ("video_prompt", "video_style"):
+        # image_prompt / image_style / video_prompt / video_style: string no vacío o
+        # nada (job_runner cae al prompt genérico / al acabado y estilo por defecto).
+        for key in ("image_prompt", "image_style", "video_prompt", "video_style"):
             v = parsed.get(key)
             if isinstance(v, str) and v.strip():
                 parsed[key] = v.strip()
             else:
                 parsed.pop(key, None)
-        # video_storyboard: lista de shots (strings no vacíos) o nada (job_runner
-        # cae al video_prompt único → 1 segmento). video_voiceover: misma forma
-        # (una línea hablada por shot) o nada (el reel sale mudo, como antes).
-        for key in ("video_storyboard", "video_voiceover"):
+        # image_slide_prompts: un prompt por slide extra del carrusel (o nada →
+        # job_runner cae a las variaciones del título). video_storyboard: lista de
+        # shots (o nada → job_runner cae al video_prompt único → 1 segmento).
+        # video_voiceover: misma forma (una línea hablada por shot) o nada (el reel
+        # sale mudo, como antes).
+        for key in ("image_slide_prompts", "video_storyboard", "video_voiceover"):
             val = parsed.get(key)
             if isinstance(val, str):
                 val = [val]
@@ -510,6 +771,10 @@ def _parse_raw(raw: str) -> dict:
     # on purpose so job_runner degrades the overlay copy to its heuristics.
     result = _extract_texts_fallback(raw)
     if result.get("linkedin_text") or result.get("instagram_text") or result.get("facebook_text"):
+        print("   [aviso] El JSON del LLM no se pudo parsear: solo se rescataron los "
+              "textos de los posts, los prompts visuales se perdieron.")
+        if diagnostico is not None:
+            diagnostico.append("json_malformado")
         return result
     raise json.JSONDecodeError("Could not parse or repair response JSON", raw, 0)
 
@@ -539,7 +804,13 @@ def _anthropic_usage(usage) -> dict | None:
     }
 
 
-async def _write_with_anthropic(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> tuple[dict, dict | None]:
+async def _call_anthropic(system: str, user: str, queue: asyncio.Queue,
+                          api_key: str) -> tuple[str, object]:
+    """Transporte: manda system+user y devuelve `(texto crudo, usage)`.
+
+    Lo comparten la escritura completa y la reparación de campos faltantes, para que
+    las dos hablen con el proveedor por el mismo sitio.
+    """
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key)
     loop = asyncio.get_event_loop()
@@ -552,10 +823,10 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
             max_tokens=4096,
             system=[{
                 "type": "text",
-                "text": _system_prompt(),
+                "text": system,
                 "cache_control": {"type": "ephemeral"},
             }],
-            messages=[{"role": "user", "content": _user_message(content, params, clean_url)}],
+            messages=[{"role": "user", "content": user}],
         ) as stream:
             for chunk in stream.text_stream:
                 chunks.append(chunk)
@@ -566,13 +837,28 @@ async def _write_with_anthropic(content: dict, params: dict, clean_url: str, que
                 )
             # El usage real (con tokens de caché) vive en el mensaje final del stream.
             try:
-                usage = stream.get_final_message().usage
+                final = stream.get_final_message()
+                usage = final.usage
+                # Truncar por límite de salida deja el JSON a medias y el parser cae al
+                # rescate de solo-captions: se dice en el log, que era la única pista
+                # que faltaba para distinguirlo de "el modelo lo dejó vacío".
+                if getattr(final, "stop_reason", "") == "max_tokens":
+                    print("   [aviso] La respuesta del LLM se cortó por max_tokens: "
+                          "el JSON llega incompleto.")
             except Exception:
                 usage = None
         return "".join(chunks), usage
 
-    raw, usage = await loop.run_in_executor(None, _stream)
-    return _sanitize_posts(_parse_raw(raw)), _anthropic_usage(usage)
+    return await loop.run_in_executor(None, _stream)
+
+
+async def _write_with_anthropic(content: dict, params: dict, clean_url: str, queue: asyncio.Queue,
+                                api_key: str, *, text_overlay: bool = True,
+                                diagnostico: list | None = None) -> tuple[dict, dict | None]:
+    raw, usage = await _call_anthropic(_system_prompt(text_overlay),
+                                       _user_message(content, params, clean_url),
+                                       queue, api_key)
+    return _sanitize_posts(_parse_raw(raw, diagnostico)), _anthropic_usage(usage)
 
 
 def _perplexity_usage(usage, model: str) -> dict | None:
@@ -605,14 +891,19 @@ def _perplexity_usage(usage, model: str) -> dict | None:
     }
 
 
-async def _write_with_perplexity(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, api_key: str) -> tuple[dict, dict | None]:
-    """Perplexity exposes an OpenAI-compatible streaming chat endpoint. We hit it
-    with urllib (no SDK) and parse the SSE `data: {...}` lines ourselves."""
-    loop = asyncio.get_event_loop()
-
+def _perplexity_model(params: dict) -> str:
     model = params.get("modelo_perplexity") or PERPLEXITY_MODEL
-    if model not in PERPLEXITY_MODELS:
-        model = PERPLEXITY_MODEL
+    return model if model in PERPLEXITY_MODELS else PERPLEXITY_MODEL
+
+
+async def _call_perplexity(system: str, user: str, queue: asyncio.Queue, api_key: str,
+                           model: str) -> tuple[str, object]:
+    """Transporte: Perplexity expone un chat streaming compatible con OpenAI. Se pega
+    con urllib (sin SDK) y se parsean las líneas SSE `data: {...}` a mano.
+
+    Compartido por la escritura completa y la reparación de campos faltantes.
+    """
+    loop = asyncio.get_event_loop()
 
     def _stream():
         body = json.dumps({
@@ -622,9 +913,9 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
             # Keep the model grounded in the transcript instead of leaning on web search.
             "web_search_options": {"search_context_size": "low"},
             "messages": [
-                {"role": "system", "content": _system_prompt()},
+                {"role": "system", "content": system},
                 {"role": "system", "content": _PERPLEXITY_GROUNDING},
-                {"role": "user", "content": _user_message(content, params, clean_url)},
+                {"role": "user", "content": user},
             ],
         }).encode()
         req = urllib.request.Request(
@@ -668,8 +959,17 @@ async def _write_with_perplexity(content: dict, params: dict, clean_url: str, qu
             raise RuntimeError(f"Perplexity API error {e.code}: {e.read().decode()}")
         return "".join(chunks), usage
 
-    raw, usage = await loop.run_in_executor(None, _stream)
-    return _sanitize_posts(_parse_raw(raw)), _perplexity_usage(usage, model)
+    return await loop.run_in_executor(None, _stream)
+
+
+async def _write_with_perplexity(content: dict, params: dict, clean_url: str, queue: asyncio.Queue,
+                                 api_key: str, *, text_overlay: bool = True,
+                                 diagnostico: list | None = None) -> tuple[dict, dict | None]:
+    model = _perplexity_model(params)
+    raw, usage = await _call_perplexity(_system_prompt(text_overlay),
+                                        _user_message(content, params, clean_url),
+                                        queue, api_key, model)
+    return _sanitize_posts(_parse_raw(raw, diagnostico)), _perplexity_usage(usage, model)
 
 
 # ── Guion del video: una línea de voz por shot ────────────────────────────────
@@ -765,15 +1065,396 @@ def _align_video_script(posts: dict, params: dict) -> dict:
     return posts
 
 
-async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue, cfg) -> tuple[dict, dict | None]:
-    """Escribe los posts y devuelve `(posts, usage)`.
+# ── Verificación de lo que entregó el LLM ─────────────────────────────────────
+# El contrato del prompt del sistema pide unos campos visuales concretos; cuando el
+# modelo no los entrega, el pipeline los rellena con variaciones del TÍTULO y la
+# pieza sale genérica. Antes eso pasaba en silencio: acá se detecta, se reintenta
+# una vez y, si sigue faltando, se dice en la compuerta previa de los dos flujos.
+
+
+def captions_needed(params: dict) -> list[str]:
+    """Campos de caption que este job necesita, en orden canónico.
+
+    Fuente única de "qué textos pide este job": la usan la verificación de lo que
+    entregó el LLM, la reparación y las dos compuertas previas (vía `_needs_job`),
+    para que ninguna pueda discrepar de lo que el user message pidió. TikTok no
+    tiene caption propio: reutiliza el del reel de Instagram, igual que en
+    `_user_message`.
+    """
+    nets = active_networks(params)
+    campos = []
+    if "linkedin" in nets:
+        campos.append("linkedin_text")
+    if "instagram" in nets or "tiktok" in nets:
+        campos.append("instagram_text")
+    if "facebook" in nets:
+        campos.append("facebook_text")
+    return campos
+
+
+def _faltantes(posts: dict, params: dict) -> list[str]:
+    """Campos que este job necesita y el LLM no entregó (captions y visuales).
+
+    Los captions son parte del contrato igual que los prompts: una red destino sin
+    texto publica un post vacío. Antes solo se comprobaba lo visual, así que ese
+    hueco pasaba entero — sin reparación, sin aviso y sin campo donde escribirlo a
+    mano (la compuerta previa dibujaba el textarea solo si YA había texto).
+    """
+    faltan: list[str] = [c for c in captions_needed(params)
+                         if not str(posts.get(c) or "").strip()]
+    n_info = _info_slides_needed(params)
+    if _wants_images(params):
+        for key in ("image_prompt", "image_style"):
+            if not (posts.get(key) or "").strip():
+                faltan.append(key)
+        img = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else {}
+        if not (img.get("hook") or "").strip():
+            faltan.append("image_text.hook")
+        if n_info:
+            if len(posts.get("image_slide_prompts") or []) < n_info:
+                faltan.append("image_slide_prompts")
+            if len([s for s in (img.get("slides") or []) if str(s).strip()]) < n_info:
+                faltan.append("image_text.slides")
+    if _wants_video(params):
+        for key in ("video_prompt", "video_style"):
+            if not (posts.get(key) or "").strip():
+                faltan.append(key)
+        n_shots = _segments_needed(params)
+        if len(posts.get("video_storyboard") or []) < n_shots:
+            faltan.append("video_storyboard")
+        if not (posts.get("video_voiceover") or []):
+            faltan.append("video_voiceover")
+    return faltan
+
+
+# ── Merge por campo entre intentos ────────────────────────────────────────────
+# El reintento ya no reemplaza el objeto entero. Antes, si el 1er intento traía la
+# portada pero no los slides y el 2º al revés, ganaba el que tuviera menos faltantes
+# y lo bueno del otro se tiraba: se pagaban dos llamadas y se usaba media. Ahora cada
+# campo se queda con la versión más completa de las dos.
+
+_CAMPOS_TEXTO = ("linkedin_text", "instagram_text", "facebook_text")
+_CAMPOS_STR = ("image_prompt", "image_style", "video_prompt", "video_style")
+_CAMPOS_LISTA = ("image_slide_prompts", "video_storyboard", "video_voiceover")
+
+
+def _completa(base, alt, minimo: int = 0) -> bool:
+    """¿`alt` mejora a `base` para este campo? (más completo, nunca vacío por lleno)"""
+    if isinstance(base, list) or isinstance(alt, list):
+        b, a = len(base or []), len(alt or [])
+        if minimo and b >= minimo:
+            return False  # la base ya cumple lo pedido: no se toca
+        return a > b
+    return not str(base or "").strip() and bool(str(alt or "").strip())
+
+
+def _merge_posts(base: dict, extra: dict, params: dict) -> dict:
+    """Rellena en `base` SOLO lo que le falta, con lo que trajo `extra`. Muta `base`."""
+    if not isinstance(extra, dict):
+        return base
+    n_info = _info_slides_needed(params)
+    n_shots = _segments_needed(params) if _wants_video(params) else 0
+
+    for campo in _CAMPOS_TEXTO + _CAMPOS_STR:
+        if _completa(base.get(campo), extra.get(campo)):
+            base[campo] = extra[campo]
+    for campo, minimo in zip(_CAMPOS_LISTA, (n_info, n_shots, n_shots)):
+        if _completa(base.get(campo), extra.get(campo), minimo):
+            base[campo] = extra[campo]
+
+    # image_text se mezcla por dentro: el hook y las frases pueden venir de intentos
+    # distintos sin que uno borre al otro.
+    img_extra = extra.get("image_text") if isinstance(extra.get("image_text"), dict) else {}
+    if img_extra:
+        img = dict(base["image_text"]) if isinstance(base.get("image_text"), dict) else {}
+        if _completa(img.get("hook"), img_extra.get("hook")):
+            img["hook"] = img_extra["hook"]
+        if _completa(img.get("slides"), img_extra.get("slides"), n_info):
+            img["slides"] = img_extra["slides"]
+        if img:
+            base["image_text"] = img
+    return base
+
+
+# ── Reparación dirigida de los campos que faltaron ────────────────────────────
+# El reintento anterior era un resample ciego: mismo prompt, misma temperatura, sin
+# decirle al modelo qué se había saltado. Si la causa no era el muestreo sino el
+# prompt (o un contenido que le costaba), los dos intentos fallaban igual — que es
+# justo lo que reportaba el aviso ("el reintento automático tampoco lo resolvió").
+# Esta segunda llamada pide SOLO lo que falta, con lo ya escrito como contexto: la
+# salida es chica (no puede truncarse) y no re-escribe los captions.
+
+_SPEC_REPARACION = {
+    "linkedin_text": '"linkedin_text": the LinkedIn post in {lang}, 150-300 words, following the '
+                     'LINKEDIN POST RULES and the COPY STRUCTURE section of the system prompt. '
+                     '{url_li}',
+    "instagram_text": '"instagram_text": the Instagram caption in {lang}, 80-150 words, following '
+                      'the INSTAGRAM POST RULES and the COPY STRUCTURE section of the system '
+                      'prompt. Max 5 hashtags, no raw URL.',
+    "facebook_text": '"facebook_text": the Facebook post in {lang}, 80-180 words, following the '
+                     'FACEBOOK POST RULES and the COPY STRUCTURE section of the system prompt.',
+    "image_prompt":'"image_prompt": ONE 30-60 word still-photo scene for the cover, built on '
+                    'the most visually concrete detail of the source (see IMAGE PROMPT rules).',
+    "image_style": '"image_style": 20-40 words of art direction only — light, dominant material, '
+                   'optics and finish. No subject, no palette, no color names. It is appended '
+                   'verbatim to every image of the set.',
+    "image_slide_prompts": '"image_slide_prompts": an array of EXACTLY {n_info} scenes, one per '
+                           'info slide, 20-40 words each. Every slide gets its OWN hero object, '
+                           'physically different from the cover\'s and from the other slides\', '
+                           'while staying in the same visual world (same room, surfaces, '
+                           'materials). Slide i must match the printed idea listed below.',
+    "image_text.hook": '"image_text": {{"hook": "..."}} — ONE short complete cover phrase in '
+                       '{lang}, max ~10 words, sentence case, no emojis or hashtags.',
+    "image_text.slides": '"image_text": {{"slides": [...]}} — EXACTLY {n_info} printed ideas in '
+                         '{lang}, one per info slide, max ~14 words each, each a self-contained '
+                         'idea drawn faithfully from the source. They read as ONE sequence: each '
+                         'slide advances the one before it and the last lands the payoff (never a '
+                         'sign-off or a summary). A two-beat idea goes as "Headline — support" '
+                         'with a spaced em dash.',
+    "video_prompt": '"video_prompt": 40-80 words describing ONE continuous filmable scene — the '
+                    'strongest single beat of the content.',
+    "video_style": '"video_style": the 10-18 word look-lock (lens/film character, lighting '
+                   'character, palette, mood). No subjects, no actions.',
+    "video_storyboard": '"video_storyboard": an array of EXACTLY {n_shots} shot beats (25-50 '
+                        'words each), chained as ONE continuous visual story.',
+    "video_voiceover": '"video_voiceover": an array of EXACTLY {n_shots} spoken lines in {lang}, '
+                       '{vo_lo}-{vo_hi} words each, flowing as one narration.',
+}
+
+# Los dos faltantes de `image_text` se piden en una sola clave del JSON.
+_CLAVE_JSON = {"image_text.hook": "image_text", "image_text.slides": "image_text"}
+
+
+def _contexto_ya_escrito(posts: dict, faltan: list[str], n_info: int) -> str:
+    """Lo que el intento anterior SÍ entregó, para que lo nuevo encaje con ello."""
+    lineas: list[str] = []
+    # Los captions ya escritos entran enteros cuando se está reparando otro: la regla
+    # de estructura dice que dos redes del mismo job no pueden compartir esqueleto ni
+    # apertura, y sin ver el hermano el modelo no puede cumplirla.
+    for campo in ("linkedin_text", "instagram_text", "facebook_text"):
+        valor = str(posts.get(campo) or "").strip()
+        if valor and campo not in faltan:
+            lineas.append(f"- {campo} (already written — the post you write must NOT repeat its "
+                          f"structure or its opening line):\n{valor}")
+    img = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else {}
+    hook = (img.get("hook") or "").strip()
+    if hook and "image_text.hook" not in faltan:
+        lineas.append(f"- Cover printed text: {hook}")
+    slides = [s for s in (img.get("slides") or []) if str(s).strip()]
+    if slides and "image_text.slides" not in faltan:
+        detalle = "\n".join(f"    slide {i + 1}: {s}" for i, s in enumerate(slides[:n_info]))
+        lineas.append(f"- Printed text of each info slide:\n{detalle}")
+    for campo in ("image_prompt", "image_style", "video_prompt", "video_style"):
+        valor = (posts.get(campo) or "").strip()
+        if valor and campo not in faltan:
+            lineas.append(f"- {campo} (already written, keep the new fields consistent with it): "
+                          f"{valor}")
+    return "\n".join(lineas)
+
+
+def _repair_user_message(content: dict, params: dict, posts: dict, faltan: list[str],
+                         clean_url: str = "") -> str:
+    """User message de la reparación: solo los campos que faltan, con su contexto."""
+    lang = params.get("lang", "es")
+    n_info = _info_slides_needed(params)
+    n_shots = _segments_needed(params) if _wants_video(params) else 0
+    vo_lo, vo_hi = _voiceover_word_budget(params)
+    # La línea del CTA de LinkedIn depende de que exista URL de origen: sin ella el
+    # modelo se inventaba un "mira el video" que no lleva a ninguna parte.
+    url_li = (f'Include the raw source URL on its own line before the hashtags, with the exact '
+              f'CTA prefix of the system prompt: {clean_url}' if (clean_url or "").strip()
+              else 'There is NO source URL: do not add a URL line or a "watch the video" CTA.')
+    fmt = {"n_info": n_info, "n_shots": n_shots, "lang": lang, "vo_lo": vo_lo, "vo_hi": vo_hi,
+           "url_li": url_li}
+
+    specs, claves = [], []
+    for campo in faltan:
+        spec = _SPEC_REPARACION.get(campo)
+        if not spec:
+            continue
+        clave = _CLAVE_JSON.get(campo, campo)
+        if clave not in claves:
+            claves.append(clave)
+        specs.append("- " + spec.format(**fmt))
+
+    # Los captions que NO se están reparando siguen intactos: decirlo explícitamente es
+    # lo que impide que el modelo reescriba de paso los que ya estaban bien. Cuando el
+    # que falta ES un caption, esa prohibición no puede taparlo (era el bug: la línea
+    # era fija y le prohibía devolver justo lo que se le venía a pedir).
+    intocables = [c for c in ("linkedin_text", "instagram_text", "facebook_text")
+                  if c not in faltan]
+    no_tocar = (f"Do NOT return {', '.join(intocables)}: those captions are already written and "
+                "must not change. " if intocables else "")
+
+    ya = _contexto_ya_escrito(posts, faltan, n_info)
+    transcript = _transcript_excerpt(content.get("transcript") or "")
+
+    return f"""REPAIR REQUEST — this is not a new post.
+
+A previous pass already wrote for the source below, but left these REQUIRED fields empty. They
+are mandatory: an empty caption publishes an empty post, and an empty visual field means the
+image gets built from the title instead of from the source — which is the exact failure this
+request exists to fix.
+
+WRITE EXACTLY THESE FIELDS, nothing else:
+{chr(10).join(specs)}
+
+OUTPUT FORMAT: ONLY valid JSON with these keys and no others — no markdown, no explanation:
+{{{", ".join(f'"{k}": ...' for k in claves)}}}
+{no_tocar}All visual prompts in ENGLISH (captions and video_voiceover in {lang}).
+Every rule of the system prompt still applies: grounding in the source, physical plausibility,
+no generic stock scenes, no text inside the image, hands are never the subject.
+
+{"ALREADY WRITTEN FOR THIS PIECE (make the new fields fit it):" + chr(10) + ya if ya else ""}
+
+TITLE: {content.get("title", "")}
+
+DESCRIPTION: {(content.get("description") or "")[:500]}
+
+TRANSCRIPT / TEXT{" (excerpt: beginning, middle and end; [...] marks a gap)" if _is_excerpt(content) else ""}:
+{transcript}
+
+{"[Note: transcript is empty — use title + description only]" if not transcript.strip() else ""}
+"""
+
+
+async def _reparar(content: dict, params: dict, posts: dict, faltan: list[str],
+                   cfg, clean_url: str = "") -> tuple[dict, dict | None]:
+    """Pide al LLM SOLO los campos faltantes. Devuelve `(parcial, usage)`.
+
+    La respuesta va a una cola muerta: la UI ya pintó el texto del primer intento y
+    un segundo bloque encima se leería como dos posts pegados.
+    """
+    overlay = bool(getattr(cfg, "image_text_in_prompt", True))
+    system = _system_prompt(overlay)
+    user = _repair_user_message(content, params, posts, faltan, clean_url)
+    muerta: asyncio.Queue = asyncio.Queue()
+    if cfg.llm_provider == "perplexity":
+        model = _perplexity_model(params)
+        raw, usage = await _call_perplexity(system, user, muerta, cfg.perplexity_api_key, model)
+        return _sanitize_posts(_parse_raw(raw)), _perplexity_usage(usage, model)
+    raw, usage = await _call_anthropic(system, user, muerta, cfg.anthropic_api_key)
+    return _sanitize_posts(_parse_raw(raw)), _anthropic_usage(usage)
+
+
+def _merge_usage(a: dict | None, b: dict | None) -> dict | None:
+    """Suma el consumo de dos llamadas al escritor: el reintento también se paga."""
+    if not a or not b:
+        return a or b
+    units = dict(a.get("units") or {})
+    for k, v in (b.get("units") or {}).items():
+        try:
+            units[k] = int(units.get(k, 0)) + int(v)
+        except (TypeError, ValueError):
+            pass
+    return {**a, "units": units}
+
+
+def _avisos_escritura(faltan: list[str], diagnostico: list) -> list[dict]:
+    """Aviso para la compuerta previa cuando la escritura quedó incompleta.
+
+    Mismo shape que los de `prompt_lint` (`campo`/`nivel`/`mensaje`) para que las dos
+    revisiones —el preview del individual y el editor por fila del lote— lo pinten sin
+    cambiar nada. Explica la CAUSA; el lint de abajo ya describe la consecuencia.
+    """
+    if not faltan:
+        return []
+    if "json_malformado" in diagnostico:
+        causa = ("el JSON que devolvió el modelo llegó roto y solo se pudieron rescatar los "
+                 "textos de los posts")
+    else:
+        causa = "el modelo los devolvió vacíos"
+    # El aviso nombra lo que de verdad se perdió: un caption vacío no es "un campo
+    # visual", es un post que se publicaría en blanco, y decirlo mal manda a buscar
+    # el hueco al formulario equivocado.
+    captions = [c for c in faltan if c.endswith("_text")]
+    if captions and len(captions) == len(faltan):
+        que = f"{len(captions)} caption(s)"
+    elif captions:
+        que = f"{len(captions)} caption(s) y {len(faltan) - len(captions)} campo(s) visual(es)"
+    else:
+        que = f"{len(faltan)} campo(s) visual(es)"
+    return [{
+        "campo": "escritura", "nivel": "alto",
+        "mensaje": f"La escritura no entregó {que} "
+                   f"({', '.join(faltan)}): {causa}, y el reintento automático tampoco lo "
+                   "resolvió. Usa «Reintentar escritura» para volver a pedírselos al modelo, "
+                   "o escríbelos a mano acá abajo antes de generar.",
+    }]
+
+
+async def _completar_faltantes(content: dict, params: dict, posts: dict, faltan: list[str],
+                               cfg, clean_url: str = "") -> tuple[list[str], dict | None]:
+    """Pide lo que falta y lo FUNDE sobre `posts`. Devuelve `(lo que sigue faltando, usage)`.
+
+    Nunca lanza: la reparación es una mejora, no un requisito — si el proveedor falla,
+    se conserva intacto lo que ya había y el aviso sale igual.
+    """
+    print(f"   [aviso] La escritura no entregó {', '.join(faltan)}: se piden esos campos.")
+    try:
+        parcial, usage = await _reparar(content, params, posts, faltan, cfg, clean_url)
+    except Exception as e:  # noqa: BLE001
+        print(f"   [aviso] La reparación de la escritura falló: {e}")
+        return faltan, None
+    _merge_posts(posts, parcial, params)
+    quedan = _faltantes(posts, params)
+    if quedan:
+        print(f"   [aviso] Tras la reparación siguen faltando: {', '.join(quedan)}.")
+    else:
+        print("   [ok] La reparación completó todos los campos que faltaban.")
+    return quedan, usage
+
+
+async def write_posts(content: dict, params: dict, clean_url: str, queue: asyncio.Queue,
+                      cfg) -> tuple[dict, dict | None, list[dict]]:
+    """Escribe los posts y devuelve `(posts, usage, avisos)`.
 
     `usage` es `{service, model, units}` para el tracking de costos (o `None` si el
     proveedor no reportó consumo). El núcleo del pipeline lo pasa a `record_event`.
+    `avisos` es lo que la compuerta previa debe mostrar si la escritura quedó
+    incompleta (lista vacía cuando el LLM cumplió el contrato, que es lo normal).
+
+    Si el primer intento se saltó campos visuales, la segunda llamada NO repite el
+    encargo entero: pide solo lo que falta (`_reparar`) y lo funde campo a campo
+    sobre lo ya escrito, así los captions y lo que sí llegó nunca se pierden.
     """
     provider = cfg.llm_provider  # raises if neither key is set
+    # ¿La imagen va a llevar texto? Cambia cómo se le pide componer al modelo
+    # (reservar bandas calmas para el tipo vs. llenar el cuadro). Lo renderiza
+    # Higgsfield desde el prompt (`image_text_in_prompt`); el paso viejo de dibujarlo
+    # con Pillow después ya no existe.
+    overlay = bool(getattr(cfg, "image_text_in_prompt", True))
+
+    diag: list = []
     if provider == "perplexity":
-        posts, usage = await _write_with_perplexity(content, params, clean_url, queue, cfg.perplexity_api_key)
+        posts, usage = await _write_with_perplexity(content, params, clean_url, queue,
+                                                    cfg.perplexity_api_key,
+                                                    text_overlay=overlay, diagnostico=diag)
     else:
-        posts, usage = await _write_with_anthropic(content, params, clean_url, queue, cfg.anthropic_api_key)
-    return _align_video_script(posts, params), usage
+        posts, usage = await _write_with_anthropic(content, params, clean_url, queue,
+                                                   cfg.anthropic_api_key,
+                                                   text_overlay=overlay, diagnostico=diag)
+
+    faltan = _faltantes(posts, params)
+    if faltan:
+        faltan, usage_rep = await _completar_faltantes(content, params, posts, faltan, cfg,
+                                                      clean_url)
+        usage = _merge_usage(usage, usage_rep)
+
+    return _align_video_script(posts, params), usage, _avisos_escritura(faltan, diag)
+
+
+async def rewrite_posts(content: dict, params: dict, posts: dict, cfg,
+                        clean_url: str = "") -> tuple[dict, dict | None, list[dict]]:
+    """Reintento MANUAL desde la compuerta previa: vuelve a pedir lo que falta.
+
+    Es el mismo camino correctivo que usa `write_posts`, expuesto para que las dos
+    revisiones previas (el preview del individual y el editor por fila del lote)
+    puedan repetirlo a mano sin relanzar el post entero ni perder lo ya editado.
+    Devuelve `(posts, usage, avisos)` con `posts` ya fundido.
+    """
+    faltan = _faltantes(posts, params)
+    if not faltan:
+        return _align_video_script(posts, params), None, []
+    faltan, usage = await _completar_faltantes(content, params, posts, faltan, cfg, clean_url)
+    return _align_video_script(posts, params), usage, _avisos_escritura(faltan, [])
