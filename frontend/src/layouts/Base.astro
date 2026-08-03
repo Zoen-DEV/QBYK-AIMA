@@ -23,6 +23,19 @@ const { title = "Repurpose YouTube" } = Astro.props;
           <span>AIMA</span>
         </a>
         <div class="flex items-center gap-4">
+          <!-- Selector de perfil. No autentica nada: solo dice de quién son las
+               identidades visuales que se leen y con cuál se genera. -->
+          <select
+            id="user-picker"
+            aria-label="Perfil activo"
+            class="hidden bg-gray-800 border border-gray-700 text-gray-300 text-xs rounded-lg px-2 py-1 outline-none hover:border-gray-600 focus:border-brand-500 cursor-pointer"
+          ></select>
+          <a href="/cuenta" class="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-brand-500 transition-colors">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+            <span>Cuenta</span>
+          </a>
           <a href="/conexiones" class="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-brand-500 transition-colors">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
@@ -43,5 +56,57 @@ const { title = "Repurpose YouTube" } = Astro.props;
     <main class="max-w-5xl mx-auto px-4 py-10">
       <slot />
     </main>
+
+    <script>
+      // Perfil activo. Vive en localStorage y viaja en la cabecera `X-User-Id` de cada
+      // llamada (ver src/lib/identidades.ts); el backend lo resuelve en un solo sitio
+      // (`users.current_user_id`) y cae al perfil por defecto si no lo reconoce, así
+      // que un valor viejo en el navegador nunca deja la app inservible.
+      const CLAVE = "aima_user";
+
+      function leer(): string {
+        try {
+          return localStorage.getItem(CLAVE) || "";
+        } catch {
+          return "";
+        }
+      }
+
+      async function montarSelector() {
+        const sel = document.getElementById("user-picker") as HTMLSelectElement | null;
+        if (!sel) return;
+        const guardado = leer();
+        try {
+          const res = await fetch("/api/users", {
+            headers: guardado ? { "X-User-Id": guardado } : {},
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const usuarios: Array<{ id: string; nombre: string }> = data.users || [];
+          if (usuarios.length < 2) return; // con un solo perfil el selector es ruido
+          sel.innerHTML = usuarios
+            .map(
+              (u) =>
+                `<option value="${u.id}"${u.id === data.current ? " selected" : ""}>${u.nombre}</option>`,
+            )
+            .join("");
+          sel.classList.remove("hidden");
+          sel.addEventListener("change", () => {
+            try {
+              localStorage.setItem(CLAVE, sel.value);
+            } catch {
+              /* sin storage no se puede cambiar de perfil; se sigue con el por defecto */
+            }
+            // Recarga completa: media página (identidades, jobs en curso) se pidió con
+            // el perfil anterior y refrescarla a mano sería adivinar qué.
+            window.location.reload();
+          });
+        } catch {
+          /* la API no responde: el selector se queda oculto y no estorba */
+        }
+      }
+
+      montarSelector();
+    </script>
   </body>
 </html>

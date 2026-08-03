@@ -298,9 +298,26 @@ def list_users(request: Request):
 
 @app.get("/identities")
 async def list_identities(request: Request):
-    """Identidades visibles: la de la casa primero, luego las del usuario."""
+    """Identidades visibles: la de la casa primero, luego las del usuario.
+
+    Los límites viajan con la lista para que el formulario del modal no los duplique:
+    quien valida de verdad es el backend, y la UI tiene que pedir lo mismo que él.
+    """
     with _errores_identidad():
-        return {"identities": await identity_store.listar(users.current_user_id(request))}
+        identidades = await identity_store.listar(users.current_user_id(request))
+    return {
+        "identities": identidades,
+        "limites": {
+            "min_fotos": identity_extract.MIN_FOTOS,
+            "max_fotos": identity_extract.MAX_FOTOS,
+            "formatos": list(identity_extract.FORMATOS),
+            "max_mb_foto": identity_extract.MAX_MB_FOTO,
+            "min_colores": visual_identity.MIN_COLORES,
+            "max_colores": visual_identity.MAX_COLORES,
+            "max_referencias": visual_identity.MAX_REFERENCIAS,
+            "nombre_max": visual_identity.NOMBRE_MAX,
+        },
+    }
 
 
 @app.post("/identities")

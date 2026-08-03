@@ -122,6 +122,18 @@ import BackLink from "../components/BackLink.astro";
 </Base>
 
 <script>
+  // El perfil activo decide con qué identidad visual se genera este post. Se manda
+  // igual que en el resto de llamadas (ver src/lib/identidades.ts); sin cabecera, el
+  // backend usa el perfil por defecto.
+  function cabeceraUsuario(): Record<string, string> {
+    try {
+      const uid = localStorage.getItem("aima_user") || "";
+      return uid ? { "X-User-Id": uid } : {};
+    } catch {
+      return {};
+    }
+  }
+
   const form = document.getElementById("bulk-form") as HTMLFormElement;
   const btn = document.getElementById("submit-btn") as HTMLButtonElement;
   const fileInput = document.getElementById("sheet-file") as HTMLInputElement;
@@ -233,7 +245,7 @@ import BackLink from "../components/BackLink.astro";
     // local fecha_hora to UTC for Blotato scheduling.
     data.set("tz_offset", String(new Date().getTimezoneOffset()));
 
-    const res = await fetch("/api/sheets/jobs", { method: "POST", body: data });
+    const res = await fetch("/api/sheets/jobs", { method: "POST", body: data, headers: cabeceraUsuario() });
     if (res.ok) {
       const { batch_id } = await res.json();
       window.location.href = `/batches/${batch_id}`;

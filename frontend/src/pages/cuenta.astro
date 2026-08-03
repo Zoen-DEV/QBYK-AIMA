@@ -1,0 +1,38 @@
+---
+import Base from "../layouts/Base.astro";
+import BackLink from "../components/BackLink.astro";
+import { VisualIdentities } from "../components/VisualIdentities";
+---
+
+<Base title="Cuenta">
+  <div class="max-w-3xl mx-auto">
+    <div class="mb-6">
+      <BackLink href="/" label="Inicio" />
+      <h1 class="text-2xl font-bold text-white mt-3 mb-1">Cuenta</h1>
+      <p class="text-gray-400 text-sm">
+        El perfil activo se elige en la barra de arriba. Cada perfil tiene sus propias identidades visuales.
+      </p>
+    </div>
+
+    <section class="bg-gray-900/40 rounded-2xl border border-gray-800 p-6">
+      <div class="mb-5">
+        <h2 class="text-lg font-semibold text-white">Identidades visuales</h2>
+        <p class="text-sm text-gray-400 mt-1">
+          Una identidad es la paleta, la tipografía y las referencias de dirección de arte con las
+          que se generan las imágenes de tus posts. La <strong class="text-gray-300">activa</strong>
+          es la que se usa a partir del próximo post que crees, en los dos flujos (individual y por lote);
+          los posts que ya se estén generando conservan la que tenían.
+        </p>
+      </div>
+
+      <VisualIdentities client:load />
+
+      <p class="text-xs text-gray-500 mt-6 leading-relaxed">
+        La identidad <strong class="text-gray-400">de la casa</strong> vive en el archivo
+        <code class="text-gray-400">api/prompts/brand.json</code> del servidor, no en la base de datos:
+        por eso no se puede editar ni eliminar desde aquí, y por eso sigue disponible aunque la base
+        no responda. Para partir de ella, clónala.
+      </p>
+    </section>
+  </div>
+</Base>
