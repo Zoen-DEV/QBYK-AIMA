@@ -35,14 +35,26 @@ except Exception:  # noqa: BLE001 — cualquier fallo de import = sin tracking
     _MOTOR_AVAILABLE = False
 
 COLLECTION = "usage_events"
+# Identidades visuales de los usuarios (la identidad system NO vive aquí: se sirve
+# desde prompts/brand.json — ver visual_identity.identidad_system).
+IDENTITIES_COLLECTION = "visual_identities"
 _DEFAULT_DB = "qbyk_aima"
+
+# Índices por colección; se crean una sola vez, la primera vez que se pide cada una.
+# Los de `usage_events` son los de §5 del doc del dashboard.
+_INDEXES: dict[str, list] = {
+    COLLECTION: ["ts", "service", "job_id", "batch_id", [("ts", 1), ("service", 1)]],
+    # Todas las consultas de identidades son "las de este usuario"; el compuesto
+    # resuelve además "¿cuál tiene marcada la activa?".
+    IDENTITIES_COLLECTION: ["user_id", [("user_id", 1), ("is_default", 1)]],
+}
 
 # Tiempos cortos para que un Mongo caído falle rápido y no frene el pipeline.
 _SERVER_SELECTION_TIMEOUT_MS = 3000
 _COOLDOWN_SECS = 60.0
 
 _client = None  # type: ignore[var-annotated]
-_indexes_ready = False
+_indexed: set[str] = set()  # colecciones cuyos índices ya se crearon en este proceso
 _cooldown_until = 0.0  # time.monotonic() hasta el que saltamos los intentos
 
 
@@ -73,40 +85,59 @@ def _get_client():
     return _client
 
 
-async def _ensure_indexes(coll) -> None:
-    """Índices de §5 del doc: ts, service, job_id, batch_id y compuesto {ts, service}."""
-    await coll.create_index("ts")
-    await coll.create_index("service")
-    await coll.create_index("job_id")
-    await coll.create_index("batch_id")
-    await coll.create_index([("ts", 1), ("service", 1)])
+def get_database():
+    """La base entera — para las **migraciones**, que crean y borran colecciones.
 
-
-async def get_usage_events():
-    """Devuelve la colección `usage_events` lista para escribir, o `None`.
-
-    `None` significa "tracking no disponible ahora" (no configurado, sin motor, o
-    Mongo caído) — el llamador debe tratarlo como un no-op, nunca como un error.
+    A diferencia de `get_collection`, esta no se traga nada ni entra en cooldown: una
+    migración que no puede hablar con Mongo tiene que fallar con el error real y a la
+    vista, no seguir como si nada.
     """
-    global _indexes_ready, _cooldown_until
+    if not _MOTOR_AVAILABLE:
+        raise RuntimeError("Falta la dependencia `motor` (pip install -r api/requirements.txt)")
+    if not _uri():
+        raise RuntimeError("MONGODB_URI no está configurado en el .env de la raíz del repo")
+    return _get_client()[_db_name()]
+
+
+async def get_collection(name: str):
+    """Devuelve la colección `name` lista para usar (con sus índices), o `None`.
+
+    `None` significa "Mongo no disponible ahora" (no configurado, sin motor, o caído).
+    Qué hacer con eso depende de quién llame: el tracking de costos lo trata como un
+    no-op silencioso, mientras que `identity_store` lo convierte en un error visible
+    —perder un evento de consumo es aceptable, perder la identidad que el usuario
+    acaba de crear no lo es.
+    """
+    global _cooldown_until
     if not is_configured():
         return None
     try:
-        coll = _get_client()[_db_name()][COLLECTION]
-        if not _indexes_ready:
-            await _ensure_indexes(coll)
-            _indexes_ready = True
+        coll = _get_client()[_db_name()][name]
+        if name not in _indexed:
+            for spec in _INDEXES.get(name, []):
+                await coll.create_index(spec)
+            _indexed.add(name)
         return coll
     except Exception as e:  # noqa: BLE001 — best-effort, nunca propagar
-        logger.warning("MongoDB no disponible; tracking en pausa %ss: %s", int(_COOLDOWN_SECS), e)
+        logger.warning("MongoDB no disponible; en pausa %ss: %s", int(_COOLDOWN_SECS), e)
         _cooldown_until = time.monotonic() + _COOLDOWN_SECS
         return None
 
 
+async def get_usage_events():
+    """La colección `usage_events`, o `None` si el tracking no está disponible."""
+    return await get_collection(COLLECTION)
+
+
+async def get_identities():
+    """La colección `visual_identities`, o `None` si Mongo no está disponible."""
+    return await get_collection(IDENTITIES_COLLECTION)
+
+
 def close() -> None:
     """Cierra el cliente (para el shutdown de la app o los tests)."""
-    global _client, _indexes_ready
+    global _client
     if _client is not None:
         _client.close()
         _client = None
-    _indexes_ready = False
+    _indexed.clear()
