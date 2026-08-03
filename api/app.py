@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import html
 import json
 import os
@@ -7,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -18,10 +20,17 @@ import sheets
 import cost_queries
 import cost_calc
 import db
+import identity_store
+import prompt_lint
+import users
+import visual_identity
 from config import load_config
-from job_runner import run_pipeline, resume_media, make_job, publish_job_posts, _media_mime
+from job_runner import (run_pipeline, resume_media, make_job, publish_job_posts, _media_mime,
+                        regenerate_image, subkeys_regenerables, _n_slides, rewrite_job_posts)
+from post_writer import (_wants_images, _wants_video, _faltantes, _segments_needed,
+                         captions_needed)
 from networks import active_networks, networks_for_format, FORMATS
-from batch_runner import run_batch, publish_batch, to_utc_iso
+from batch_runner import run_batch, generate_batch_media, publish_batch, to_utc_iso
 from higgsfield_client import _USER_AGENT as _BROWSER_UA  # scripts/ ya está en sys.path (lo agrega job_runner)
 import higgsfield_mcp
 
@@ -240,6 +249,104 @@ def higgsfield_connect_callback(
     return _callback_page(ok=True)
 
 
+# ── Cuenta: usuarios e identidades visuales ───────────────────────────────────
+#
+# Todo lo de aquí está scopeado por `users.current_user_id(request)`, que es el ÚNICO
+# punto del proyecto que decide quién pide. Los endpoints exigen el `user_id` igual
+# que lo harían con auth real; hoy lo dice una cabecera y mañana una sesión.
+
+
+@contextmanager
+def _errores_identidad():
+    """Traduce los errores del store a HTTP, en un solo sitio.
+
+    Los mensajes del validador van tal cual al `detail` porque son accionables ("usa
+    #FF00AA, que no es el tercer color de la paleta (#C9F227)") y la UI los muestra
+    sin reescribirlos.
+    """
+    try:
+        yield
+    except visual_identity.IdentidadInvalida as e:
+        raise HTTPException(status_code=422, detail="; ".join(e.errores))
+    except identity_store.NoEncontrada as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except identity_store.NoEditable as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except identity_store.AlmacenNoDisponible as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:      # nombre vacío o demasiado largo
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _cuerpo_json(request: Request) -> dict:
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="El cuerpo de la petición no es JSON válido.")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Se esperaba un objeto JSON.")
+    return data
+
+
+@app.get("/users")
+def list_users(request: Request):
+    """Perfiles disponibles + cuál está activo (alimenta el selector de la barra)."""
+    return {"users": users.listar(), "current": users.current_user_id(request)}
+
+
+@app.get("/identities")
+async def list_identities(request: Request):
+    """Identidades visibles: la de la casa primero, luego las del usuario."""
+    with _errores_identidad():
+        return {"identities": await identity_store.listar(users.current_user_id(request))}
+
+
+@app.post("/identities")
+async def create_identity(request: Request):
+    """Crea una identidad propia. Cuerpo: `{name?, identity_json, activar?}`.
+
+    El nombre es opcional: vacío se rellena con `nombre_sugerido` en vez de rechazar
+    el guardado y perder la extracción que el usuario acaba de pagar.
+    """
+    body = await _cuerpo_json(request)
+    with _errores_identidad():
+        fila = await identity_store.crear(
+            users.current_user_id(request),
+            name=body.get("name") or "",
+            identity_json=body.get("identity_json") or {},
+            activar_al_crear=bool(body.get("activar")),
+        )
+    return fila
+
+
+@app.patch("/identities/{identity_id}")
+async def update_identity(identity_id: str, request: Request):
+    """Renombra y/o reemplaza el JSON. Los dos campos son opcionales e independientes:
+    lo que no venga en el cuerpo no se toca."""
+    body = await _cuerpo_json(request)
+    with _errores_identidad():
+        return await identity_store.actualizar(
+            users.current_user_id(request), identity_id,
+            name=body["name"] if "name" in body else None,
+            identity_json=body["identity_json"] if "identity_json" in body else None,
+        )
+
+
+@app.delete("/identities/{identity_id}")
+async def delete_identity(identity_id: str, request: Request):
+    """Elimina una identidad propia. Si era la activa, la activa vuelve a ser la de la casa."""
+    with _errores_identidad():
+        await identity_store.eliminar(users.current_user_id(request), identity_id)
+    return {"ok": True}
+
+
+@app.post("/identities/{identity_id}/activate")
+async def activate_identity(identity_id: str, request: Request):
+    """Marca la identidad activa del usuario (la de la casa incluida)."""
+    with _errores_identidad():
+        return await identity_store.activar(users.current_user_id(request), identity_id)
+
+
 @app.post("/jobs")
 async def create_job(
     source_type: Annotated[str, Form()] = "youtube",
@@ -449,6 +556,35 @@ async def create_job(
     return {"job_id": job["id"]}
 
 
+# Estado terminal del job → página a la que manda el evento de cierre. La fase A
+# pausa en "preview", la fase B termina en "review" y publicar deja "done".
+_STREAM_DESTINO = {"preview": "preview", "review": "review", "done": "result"}
+
+
+def _evento_terminal(job: dict) -> dict | None:
+    """El evento de cierre reconstruido desde `job["status"]`, o None si sigue corriendo.
+
+    La cola es de consumo único y sin repetición: un stream que se murió (recarga de
+    página, corte de red, reload del dev server) igual saca el evento de la cola antes
+    de enterarse de que nadie lo escucha, y ahí se pierde para siempre. Sin esto, el
+    cliente que reconecta se queda esperando un evento que ya no va a volver a
+    emitirse —pantalla "Generando tu contenido" para siempre— con el job terminado
+    hace rato. El estado terminal ya está espejado en `job["status"]` antes de cada
+    push, así que se puede reconstruir sin guardar nada nuevo.
+    """
+    estado = job.get("status")
+    if estado == "error":
+        return {"step": "error", "msg": job.get("error_msg") or "Error desconocido"}
+    destino = _STREAM_DESTINO.get(estado)
+    if destino is None:
+        return None
+    # El front distingue "preview" (compuerta editable) de "done" (todo lo demás).
+    return {
+        "step": "preview" if estado == "preview" else "done",
+        "redirect": f"/jobs/{job['id']}/{destino}",
+    }
+
+
 @app.get("/jobs/{job_id}/stream")
 async def stream_job(job_id: str):
     if job_id not in jobs:
@@ -457,10 +593,22 @@ async def stream_job(job_id: str):
 
     async def generator():
         q: asyncio.Queue = job["_queue"]
+        # Reconexión sobre un job que ya llegó a destino: emitir su estado y cerrar.
+        # No hay nada que esperar, los eventos de progreso ya no vuelven a la cola.
+        cerrado = _evento_terminal(job)
+        if cerrado is not None:
+            yield f"data: {json.dumps(cerrado)}\n\n"
+            return
         while True:
             try:
                 event = await asyncio.wait_for(q.get(), timeout=60.0)
             except asyncio.TimeoutError:
+                # Llegar acá con el job ya terminado significa que otro stream —uno
+                # muerto -- se comió el evento de cierre: emitirlo en vez del ping.
+                cerrado = _evento_terminal(job)
+                if cerrado is not None:
+                    yield f"data: {json.dumps(cerrado)}\n\n"
+                    break
                 yield "data: {\"step\": \"ping\"}\n\n"
                 continue
             yield f"data: {json.dumps(event)}\n\n"
@@ -472,6 +620,127 @@ async def stream_job(job_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _lint_job(job: dict, posts: dict | None = None) -> list[dict]:
+    """Avisos sobre los prompts de este job (lo que va a pasar si se genera así).
+
+    Los parámetros del lint salen del propio job para que las dos compuertas previas
+    —el preview del individual y el editor por fila del lote— vean exactamente los
+    mismos avisos. `posts` permite revisar una edición sin guardarla.
+
+    Delante van los avisos de ORIGEN que anotó el runner (`job["avisos"]`: sin
+    transcripción, escritura degradada), porque explican la CAUSA de los de abajo.
+    El de la escritura se cae solo cuando ya no queda ningún aviso de prompts: si el
+    usuario escribió a mano lo que faltaba, contar cómo llegó roto ya es ruido.
+    """
+    params = job["params"]
+    is_carousel = params.get("formato_instagram", "imagen-unica") == "carrusel"
+    avisos = prompt_lint.revisar(
+        posts if posts is not None else job["posts"],
+        n_info=(_n_slides(params) - 1) if is_carousel else 1,
+        is_carousel=is_carousel,
+        quiere_imagenes=_wants_images(params),
+        quiere_video=_wants_video(params),
+    )
+    origen = [a for a in job.get("avisos", []) if a.get("campo") != "escritura" or avisos]
+    return origen + avisos
+
+
+# Campos que la revisión previa puede editar. `None` = no enviado (no tocar): así la
+# pantalla de revisión, que solo manda los *_text, no borra el resto.
+_CAMPOS_EDICION = ("linkedin_text", "instagram_text", "facebook_text", "image_hook",
+                   "image_slides", "image_prompt", "image_style", "image_slide_prompts",
+                   "video_prompt", "video_style", "video_storyboard", "video_voiceover")
+
+# Texto impreso de CADA slide, en su propio campo. La revisión previa dejó de mandar
+# un textarea con una frase por línea: con un campo por slide se ve qué texto va en
+# qué imagen. Van indexados —no unidos por saltos de línea— justamente para conservar
+# la POSICIÓN: vaciar el slide 2 tiene que dejar el 2 vacío, no correr el 3 a su sitio.
+_RE_SLIDE_TEXT = re.compile(r"^image_slide_text_(\d+)$")
+
+
+def _campos_indexados(form) -> dict:
+    """`image_slide_text_{i}` del form → `{"image_slide_text": [por posición]}`."""
+    por_indice: dict[int, str] = {}
+    for clave in form:
+        m = _RE_SLIDE_TEXT.match(str(clave))
+        if m:
+            por_indice[int(m.group(1))] = str(form[clave])
+    if not por_indice:
+        return {}
+    return {"image_slide_text": [por_indice.get(i, "") for i in range(max(por_indice) + 1)]}
+
+
+def _aplicar_edicion(posts: dict, campos: dict) -> dict:
+    """Aplica los campos editados sobre `posts` (mismas reglas para /edit y /lint)."""
+    for campo in ("linkedin_text", "instagram_text", "facebook_text"):
+        if campos.get(campo):
+            posts[campo] = campos[campo]
+
+    # image_text (copy de los visuales): hook + frases de slides. Los slides llegan de
+    # dos formas: un campo por slide (`image_slide_text`, la revisión previa de hoy) o
+    # el textarea histórico con una frase por línea (`image_slides`). El primero manda
+    # cuando están los dos, y conserva los huecos vacíos; el segundo los descarta,
+    # porque en un textarea una línea en blanco es un tecleo, no un slide sin texto.
+    slides_pos = campos.get("image_slide_text")
+    if (campos.get("image_hook") is not None or campos.get("image_slides") is not None
+            or slides_pos is not None):
+        img = dict(posts["image_text"]) if isinstance(posts.get("image_text"), dict) else {}
+        if campos.get("image_hook") is not None:
+            img["hook"] = campos["image_hook"].strip()
+        if slides_pos is not None:
+            img["slides"] = [str(s).strip() for s in slides_pos]
+        elif campos.get("image_slides") is not None:
+            img["slides"] = [l.strip() for l in campos["image_slides"].splitlines() if l.strip()]
+        posts["image_text"] = img
+
+    # Prompts de las imágenes (la escena que genera el modelo, no el texto impreso).
+    if campos.get("image_prompt") is not None:
+        posts["image_prompt"] = campos["image_prompt"].strip()
+    # La dirección de arte va IGUAL en la portada y en todos los slides: editarla acá
+    # cambia el look de todo el set de una vez.
+    if campos.get("image_style") is not None:
+        posts["image_style"] = campos["image_style"].strip()
+    if campos.get("image_slide_prompts") is not None:
+        posts["image_slide_prompts"] = [l.strip() for l in campos["image_slide_prompts"].splitlines() if l.strip()]
+
+    # Prompts del video (para la generación text-to-video + voz en off).
+    if campos.get("video_prompt") is not None:
+        posts["video_prompt"] = campos["video_prompt"].strip()
+    if campos.get("video_style") is not None:
+        posts["video_style"] = campos["video_style"].strip()
+    if campos.get("video_storyboard") is not None:
+        posts["video_storyboard"] = [l.strip() for l in campos["video_storyboard"].splitlines() if l.strip()]
+    if campos.get("video_voiceover") is not None:
+        posts["video_voiceover"] = [l.strip() for l in campos["video_voiceover"].splitlines() if l.strip()]
+    return posts
+
+
+def _needs_job(job: dict, posts: dict | None = None) -> dict:
+    """Qué campos pide este job (captions y visuales) y cuáles siguen sin llenarse.
+
+    Fuente única para las dos compuertas previas: con esto el formulario se dibuja
+    a partir de lo que el job NECESITA (no de lo que el modelo entregó), y el botón
+    de reintentar la escritura aparece exactamente cuando hay algo que reintentar.
+    `posts` permite medir una edición sin guardarla (mismo uso que en `_lint_job`),
+    para que el botón se apague solo en cuanto el usuario termina de escribir a mano.
+    """
+    params = job["params"]
+    is_carousel = params.get("formato_instagram", "imagen-unica") == "carrusel"
+    quiere_video = _wants_video(params)
+    return {
+        "imagenes": _wants_images(params),
+        "video": quiere_video,
+        # Captions que pide este job. La compuerta previa dibuja sus textareas desde
+        # acá y NO desde `posts`: con el caption vacío el textarea no se renderizaba,
+        # así que el único campo donde arreglarlo a mano no existía (mismo defecto que
+        # ya se había corregido para los prompts visuales).
+        "captions": captions_needed(params),
+        "n_info": (_n_slides(params) - 1) if is_carousel else 0,
+        "n_shots": _segments_needed(params) if quiere_video else 0,
+        "faltan": _faltantes(posts if posts is not None else job["posts"], params),
+    }
 
 
 def _job_snapshot(job: dict) -> dict:
@@ -491,11 +760,35 @@ def _job_snapshot(job: dict) -> dict:
             "has_li_hook": "li-hook" in job["images"]["bytes"],
             "has_fb_hook": "fb-hook" in job["images"]["bytes"],
             "has_ig_single": "ig-single" in job["images"]["bytes"],
+            # La historia se sirve desde la API (same-origin) en vez de hot-linkear
+            # la URL de Blotato: así se refresca al rehacerla.
+            "has_ig_story": "ig-story" in job["images"]["bytes"],
             "has_ig_carousel": any(k.startswith("ig-") and k != "ig-single" for k in job["images"]["bytes"]),
             "ig_slides": [k for k in (f"ig-{i}" for i in range(6)) if k in job["images"]["bytes"]],
             "provider": job["images"].get("provider", ""),
             "notice": job["images"].get("notice", ""),
+            # ¿La imagen lleva texto? El preview lo usa para no invitar a editar un
+            # texto que no se va a ver. `text_in_prompt` dice quién lo dibuja: el
+            # modelo desde el prompt (hoy) o Pillow por encima (respaldo).
+            "text_overlay": job["images"].get("text_overlay", True),
+            "text_in_prompt": job["images"].get("text_in_prompt", True),
+            # Traza de la generación: prompt final y QA del texto por imagen.
+            "prompts": job["images"].get("prompts", {}),
+            "qa": job["images"].get("qa", {}),
+            # Imágenes que la revisión puede rehacer de a una (POST /jobs/{id}/regenerate).
+            # Lo decide el backend para que las dos revisiones —individual y lote— no
+            # tengan que repetir las reglas de formato en el frontend.
+            "regenerables": subkeys_regenerables(job) if job["status"] == "review" else [],
         },
+        # Avisos sobre los prompts (lo que va a pasar si se genera así). Los muestran
+        # las dos compuertas previas: el preview del individual y el editor del lote.
+        "lint": _lint_job(job),
+        # Qué campos visuales necesita ESTE job y cuáles siguen vacíos. Lo decide el
+        # backend (misma fuente que el escritor y el lint) para que las dos compuertas
+        # previas pinten los campos que hay que llenar aunque el modelo no haya
+        # entregado nada — antes, sin valor, la tarjeta entera no se dibujaba y el
+        # aviso pedía escribir prompts en un formulario que no existía.
+        "needs": _needs_job(job),
         "video": job.get("video", {"url": "", "provider": "", "notice": ""}),
         "li_media_urls": job.get("_li_media_urls", []),
         "ig_media_urls": job.get("_ig_media_urls", []),
@@ -516,6 +809,7 @@ def get_job(job_id: str):
 @app.post("/jobs/{job_id}/edit")
 async def edit_job(
     job_id: str,
+    request: Request,
     linkedin_text: Annotated[str, Form()] = "",
     instagram_text: Annotated[str, Form()] = "",
     facebook_text: Annotated[str, Form()] = "",
@@ -524,6 +818,9 @@ async def edit_job(
     # revisión, que solo manda los *_text, no borra el image_text ni los prompts.
     image_hook: Annotated[str | None, Form()] = None,
     image_slides: Annotated[str | None, Form()] = None,       # una frase por línea
+    image_prompt: Annotated[str | None, Form()] = None,       # escena de la portada
+    image_style: Annotated[str | None, Form()] = None,        # dirección de arte compartida
+    image_slide_prompts: Annotated[str | None, Form()] = None,  # una escena por línea
     video_prompt: Annotated[str | None, Form()] = None,
     video_style: Annotated[str | None, Form()] = None,
     video_storyboard: Annotated[str | None, Form()] = None,   # un shot por línea
@@ -532,33 +829,74 @@ async def edit_job(
     if job_id not in jobs:
         raise HTTPException(status_code=404)
     job = jobs[job_id]
-    posts = job["posts"]
-    if linkedin_text:
-        posts["linkedin_text"] = linkedin_text
-    if instagram_text:
-        posts["instagram_text"] = instagram_text
-    if facebook_text:
-        posts["facebook_text"] = facebook_text
+    campos: dict = {
+        "linkedin_text": linkedin_text, "instagram_text": instagram_text,
+        "facebook_text": facebook_text, "image_hook": image_hook,
+        "image_slides": image_slides, "image_prompt": image_prompt,
+        "image_style": image_style, "image_slide_prompts": image_slide_prompts,
+        "video_prompt": video_prompt, "video_style": video_style,
+        "video_storyboard": video_storyboard, "video_voiceover": video_voiceover,
+    }
+    # Los campos por slide son dinámicos (uno por imagen), así que no pueden declararse
+    # como parámetros: se leen del form crudo. Mismo tratamiento que en /lint.
+    campos.update(_campos_indexados(await request.form()))
+    posts = _aplicar_edicion(job["posts"], campos)
+    # El lint viaja con la respuesta: quien edita ve al instante si el cambio arregló
+    # el aviso (o si abrió otro) sin volver a cargar la pantalla. `needs` va con él para
+    # que el botón de reintentar la escritura se apague solo cuando ya no falta nada.
+    return {"posts": posts, "lint": _lint_job(job), "needs": _needs_job(job)}
 
-    # image_text (copy de los visuales): hook + frases de slides (una por línea).
-    if image_hook is not None or image_slides is not None:
-        img = dict(posts["image_text"]) if isinstance(posts.get("image_text"), dict) else {}
-        if image_hook is not None:
-            img["hook"] = image_hook.strip()
-        if image_slides is not None:
-            img["slides"] = [l.strip() for l in image_slides.splitlines() if l.strip()]
-        posts["image_text"] = img
 
-    # Prompts del video (para la generación text-to-video + voz en off).
-    if video_prompt is not None:
-        posts["video_prompt"] = video_prompt.strip()
-    if video_style is not None:
-        posts["video_style"] = video_style.strip()
-    if video_storyboard is not None:
-        posts["video_storyboard"] = [l.strip() for l in video_storyboard.splitlines() if l.strip()]
-    if video_voiceover is not None:
-        posts["video_voiceover"] = [l.strip() for l in video_voiceover.splitlines() if l.strip()]
-    return {"posts": posts}
+@app.post("/jobs/{job_id}/lint")
+async def lint_job(job_id: str, request: Request):
+    """Revisa los prompts SIN guardarlos: los avisos de la compuerta previa, en vivo.
+
+    Acepta los mismos campos que `/edit` y los aplica sobre una copia, así el preview
+    puede avisar mientras se escribe sin persistir un estado a medio editar.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    job = jobs[job_id]
+    form = await request.form()
+    campos: dict = {k: str(form[k]) for k in _CAMPOS_EDICION if k in form}
+    campos.update(_campos_indexados(form))
+    posts = _aplicar_edicion(copy.deepcopy(job["posts"]), campos)
+    return {"lint": _lint_job(job, posts), "needs": _needs_job(job, posts)}
+
+
+@app.post("/jobs/{job_id}/rewrite")
+async def rewrite_job(job_id: str):
+    """Vuelve a pedirle al LLM los campos visuales que la escritura dejó vacíos.
+
+    Es el reintento MANUAL de la compuerta previa, para los dos flujos (las filas del
+    lote son jobs de este mismo store). Solo pide lo que falta y lo funde sobre lo que
+    ya hay, así lo que el usuario ya editó a mano no se pierde. Cuesta una llamada al
+    LLM, por eso lo dispara el usuario y no un bucle automático.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    job = jobs[job_id]
+    if job["status"] != "preview":
+        raise HTTPException(
+            status_code=409,
+            detail="El job ya no está en la revisión previa: no se puede reescribir.",
+        )
+    if job.get("_rewriting"):
+        raise HTTPException(status_code=409, detail="Ya hay un reintento de escritura en curso.")
+    job["_rewriting"] = True
+    try:
+        avisos = await rewrite_job_posts(job)
+    except Exception as e:  # noqa: BLE001 - el reintento nunca puede tumbar la revisión
+        raise HTTPException(status_code=502, detail=f"No se pudo reescribir: {e}")
+    finally:
+        job["_rewriting"] = False
+    return {
+        "posts": job["posts"],
+        "lint": _lint_job(job),
+        "needs": _needs_job(job),
+        # True cuando ya no falta ningún campo visual del contrato.
+        "ok": not avisos,
+    }
 
 
 @app.post("/jobs/{job_id}/generate")
@@ -576,8 +914,57 @@ async def generate_job_media(job_id: str):
             status_code=409,
             detail="El job no está en preview (ya se generó el contenido o aún no está listo).",
         )
+    # El estado se mueve ACÁ, no dentro de la tarea: el front navega a /jobs/{id} ni
+    # bien responde esto y abre el stream, que ahora mira `job["status"]` para saber si
+    # el job ya terminó. Si el flip quedara en la tarea (que corre después), ese stream
+    # podría leer todavía "preview" y rebotar al usuario de vuelta al preview en bucle.
+    # De paso cierra la ventana en la que dos POST seguidos pasaban los dos el 409.
+    job["status"] = "running"
     asyncio.create_task(resume_media(job))
     return {"job_id": job_id, "status": "running"}
+
+
+@app.post("/jobs/{job_id}/regenerate")
+async def regenerate_job_image(job_id: str, subkey: Annotated[str, Form()] = ""):
+    """Rehace UNA imagen del post ya generado, sin tocar las demás.
+
+    La compuerta de revisión existe para descartar lo que salió mal; sin esto, la
+    unidad de reintento era el post entero. Vale para los dos flujos: la revisión
+    del individual y la de cada fila del lote pegan a este mismo endpoint (las filas
+    del batch son jobs del mismo store).
+
+    Se responde cuando la imagen ya está hecha y subida — cuesta una generación, así
+    que la llamada tarda lo que tarde el modelo.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404)
+    job = jobs[job_id]
+    if job["status"] != "review":
+        raise HTTPException(
+            status_code=409,
+            detail="El post no está en revisión (todavía se está generando, o ya se publicó).",
+        )
+    if subkey not in subkeys_regenerables(job):
+        raise HTTPException(status_code=400, detail=f"No se puede rehacer «{subkey}» en este post.")
+    # Una regeneración a la vez por job: dos en paralelo se pisarían los bytes y la
+    # subida. El chequeo y la marca son síncronos (un solo hilo de evento), así que
+    # no hay ventana entre mirar la bandera y ponerla.
+    if job.get("_regenerando"):
+        raise HTTPException(status_code=409, detail="Ya se está rehaciendo una imagen de este post.")
+    job["_regenerando"] = True
+    try:
+        res = await regenerate_image(job, subkey)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo rehacer la imagen: {e}")
+    finally:
+        job["_regenerando"] = False
+    return {
+        "job_id": job_id,
+        "subkeys": res["subkeys"],
+        "aviso": res["aviso"],
+        "prompts": job["images"].get("prompts", {}),
+        "qa": job["images"].get("qa", {}),
+    }
 
 
 @app.get("/jobs/{job_id}/image/{key}")
@@ -779,9 +1166,32 @@ def get_batch(batch_id: str):
     return _batch_snapshot(batches[batch_id])
 
 
+@app.post("/sheets/batches/{batch_id}/generate")
+async def generate_sheet_batch(batch_id: str):
+    """Aprueba los guiones del lote: genera el medio de todas las filas (fase 2).
+
+    Espejo de `POST /jobs/{id}/generate` a nivel de lote. Solo válido cuando el lote
+    está en "preview" (terminó de escribir y espera revisión). Las ediciones de cada
+    fila se hacen antes con `POST /jobs/{job_id}/edit`, el mismo endpoint que usa el
+    flujo individual. Lanza la generación en segundo plano; el frontend sigue el
+    avance con el polling normal.
+    """
+    if batch_id not in batches:
+        raise HTTPException(status_code=404)
+    batch = batches[batch_id]
+    if batch["status"] != "preview":
+        raise HTTPException(
+            status_code=409,
+            detail="El lote no está en revisión de guiones (aún escribe, o ya se generó el medio).",
+        )
+    batch["status"] = "generating"
+    asyncio.create_task(generate_batch_media(batch, jobs))
+    return {"batch_id": batch_id, "status": "generating"}
+
+
 @app.post("/sheets/batches/{batch_id}/publish")
 async def publish_sheet_batch(batch_id: str):
-    """Aprueba el lote: publica/programa todas las filas generadas (fase 2).
+    """Aprueba el lote: publica/programa todas las filas generadas (fase 3).
 
     Solo válido cuando el lote está en "review" (terminó de generar). Lanza la
     publicación en segundo plano; el frontend sigue el avance con el polling normal.

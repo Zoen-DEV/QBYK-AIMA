@@ -5,78 +5,13 @@ idempotente, que `down` deja la base **como estaba antes de la feature**, y que 
 runner lleva bien la cuenta en `_migrations`.
 """
 
-import pytest
-
 import db
 import visual_identity as vi
 from migrations import run as runner
 
 _M001 = "001"
 
-
-# ── Doble de la base ──────────────────────────────────────────────────────────
-
-class _FakeCursor:
-    def __init__(self, docs):
-        self._docs = docs
-
-    def __aiter__(self):
-        async def _gen():
-            for d in self._docs:
-                yield d
-        return _gen()
-
-
-class _FakeColl:
-    def __init__(self):
-        self.docs: list[dict] = []
-        self.indices: list = []
-
-    async def create_index(self, spec):
-        self.indices.append(spec)
-
-    @staticmethod
-    def _match(doc, filt):
-        return all(doc.get(k) == v for k, v in (filt or {}).items())
-
-    def find(self, filt=None):
-        return _FakeCursor([d for d in self.docs if self._match(d, filt)])
-
-    async def count_documents(self, filt=None):
-        return sum(1 for d in self.docs if self._match(d, filt))
-
-    async def insert_one(self, doc):
-        self.docs.append(dict(doc))
-
-    async def delete_one(self, filt):
-        for i, d in enumerate(self.docs):
-            if self._match(d, filt):
-                self.docs.pop(i)
-                return
-
-
-class _FakeDB:
-    """Solo lo que usan las migraciones: crear, tirar y listar colecciones."""
-
-    def __init__(self):
-        self.cols: dict[str, _FakeColl] = {}
-
-    async def list_collection_names(self):
-        return list(self.cols)
-
-    async def create_collection(self, name):
-        self.cols.setdefault(name, _FakeColl())
-
-    async def drop_collection(self, name):
-        self.cols.pop(name, None)
-
-    def __getitem__(self, name):
-        return self.cols.setdefault(name, _FakeColl())
-
-
-@pytest.fixture
-def dbase():
-    return _FakeDB()
+# El doble de la base (`dbase`) vive en conftest.py.
 
 
 def _m001():

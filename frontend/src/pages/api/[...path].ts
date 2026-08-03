@@ -54,6 +54,11 @@ export const PUT: APIRoute = async ({ params, request }) => {
   return proxy(request, params.path ?? "");
 };
 
+// PATCH lo usa la edición de identidades visuales (renombrar / reescribir el JSON).
+export const PATCH: APIRoute = async ({ params, request }) => {
+  return proxy(request, params.path ?? "");
+};
+
 export const DELETE: APIRoute = async ({ params, request }) => {
   return proxy(request, params.path ?? "");
 };
