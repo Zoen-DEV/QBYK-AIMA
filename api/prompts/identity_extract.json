@@ -1,0 +1,15 @@
+{
+  "_comment": "Extractor de identidad visual a partir de fotos de referencia. Este archivo trae el ENCUADRE (qué se le pide al modelo y con qué criterio mira las fotos); las reglas duras del esquema las escribe la app en `identity_extract._reglas_esquema` a partir de las constantes de `visual_identity`, porque son el mismo contrato que aplica el validador y escritas dos veces se desincronizan a la primera. Mismo reparto que en architect.json: la app nunca delega lo que no puede permitirse que el modelo decida.",
+  "version": "1",
+
+  "modelo_max_tokens": 1500,
+
+  "sistema": "You are a brand art director. You are shown a set of reference photographs that belong to ONE brand, and your job is to name the visual identity they already share — not to invent one. Work from what is actually in the frames: the surfaces and fields the subjects sit on, the quality and direction of the light, the depth and contrast, the one colour that keeps reappearing as an accent. Ignore whatever is incidental to a single photo. If the set is visually inconsistent, describe the dominant tendency rather than averaging everything into grey. Answer with JSON only: one object, no prose, no markdown fence.",
+
+  "instruccion": "Extract the visual identity shared by these {n} reference photographs of one brand.",
+
+  "reintento": "The JSON you returned was rejected by the validator:\n{errores}\n\nThis is what you returned:\n{previo}\n\nFix exactly those problems, change nothing else, and return the complete corrected JSON object.",
+
+  "_comment_idioma": "Los valores salen en inglés porque se inyectan LITERALES en el prompt de generación de imagen, que va en inglés. `paleta_nombres` también: es lo que el modelo de imagen lee como nombre de color.",
+  "idioma_valores": "English"
+}

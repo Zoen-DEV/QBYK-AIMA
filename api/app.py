@@ -19,7 +19,9 @@ import model_catalog
 import sheets
 import cost_queries
 import cost_calc
+import cost_tracker
 import db
+import identity_extract
 import identity_store
 import prompt_lint
 import users
@@ -345,6 +347,62 @@ async def activate_identity(identity_id: str, request: Request):
     """Marca la identidad activa del usuario (la de la casa incluida)."""
     with _errores_identidad():
         return await identity_store.activar(users.current_user_id(request), identity_id)
+
+
+async def _track_extraccion(uso: dict) -> None:
+    """Registra el consumo del extractor. Best-effort, como todo el tracking.
+
+    No pasa por `job_runner._track` porque no hay job: esto es consumo de la CUENTA, no
+    de un post. Por eso va con `flow="cuenta"`, para que el dashboard lo pueda separar
+    del costo de generar.
+    """
+    try:
+        await cost_tracker.record_event(
+            service=uso.get("service", ""), operation="identity_extract",
+            units=uso.get("units") or {}, model=uso.get("model"), flow="cuenta",
+        )
+    except Exception:
+        pass  # record_event ya es best-effort; este guard cubre el armado del contexto
+
+
+@app.post("/identities/extract")
+async def extract_identity(request: Request,
+                           photos: Annotated[list[UploadFile], File()] = []):
+    """Fotos de referencia → un `identity_json` válido, **sin guardarlo**.
+
+    La pantalla de preview del modal deja editarlo antes de guardar, así que aquí solo
+    se extrae; persistir es un `POST /identities` aparte. Las fotos no se guardan en
+    ningún sitio: se leen, se reducen en memoria, se mandan al modelo y se descartan al
+    terminar el request.
+    """
+    try:
+        cfg = load_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    archivos = [(await f.read(), f.filename or "") for f in (photos or [])]
+    try:
+        res = await asyncio.to_thread(identity_extract.extraer, archivos, cfg=cfg)
+    except identity_extract.FotosInvalidas as e:
+        # Cantidad/formato/peso: la comprobación es previa, aquí no se gastó nada.
+        raise HTTPException(status_code=400, detail=str(e))
+    except identity_extract.ExtraccionNoDisponible as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except identity_extract.ExtraccionInvalida as e:
+        raise HTTPException(status_code=502, detail=f"{e} Detalle: {'; '.join(e.errores)}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudieron leer las fotos: {e}")
+
+    for uso in res.usos:
+        await _track_extraccion(uso)
+
+    return {
+        "identity_json": res.identidad,
+        # Sugerencia, no imposición: el modal la precarga y el usuario la pisa si quiere.
+        "name": visual_identity.nombre_sugerido(res.identidad),
+        "avisos": res.avisos,
+        "intentos": res.intentos,
+    }
 
 
 @app.post("/jobs")

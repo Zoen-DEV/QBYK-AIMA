@@ -19,6 +19,21 @@ import pytest  # noqa: E402
 import db  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _sin_mongo_real(monkeypatch):
+    """Ningún test puede hablar con la base de verdad.
+
+    `config.py` y `db.py` cargan el `.env` de la raíz al importarse, así que en una
+    máquina con `MONGODB_URI` configurado cualquier camino que llame a
+    `cost_tracker.record_event` —un endpoint bajo TestClient, por ejemplo— escribe
+    eventos reales en Atlas durante la suite. Vaciar la variable deja `is_configured()`
+    en False y el tracking se apaga solo, que es exactamente lo que hace en producción
+    cuando no hay base. Los tests que necesitan una colección la inyectan aparte
+    (`identidades`), así que este guard no les quita nada.
+    """
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+
+
 class FakeCursor:
     def __init__(self, docs: list):
         self._docs = docs
