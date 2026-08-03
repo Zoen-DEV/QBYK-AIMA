@@ -18,6 +18,10 @@ import document_text as doc
 import remote_file as rf
 
 import cost_calc
+import lang_detect as ld
+import prompt_architect as parch
+import prompt_config
+import image_text_qa as iqa
 
 try:
     import image_overlay as ov
@@ -25,7 +29,21 @@ try:
 except ImportError:
     _HAS_OVERLAY = False
 
-from post_writer import write_posts, _segments_needed, _wants_video
+
+def _text_in_prompt(cfg) -> bool:
+    """True si la imagen va a llevar texto. En la imagen generada lo renderiza el
+    propio modelo desde el prompt (`prompt_architect`); ese es el camino normal.
+
+    La plantilla de respaldo es la excepción y no la contradice: como no pasa por
+    ningún modelo, llega muda y el texto se lo dibuja `image_overlay` después
+    (`_lockup_plantilla`). El interruptor es el mismo para los dos caminos —apagado,
+    la pieza no lleva texto salga por donde salga—, gobierna la composición que se le
+    pide al modelo (reservar un área calma vs. llenar el cuadro) y es lo que el
+    preview usa para saber si el copy de los visuales se va a ver.
+    """
+    return bool(getattr(cfg, "image_text_in_prompt", True))
+
+from post_writer import write_posts, rewrite_posts, _segments_needed, _wants_video
 from networks import active_networks
 import cost_tracker
 
@@ -76,6 +94,10 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
     `final_media_bytes`/`final_media_filename`: se publica tal cual, sin generación.
     `flow`/`batch_id` etiquetan el origen del job para el tracking de costos
     ("individual" por defecto; el bulk pasa "bulk" + el id del batch).
+
+    `params["identidad_visual"]` es la identidad visual **congelada** al crear el job
+    (la resuelve quien llama; ver `_identidad`). Ausente o vacía = la de la casa, y el
+    job se comporta exactamente igual que antes de que existieran las identidades.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -86,7 +108,20 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         "content": {},
         "accounts": {},
         "posts": {},
-        "images": {"bytes": {}, "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": ""},
+        # Avisos sobre el ORIGEN del job (sin transcripción, escritura degradada): lo
+        # que explica POR QUÉ los prompts salieron como salieron. Viajan junto al lint
+        # en `/jobs/{id}` para que las dos compuertas previas los pinten igual.
+        "avisos": [],
+        # text_overlay: si la imagen lleva texto (lo ponga el modelo desde el prompt o
+        # Pillow por encima). Viaja en el job para que el preview no invite a editar un
+        # texto que no se va a ver. text_in_prompt distingue quién lo dibuja.
+        # prompts/qa: el prompt final y el registro del QA de visión por subkey — es la
+        # traza que permite auditar por qué salió la imagen que salió.
+        # raw_urls/reference: lo que necesita rehacer UNA imagen desde la revisión —
+        # el origen de cada subkey (respaldo de subida) y el job_id de la portada que
+        # los slides usan como referencia visual. Sobreviven a la fase de imágenes
+        # porque la regeneración crea su propio provider y no hereda sus locales.
+        "images": {"bytes": {}, "raw_urls": {}, "reference": "", "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": "", "text_overlay": _text_in_prompt(cfg), "text_in_prompt": _text_in_prompt(cfg), "prompts": {}, "qa": {}},
         "video": {"url": "", "provider": "", "notice": "", "cost": None},
         "result": {},
         "error_msg": None,
@@ -106,6 +141,11 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         # lista de (bytes, filename). Vacío en el resto de los flujos.
         "_photo_files": photo_files or [],
     }
+
+
+def _avisar(job: dict, campo: str, nivel: str, mensaje: str) -> None:
+    """Anota un aviso de origen en el job (mismo shape que los de `prompt_lint`)."""
+    job.setdefault("avisos", []).append({"campo": campo, "nivel": nivel, "mensaje": mensaje})
 
 
 def _save_image(job_id: str, key: str, png: bytes) -> None:
@@ -141,13 +181,12 @@ _SPEED_RATES = {"lenta": 0.9, "rapida": 1.1}
 def _wants_preview(job: dict) -> bool:
     """True si el job debe PAUSAR en el preview editable antes de generar el medio.
 
-    Solo el flujo individual (flow="individual") pausa: el usuario revisa/edita los
-    prompts y textos antes de gastar créditos en imágenes/video. El bulk (flow="bulk")
-    sigue de corrido — mantiene su propia aprobación en dos fases a nivel de lote.
-    `preview_step` en params permite desactivarlo (default: activado).
+    Pausan los DOS flujos: el usuario revisa/edita los prompts y textos antes de
+    gastar créditos en imágenes/video. En el individual la compuerta es por post; en
+    el bulk, `run_batch` la agrupa y el lote entero espera en estado "preview" (ver
+    batch_runner). `preview_step` en params permite desactivarlo (default: activado).
     """
-    return (job.get("flow", "individual") == "individual"
-            and bool(job["params"].get("preview_step", True)))
+    return bool(job["params"].get("preview_step", True))
 
 
 def _template_set(params: dict) -> int:
@@ -204,8 +243,9 @@ def _publishable_media(src: str, filename: str, *, api_key: str) -> str:
     """Turn a provider source into a Blotato-hosted, publishable media URL.
 
     URLs pass through unchanged. A local template path is read from disk and
-    uploaded to Blotato so the raw template (without overlay) can still be
-    published when Pillow is unavailable or the overlay failed.
+    uploaded to Blotato so the raw template can still be published when Pillow is
+    unavailable or el recorte falló. Es el único camino por el que una plantilla
+    llega a publicarse **sin** el texto dibujado: sin Pillow no hay con qué.
     """
     if not _is_local_src(src):
         return src
@@ -215,6 +255,94 @@ def _publishable_media(src: str, filename: str, *, api_key: str) -> str:
 
 async def _push(queue: asyncio.Queue, event: dict):
     await queue.put(event)
+
+
+# Campos de la identidad visual que viajan como `marca` al arquitecto. `aspect_ratio` y
+# `referencias` van por su cuenta: el aspecto lo fija el job (no la identidad) y las
+# referencias `normalizar_spec` las lee del nivel de arriba de la spec, no de `marca`.
+_CAMPOS_MARCA = ("paleta", "paleta_nombres", "color_texto", "color_acento",
+                 "tipografia", "tipografia_secundaria", "tono_visual")
+
+
+def _identidad(job: dict) -> dict:
+    """La identidad visual congelada en el job al crearlo (`{}` = la de la casa).
+
+    Se congela en `create_job` / `run_batch` y no se vuelve a consultar: cambiar la
+    identidad activa a mitad de una generación no puede alterar un job en vuelo, y un
+    lote entero sale con la que estaba activa cuando se subió el sheet.
+
+    **Vacío significa "lo de siempre"**: `prompt_architect` y `_lockup_plantilla` leen
+    `prompts/brand.json` como han hecho hasta ahora. Es lo que hace que un job sin
+    identidad sea idéntico —no parecido— a uno de antes de esta feature.
+    """
+    ident = (job.get("params") or {}).get("identidad_visual")
+    return ident if isinstance(ident, dict) else {}
+
+
+def _lockup_plantilla(cfg, src: str, *, texto: str, rol: str,
+                      identidad: dict | None = None) -> dict | None:
+    """Texto que hay que DIBUJAR sobre `src`, o None si no hay que dibujar nada.
+
+    Solo lo llevan las plantillas de respaldo. Cuando la imagen sale del modelo, el
+    texto ya viene impreso desde el prompt y volver a dibujarlo encima lo duplicaría;
+    cuando cae a plantilla —sin token OAuth, generación fallida, o `fuente_imagen=
+    template`— el PNG llega mudo y el post se publicaba con una foto sin titular.
+    Es el mismo texto, partido igual (`dividir_texto`) y con la misma notación de
+    acento (`separar_acento`) que se le pide al modelo, así que la pieza dice lo
+    mismo salga por donde salga.
+
+    Respeta el interruptor de siempre: con `IMAGE_TEXT_IN_PROMPT` apagado la pieza
+    no lleva texto por ningún camino.
+    """
+    if not _text_in_prompt(cfg) or not improv.es_plantilla(src):
+        return None
+    limpio, acento = parch.separar_acento(texto or "")
+    if not limpio.strip():
+        return None
+    titular, kicker = parch.dividir_texto(limpio)
+    # La identidad activa del job manda; sin ella, la de la casa. Los colores tienen que
+    # ser los MISMOS que gobiernan las imágenes generadas o la pieza de respaldo se
+    # leería de otra marca.
+    marca = (identidad if isinstance(identidad, dict) and identidad
+             else prompt_config.brand())
+    paleta = marca.get("paleta") if isinstance(marca.get("paleta"), list) else []
+    return {
+        "titular": titular,
+        "kicker": kicker,
+        "acento": acento,
+        "rol": rol,
+        # Los colores son marca: salen de brand.json, el mismo archivo que gobierna
+        # el look de las imágenes generadas.
+        "color_texto": marca.get("color_texto") or (paleta[1] if len(paleta) > 1 else ""),
+        "color_acento": marca.get("color_acento") or (paleta[2] if len(paleta) > 2 else ""),
+    }
+
+
+async def _render_imagen(src: str, *, cfg, texto: str, rol: str,
+                         historia: bool = False, identidad: dict | None = None) -> bytes:
+    """Prepara la imagen publicable: recorte al aspecto de la red (+ texto si es plantilla).
+
+    Punto único del recorte para los dos flujos y para la regeneración de una imagen
+    suelta: quien llama pasa siempre el copy de esa imagen y aquí se decide si hay
+    que dibujarlo (`_lockup_plantilla`) o si ya viene impreso por el modelo.
+    """
+    lockup = _lockup_plantilla(cfg, src, texto=texto, rol=rol, identidad=identidad)
+    return await _run(ov.render_story if historia else ov.render_feed, src, lockup)
+
+
+async def _match_cover_grade(png: bytes, cover: bytes | None, cfg) -> bytes:
+    """Iguala el color de un slide al de la portada. Best-effort: nunca interrumpe.
+
+    Si falta la portada, el grade está apagado o Pillow falla, devuelve el slide tal
+    cual — un carrusel con deriva de color es infinitamente mejor que uno sin slide.
+    """
+    if not cover or not getattr(cfg, "image_grade_match", True) or not _HAS_OVERLAY:
+        return png
+    try:
+        return await _run(ov.match_grade, png, cover)
+    except Exception as e:
+        print(f"   [aviso] No se pudo igualar el color del slide: {e}")
+        return png
 
 
 async def _media_fallback(q: asyncio.Queue, raw_urls: dict, key: str, filename: str, cfg) -> list[str]:
@@ -237,6 +365,18 @@ async def _media_fallback(q: asyncio.Queue, raw_urls: dict, key: str, filename: 
 
 # Se anexa siempre a cada prompt de segmento: garantiza clips limpios sin texto.
 _NO_TEXT_SUFFIX = "No text, no captions, no typography, no logos, no watermarks."
+# También se anexa a cada segmento: los fallos que más delatan que el video es de IA
+# (objetos flotando sin apoyo, escala incoherente, formas que se derriten a mitad de
+# toma) se atacan pidiendo la física correcta EN POSITIVO. Los modelos atienden a los
+# sustantivos del prompt, así que nombrar el defecto ("sin dedos de más") tiende a
+# invocarlo; describir el acierto, no. La plantilla del storyboard pide lo mismo por
+# beat (ver PHYSICAL PLAUSIBILITY en post_writer): esto es la red por si el beat que
+# llega —editado a mano en el preview, o del fallback genérico— se olvidó de pedirlo.
+_GROUNDING_SUFFIX = (
+    "Physically grounded: every object rests on a real surface and casts a soft "
+    "contact shadow, consistent scale and gravity, solid forms that keep their "
+    "shape and proportions throughout the shot."
+)
 # Estilo visual de respaldo cuando el LLM no entrega `video_style`: mantiene una
 # base de calidad y de coherencia entre segmentos aunque el guion venga incompleto.
 _DEFAULT_VIDEO_STYLE = (
@@ -327,6 +467,379 @@ def _generic_scene(content: dict) -> str:
     )
 
 
+# ── Prompts de imagen (portada + slides del carrusel) ─────────────────────────
+# Igual que en video, la escena la escribe el LLM anclada a la transcripción
+# (`image_prompt` / `image_slide_prompts`): antes el prompt se armaba solo con el
+# TÍTULO del video, así que la imagen no tenía nada que ver con lo que se decía
+# adentro. Estos helpers le agregan lo que el modelo no debe decidir: el acabado
+# editorial, el espacio libre para el overlay y el "sin texto".
+# Acabado de respaldo: solo se usa cuando el LLM no entrega `image_style`. La
+# dirección de arte real (paleta concreta, luz, óptica, materia) la escribe el
+# modelo por post — una constante global igual para todos los posts no puede dar
+# coherencia dentro del carrusel ni identidad entre posts.
+_IMAGE_LOOK = (
+    "Cinematic poster still: one spotlit subject on a near-black field, hard rim "
+    "light, deep shadow falloff, heavy vignette, photorealistic detail."
+)
+# Espacio para el copy: solo tiene sentido si el copy se imprime. Con el texto
+# apagado, pedir media imagen vacía produce composiciones desbalanceadas sin nada
+# que llene el hueco, así que se pide lo contrario: llenar el cuadro.
+# El esqueleto es el mismo lockup de póster que declara `prompt_architect` (tipo en la
+# banda alta y en la baja, sujeto en la central): este texto es el que llega al modelo
+# cuando el arquitecto está apagado, así que decir otra cosa daría dos composiciones
+# distintas según el interruptor.
+# Las bandas se piden "calm", nunca "flat": para un modelo de imagen una banda plana es
+# un rectángulo de color liso, y así salían slides con passe-partout mientras otros
+# salían a sangre. Además este texto es el `prompt_base` que el arquitecto le enseña al
+# LLM como "BASE PROMPT (weak, to rewrite)", así que la palabra se propagaba a las
+# secciones creativas. El aire se nombra por sus medios fotográficos.
+_IMAGE_SPACE_FEED = (
+    "Full-bleed photograph to all four edges: keep the top and bottom bands calm and "
+    "uncluttered for poster type — quiet photograph there (shadow falloff, defocus, "
+    "bare surface), never a band of flat colour — subject anchored in the central band."
+)
+_IMAGE_SPACE_VERTICAL = (
+    "Vertical 9:16 framing, full-bleed photograph to all four edges: top and bottom "
+    "bands calm and uncluttered for poster type — quiet photograph there (shadow "
+    "falloff, defocus, bare surface), never a band of flat colour — subject anchored "
+    "in the central band."
+)
+_IMAGE_FULL_FRAME = (
+    "Compose the full frame edge to edge with deliberate balance: no empty band "
+    "reserved for text, no dead space."
+)
+_IMAGE_FULL_FRAME_VERTICAL = (
+    "Vertical 9:16 framing composed full-bleed edge to edge with deliberate "
+    "balance: no empty band reserved for text, no dead space."
+)
+# Escalera de encuadres del carrusel: el encuadre de cada slide lo fija su POSICIÓN,
+# no el LLM. Antes se le sugería "varía el encuadre" y salía una secuencia arbitraria
+# (tres primeros planos seguidos, el slide más potente en cuarto lugar). Fijándolo
+# acá, el set tiene ritmo y jerarquía: la portada manda y el resto son fragmentos de
+# su mismo mundo. Se recorre en orden y se cicla si hay más slides que encuadres.
+# La escalera vale para TODOS los slides extra: el carrusel ya no lleva slide de
+# créditos ni de cierre, así que el último no tiene tratamiento aparte.
+_SLIDE_FRAMINGS = (
+    "Tight macro detail of a single surface or texture, filling the frame.",
+    "Wide still life with generous air around the subject, seen from slightly above.",
+    "Mid-distance view of a different object in the same setting, shallow focus.",
+    "Low-angle fragment with strong foreground depth.",
+)
+
+
+def _image_space_clause(vertical: bool, con_texto: bool = False) -> str:
+    """Qué pedirle a la composición según la imagen vaya a llevar texto o no.
+
+    `con_texto` lo pasa el llamador cuando hay texto que renderizar: la pieza
+    necesita entonces sus bandas calmas para el tipo. Sin texto se pide el cuadro
+    lleno, sin área reservada esperando algo que no va a llegar.
+    """
+    if con_texto:
+        return _IMAGE_SPACE_VERTICAL if vertical else _IMAGE_SPACE_FEED
+    return _IMAGE_FULL_FRAME_VERTICAL if vertical else _IMAGE_FULL_FRAME
+
+
+def _image_style(posts: dict) -> str:
+    """Dirección de arte del post (`image_style` del LLM) o el acabado de respaldo.
+
+    Es el equivalente en imagen de `video_style`: el MISMO texto en la portada y en
+    todos los slides es lo que hace que imágenes generadas por separado se lean como
+    un set diseñado.
+    """
+    return (posts.get("image_style") or "").strip() or _IMAGE_LOOK
+
+
+def _compose_image_prompt(scene: str, *, style: str = "", framing: str = "",
+                          vertical: bool = False, con_texto: bool = False) -> str:
+    """Escena + encuadre + dirección de arte + composición + anclaje físico + sin texto.
+
+    Con `con_texto=True` el resultado NO lleva el "sin texto": la imagen va a llevar
+    texto renderizado por el modelo, y este prompt es el `prompt_base` que recibe
+    `prompt_architect` para convertirlo en el brief de 9 secciones.
+    """
+    parts = [
+        (scene or "").strip(),
+        (framing or "").strip(),
+        (style or "").strip() or _IMAGE_LOOK,
+        _image_space_clause(vertical, con_texto),
+        _GROUNDING_SUFFIX,
+    ]
+    if not con_texto:
+        parts.append(_NO_TEXT_SUFFIX)
+    return " ".join(p for p in parts if p)
+
+
+def _cover_image_prompt(posts: dict, content: dict, *, vertical: bool = False,
+                        con_texto: bool = False) -> str:
+    """Prompt de la imagen base/portada (LinkedIn, IG, Facebook, slide 0, historia).
+
+    Usa el `image_prompt` del LLM; si falta (modelo viejo, JSON incompleto o el
+    usuario lo vació en el preview) cae al prompt histórico basado en el título.
+    """
+    scene = (posts.get("image_prompt") or "").strip()
+    if not scene:
+        scene = f"Editorial photography about: {content.get('title', 'professional topic')}."
+    return _compose_image_prompt(scene, style=_image_style(posts), vertical=vertical,
+                                 con_texto=con_texto)
+
+
+def _slide_image_prompts(posts: dict, content: dict, n_info: int,
+                         con_texto: bool = False) -> list[str]:
+    """Prompts de los slides extra del carrusel: n_info slides de info.
+
+    Cada slide toma su escena del LLM (un detalle concreto distinto de la fuente) y
+    su encuadre de la escalera; los que falten caen a la variación genérica del
+    título. Todos comparten la misma dirección de arte que la portada. El último no
+    tiene tratamiento especial: es un slide de info como los del centro.
+    """
+    topic = content.get("title", "engaging topic")
+    style = _image_style(posts)
+    llm = [s.strip() for s in (posts.get("image_slide_prompts") or []) if isinstance(s, str) and s.strip()]
+    prompts: list[str] = []
+    for i in range(n_info):
+        scene = llm[i] if i < len(llm) else (
+            f"Conceptual editorial visual about: {topic}. Lateral composition or texture, variation {i + 1}."
+        )
+        prompts.append(_compose_image_prompt(
+            scene, style=style, framing=_SLIDE_FRAMINGS[i % len(_SLIDE_FRAMINGS)],
+            con_texto=con_texto,
+        ))
+    return prompts
+
+
+def _n_slides(params: dict) -> int:
+    """Slides del carrusel (3-6). Fuente única: la fase de imágenes y la regeneración
+    de una imagen suelta tienen que contar lo mismo o los índices no calzan."""
+    try:
+        n = int(params.get("carrusel_slides", 3) or 3)
+    except (TypeError, ValueError):
+        n = 3
+    return max(3, min(6, n))
+
+
+def _texto_historia(posts: dict) -> str:
+    """Hook impreso en la historia: el del modelo, o la primera línea del caption."""
+    image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
+    return ((image_text or {}).get("hook", "").strip()
+            or _extract_hook(posts.get("instagram_text", ""), max_words=12))
+
+
+def _copy_de_imagenes(posts: dict, cfg, *, n_info: int, is_carousel: bool,
+                      hay_redes: bool = True) -> dict:
+    """Copy que va DENTRO de las imágenes: hook de portada + una idea por slide.
+
+    Se resuelve ANTES de generar, porque el texto viaja en el prompt y no se dibuja
+    después. Es la fuente única de la fase de imágenes y de la regeneración de una
+    imagen suelta: rehacer un slide tiene que imprimir exactamente lo mismo que la
+    primera vez, o el carrusel deja de contar lo que decía.
+
+    Se prefiere el bloque `image_text` del LLM (una frase de portada cerrada + una
+    idea por slide) y se degrada a las heurísticas de siempre cuando falta, dejando
+    dicho en `avisos` por qué. Devuelve {li, ig, fb, portada, slides, avisos}.
+    """
+    image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
+    llm_hook = (image_text or {}).get("hook", "").strip()
+    llm_slides = [s for s in (image_text or {}).get("slides", []) if s.strip()]
+    avisos: list[str] = []
+
+    # Hook: el image_text del LLM para todas las redes; si falta, la 1ª línea del caption.
+    if llm_hook:
+        li = ig = fb = llm_hook
+    else:
+        li = _extract_hook(posts.get("linkedin_text", ""), max_words=12)
+        ig = _extract_hook(posts.get("instagram_text", ""), max_words=10)
+        fb = _extract_hook(posts.get("facebook_text", ""), max_words=12)
+        if hay_redes and _text_in_prompt(cfg):
+            avisos.append("sin texto de portada del modelo")
+
+    # Slides de info: exactamente una idea cerrada por slide. Lo que falte se rellena
+    # con las líneas del caption (NUNCA con un "mira el video" genérico).
+    slides: list[str] = []
+    if is_carousel:
+        heur = _extract_body_lines(posts.get("instagram_text", ""), max_lines=n_info)
+        for i in range(n_info):
+            if i < len(llm_slides):
+                slides.append(llm_slides[i])
+            elif i < len(heur):
+                slides.append(heur[i])
+            else:
+                slides.append("")  # el renderer rellena con vacío
+        if len(llm_slides) < n_info and _text_in_prompt(cfg):
+            avisos.append(f"el modelo dio {len(llm_slides)} de {n_info} frases para el carrusel")
+
+    return {
+        # La imagen base es UNA sola y la comparten las tres redes: con el texto
+        # dentro del prompt solo puede decir una cosa, así que hay un único texto de
+        # portada (el del LLM, con respaldo en la 1ª línea de cualquier caption).
+        "portada": llm_hook or ig or li or fb,
+        "slides": slides,
+        "avisos": avisos,
+    }
+
+
+# ── Arquitectura del prompt de imagen (texto renderizado por el modelo) ────────
+#
+# El texto de la pieza ya no se dibuja después con Pillow: viaja DENTRO del prompt
+# y lo renderiza Higgsfield. Eso exige un prompt mucho más explícito que la frase
+# de antes, así que el prompt compuesto arriba pasa a ser el `prompt_base` de
+# `prompt_architect`, que lo convierte en un brief de 9 secciones con el string
+# exacto entrecomillado, su idioma, su jerarquía y su zona de aire negativo.
+# Todo esto vive en el núcleo compartido: individual y bulk lo heredan igual.
+
+
+def _marca_post(posts: dict, *, aspect: str, identidad: dict | None = None) -> dict:
+    """Datos de marca para el arquitecto: los de la identidad activa (o los de
+    `prompts/brand.json` si no hay), con el `image_style` del post pisando el tono
+    visual (es la dirección de arte que el LLM escribió para ESTE post) y el aspecto
+    realmente pedido al modelo.
+
+    Lo que la identidad deja vacío no se pasa: `normalizar_spec` resuelve cada campo
+    con `marca.get(x) or marca_def.get(x)`, así que un campo ausente cae solo a
+    `brand.json` en vez de imponer un blanco.
+
+    `image_style` sigue ganando sobre `tono_visual` a propósito: la identidad fija la
+    paleta, la tipografía y las referencias —lo que hace reconocible a la marca— y el
+    tratamiento fotográfico lo sigue eligiendo el LLM por post, como hasta ahora.
+    """
+    base = identidad if isinstance(identidad, dict) else {}
+    marca = {k: v for k, v in base.items() if k in _CAMPOS_MARCA and v}
+    marca["aspect_ratio"] = aspect
+    estilo = (posts.get("image_style") or "").strip()
+    if estilo:
+        marca["tono_visual"] = estilo
+    return marca
+
+
+def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: str,
+                   rol: str, aspect: str, lang: str = "es", refuerzo: bool = False,
+                   identidad: dict | None = None):
+    """Prompt final de UNA imagen. Devuelve `(prompt, resultado_del_arquitecto|None)`.
+
+    Sin texto que renderizar —o con la capa de arquitectura apagada— devuelve el
+    prompt base tal cual: el camino clásico sigue vivo y es el que se usa para las
+    imágenes que no llevan copy. Si el arquitecto falla por lo que sea, también se
+    devuelve el base: generar nunca se interrumpe por esto.
+    """
+    texto = (texto or "").strip()
+    if not texto or not _text_in_prompt(cfg) or not getattr(cfg, "prompt_architect", True):
+        return prompt_base, None
+    # `angulo` es el enfoque de ESTA imagen. En los slides era la escena de la PORTADA,
+    # así que a cada slide se le pedía —sin querer— el sujeto de la portada: una segunda
+    # fuente de carruseles con la misma foto repetida, independiente del image-to-image.
+    # Ahora la portada viaja como `escena_portada`, que es continuidad de set, no encargo.
+    escena_portada = (posts.get("image_prompt") or "").strip()
+    es_slide = rol == "contenido"
+    spec = {
+        "contenido": {
+            "tema": content.get("title", ""),
+            "angulo": "" if es_slide else escena_portada,
+            "escena_portada": escena_portada if es_slide else "",
+            "texto_exacto_a_renderizar": texto,
+            "rol_slide": rol,
+            "idioma": lang,
+        },
+        "marca": _marca_post(posts, aspect=aspect, identidad=identidad),
+        "prompt_base": prompt_base,
+    }
+    # Las referencias de dirección de arte NO viajan en `marca`: `normalizar_spec` las
+    # lee del nivel de arriba de la spec. Vacío = las de `brand.json`, como siempre.
+    referencias = identidad.get("referencias") if isinstance(identidad, dict) else None
+    if referencias:
+        spec["referencias"] = list(referencias)
+    try:
+        res = parch.construir(
+            spec, cfg=cfg,
+            autocritica=bool(getattr(cfg, "prompt_architect_critique", True)),
+            refuerzo_texto=refuerzo,
+        )
+        return res.prompt, res
+    except Exception as e:
+        print(f"   [aviso] PromptArchitect no pudo construir el prompt: {e}. Se usa el prompt base.")
+        return prompt_base, None
+
+
+async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: dict,
+                       content: dict, texto: str, rol: str, aspect: str, lang: str = "es",
+                       refuerzo: bool = False) -> str:
+    """`_prompt_imagen` + traza: guarda el prompt final en el job, lo loguea y cobra el LLM.
+
+    El prompt de cada imagen queda en `job["images"]["prompts"][subkey]` (lo sirve
+    `/jobs/{id}`) además de en el log del servidor: sin eso, una imagen rara no se
+    puede auditar después.
+    """
+    prompt, res = await _run(
+        _prompt_imagen, cfg, prompt_base=prompt_base, posts=posts, content=content,
+        texto=texto, rol=rol, aspect=aspect, lang=lang, refuerzo=refuerzo,
+        identidad=_identidad(job),
+    )
+    job["images"]["prompts"][subkey] = prompt
+    print(f"   [prompt {subkey}]\n{prompt}")
+    if res is not None:
+        for aviso in res.avisos:
+            print(f"   [aviso prompt {subkey}] {aviso}")
+        for uso in res.usos:
+            await _track(job, service=uso["service"], operation="prompt_architect",
+                         units=uso["units"], model=uso.get("model"))
+    return prompt
+
+
+async def _verificar_texto(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src: str,
+                           texto: str, rehacer) -> str:
+    """QA post-generación: ¿la imagen dice exactamente lo que tenía que decir?
+
+    Un modelo de visión lee el texto impreso y lo compara con el esperado (acentos
+    incluidos). Si no coincide, `rehacer()` vuelve a generar la imagen con la
+    instrucción de texto reforzada, hasta el máximo de `prompts/qa_vision.json`.
+    Cada intento queda registrado en `job["images"]["qa"][subkey]`.
+
+    Best-effort: sin modelo de visión, con plantilla local o ante cualquier fallo se
+    devuelve la imagen que ya había. Nunca interrumpe la generación.
+    """
+    # Las marcas de acento (**así**) son notación del usuario, no parte del copy: el
+    # modelo imprime el texto sin ellas, así que el QA tiene que comparar contra el
+    # texto limpio o toda imagen con acento marcado se leería como error de render.
+    texto = parch.separar_acento(texto)[0].strip()
+    if not src or not texto or not _text_in_prompt(cfg) or not getattr(cfg, "image_text_qa", True):
+        return src
+    if not iqa.disponible(cfg):
+        return src
+
+    registro: list[dict] = []
+    maximo = iqa.max_intentos()
+    intento = 0
+    while True:
+        res = await _run(iqa.verificar, src, texto, cfg=cfg)
+        registro.append({
+            "intento": intento + 1, "ok": res.ok, "verificado": res.verificado,
+            "texto_visto": res.texto_visto, "motivo": res.motivo, "recortado": res.recortado,
+        })
+        print(f"   [QA texto {subkey}] intento {intento + 1}: "
+              f"{'ok' if res.ok else 'NO COINCIDE'} — {res.motivo}")
+        if res.uso:
+            await _track(job, service=res.uso["service"], operation="image_text_qa",
+                         units=res.uso["units"], model=res.uso.get("model"))
+        if res.ok or not res.verificado:
+            break
+        if intento >= maximo:
+            await _push(q, {"step": "images", "status": "warn", "subkey": subkey,
+                            "msg": f"El texto de la imagen no coincide tras {maximo + 1} intentos: {res.motivo}"})
+            break
+        intento += 1
+        motivo_corto = "Texto cortado por el borde" if res.recortado else "Texto mal renderizado"
+        await _push(q, {"step": "images", "status": "running",
+                        "msg": f"{motivo_corto} en {subkey} — reintento {intento} de {maximo}..."})
+        try:
+            nuevo = await rehacer()
+        except Exception as e:
+            print(f"   [aviso] Reintento de {subkey} falló: {e}")
+            break
+        if not nuevo:
+            break
+        src = nuevo
+    job["images"]["qa"][subkey] = registro
+    return src
+
+
 def _segment_prompt(beat: str, style: str) -> str:
     """Prompt final de un segmento text-to-video: shot + look compartido + sin texto.
 
@@ -334,7 +847,8 @@ def _segment_prompt(beat: str, style: str) -> str:
     que hace que clips generados por separado corten como un solo video; si falta,
     el estilo por defecto garantiza la misma coherencia mínima.
     """
-    parts = [(beat or "").strip(), (style or "").strip() or _DEFAULT_VIDEO_STYLE, _NO_TEXT_SUFFIX]
+    parts = [(beat or "").strip(), (style or "").strip() or _DEFAULT_VIDEO_STYLE,
+             _GROUNDING_SUFFIX, _NO_TEXT_SUFFIX]
     return " ".join(p for p in parts if p)
 
 
@@ -581,7 +1095,8 @@ async def _run_video_segments(job: dict, q: asyncio.Queue, cfg, segments: list[d
                               aspect: str, seg_seconds: int,
                               do_linkedin: bool, do_instagram: bool, do_facebook: bool,
                               do_tiktok: bool = False,
-                              voiceover: list[str] | None = None) -> None:
+                              voiceover: list[str] | None = None,
+                              default_model: str = "") -> None:
     """Genera N segmentos, los une (con voz si hay guion) y deja el medio en el job.
 
     `segments`: lista de {"prompt": str, "medias": list|None}. Un segmento = una
@@ -596,7 +1111,9 @@ async def _run_video_segments(job: dict, q: asyncio.Queue, cfg, segments: list[d
     bloque + subtítulos quemados) en vez del concat mudo de ffmpeg; cualquier fallo
     de esa rama degrada al stitching mudo local — los clips ya están generados.
     """
-    model = _job_model(job, "modelo_video", cfg.higgsfield_mcp_video_model)
+    # `default_model` deja que la rama de fotos (image-to-video) use su propio default
+    # sin arrastrar el de text-to-video; el modelo elegido por post siempre gana.
+    model = _job_model(job, "modelo_video", default_model or cfg.higgsfield_mcp_video_model)
     n = len(segments)
     job["video"]["provider"] = "higgsfield-mcp"
     voice_lines = [l.strip() for l in (voiceover or []) if l and l.strip()]
@@ -773,7 +1290,9 @@ async def run_pipeline(job: dict):
         # non-YouTube sources). Each source builds those two, then everything
         # after this step is source-agnostic.
         forced_lang = params.get("idioma", "auto")
-        lang_hint = forced_lang if forced_lang in ("es", "en") else None
+        # Pista para el motor de transcripción: solo cuando el usuario forzó el
+        # idioma (en "auto" el propio Whisper detecta mejor que cualquier pista).
+        lang_hint = ld.normalize_lang(forced_lang)
 
         # Trigger "archivo" (solo bulk): audio o documento referenciado por URL en el
         # sheet. Se descarga, se clasifica (audio | texto) y sigue por el mismo camino
@@ -859,20 +1378,31 @@ async def run_pipeline(job: dict):
                     content = {"title": url, "description": "", "transcript": "", "tags": [], "chapters": [], "channel": ""}
                     await _push(q, {"step": "extract", "status": "warn", "msg": f"No se pudo extraer transcript: {e}. Continuando con el título."})
 
-        # Detect language
-        if forced_lang in ("es", "en"):
-            lang = forced_lang
-        else:
-            transcript_sample = (content.get("transcript") or content.get("title") or "")[:500].lower()
-            es_words = sum(1 for w in ["de", "la", "el", "en", "que", "los", "las", "es", "con", "por"] if f" {w} " in transcript_sample)
-            en_words = sum(1 for w in ["the", "and", "for", "with", "this", "that", "are", "have", "from", "you"] if f" {w} " in transcript_sample)
-            lang = "en" if en_words > es_words else "es"
+        # Idioma del contenido (gobierna posts, overlay y voz en off). La lógica
+        # vive en lang_detect: metadatos del video/subtítulos + heurística sobre el
+        # texto, con la heurística vetando metadatos mal etiquetados.
+        lang, lang_source = ld.resolve_lang(forced_lang, content)
 
         content["lang"] = lang
         job["content"] = content
         params["lang"] = lang
 
-        await _push(q, {"step": "extract", "status": "done", "msg": f"Idioma detectado: {lang} | {content.get('title', '')[:60]}"})
+        # La transcripción puede venir vacía sin que nada falle: el extractor se traga
+        # el fallo de subtítulos y devuelve el video con título y descripción. Sin ella
+        # los posts y TODOS los prompts visuales salen del título, así que se dice acá
+        # en vez de que se descubra al mirar la imagen generada.
+        if not (content.get("transcript") or "").strip():
+            motivo = (content.get("transcript_error") or "").strip()
+            detalle = f" ({motivo})" if motivo else ""
+            _avisar(job, "content", "alto",
+                    f"El video no dejó transcripción{detalle}: los textos y todos los prompts "
+                    "visuales se escriben solo con el título y la descripción. Revísalos con "
+                    "cuidado, o usa otra fuente.")
+            await _push(q, {"step": "extract", "status": "warn",
+                            "msg": f"Sin transcripción{detalle}: se escribe solo con título y descripción."})
+
+        await _push(q, {"step": "extract", "status": "done",
+                        "msg": f"Idioma detectado: {lang} ({lang_source}) | {content.get('title', '')[:60]}"})
 
         # ── Step 2: Accounts ─────────────────────────────────────────────
         await _push(q, {"step": "accounts", "status": "running", "msg": "Verificando cuentas..."})
@@ -962,8 +1492,17 @@ async def run_pipeline(job: dict):
             writer_label = "Claude"
         await _push(q, {"step": "writing", "status": "running", "msg": f"Escribiendo posts con {writer_label}..."})
 
-        posts, writer_usage = await write_posts(content, params, clean_url, q, cfg)
+        # La URL limpia se guarda en el job porque el reintento manual de la escritura
+        # (`rewrite_job_posts`, desde la compuerta previa) la necesita fuera de aquí.
+        job["_clean_url"] = clean_url
+        posts, writer_usage, writer_avisos = await write_posts(content, params, clean_url, q, cfg)
         job["posts"] = posts
+        # El escritor avisa cuando no entregó los campos visuales del contrato (JSON
+        # roto o campos vacíos, ya con una reparación dirigida encima). Sin esto el
+        # preview aparecía sin prompts y nada decía por qué.
+        for aviso in writer_avisos:
+            _avisar(job, aviso["campo"], aviso["nivel"], aviso["mensaje"])
+            await _push(q, {"step": "writing", "status": "warn", "msg": aviso["mensaje"]})
         await _push(q, {"step": "writing", "status": "done", "msg": "Posts escritos y humanizados"})
 
         # Tracking de costos del LLM (tokens de entrada/salida + caché en Claude).
@@ -976,15 +1515,40 @@ async def run_pipeline(job: dict):
         await _push(q, {"step": "error", "msg": str(e)})
         return
 
-    # ── Preview gate (solo flujo individual): pausa para revisión editable de los
-    # prompts y textos ANTES de gastar créditos generando imágenes/video. El bulk
-    # sigue de corrido (conserva su aprobación en dos fases a nivel de lote).
+    # ── Preview gate (los DOS flujos): pausa para revisión editable de los prompts y
+    # textos ANTES de gastar créditos generando imágenes/video. En bulk, `run_batch`
+    # recoge esta pausa y deja el lote entero esperando en estado "preview".
     if _wants_preview(job):
         job["status"] = "preview"
         await _push(q, {"step": "preview", "redirect": f"/jobs/{job['id']}/preview"})
         return
 
     await _run_media_phase(job)
+
+
+async def rewrite_job_posts(job: dict) -> list[dict]:
+    """Reintento MANUAL de la escritura desde la compuerta previa (los dos flujos).
+
+    Vuelve a pedirle al LLM SOLO los campos que falten —captions incluidos: una red
+    destino sin texto publicaría un post vacío— y los funde sobre lo que ya hay, así
+    lo editado a mano y lo que sí llegó no se tocan. Es lo que permite recuperarse
+    del aviso «la escritura no entregó N campos» sin relanzar el post entero
+    (individual) ni la fila (lote). Devuelve los avisos que queden.
+    """
+    posts, usage, avisos = await rewrite_posts(
+        job["content"], job["params"], job["posts"], job["_cfg"],
+        job.get("_clean_url", ""),
+    )
+    job["posts"] = posts
+    # El aviso de escritura se reemplaza entero: el viejo describe un estado que este
+    # reintento acaba de cambiar, y dejarlo pegado diría que faltan campos que ya están.
+    job["avisos"] = [a for a in job.get("avisos", []) if a.get("campo") != "escritura"]
+    for aviso in avisos:
+        _avisar(job, aviso["campo"], aviso["nivel"], aviso["mensaje"])
+    if usage:
+        await _track(job, service=usage["service"], operation="post_writing",
+                     units=usage["units"], model=usage["model"])
+    return avisos
 
 
 async def resume_media(job: dict):
@@ -1025,10 +1589,9 @@ async def _run_media_phase(job: dict):
 
     content = job["content"]
     posts = job["posts"]
+    # El tono de cada red vive en los textos, que ya escribió la fase A: la fase de
+    # medios no lo necesita desde que el copy de la imagen lo renderiza el modelo.
     lang = params.get("lang") or content.get("lang", "es")
-    tono_li = params.get("tono_linkedin", "educativo")
-    tono_ig = params.get("tono_instagram", "inspiracional")
-    tono_fb = params.get("tono_facebook", "personal")
 
     try:
         # ── Media: medio final subido por el usuario (reel/historia, modo "subir") ──
@@ -1116,7 +1679,8 @@ async def _run_media_phase(job: dict):
                 ]
                 await _run_video_segments(job, q, cfg, segments, aspect="9:16", seg_seconds=seg_seconds,
                                           do_linkedin=do_linkedin, do_instagram=do_instagram, do_facebook=do_facebook,
-                                          do_tiktok=do_tiktok)
+                                          do_tiktok=do_tiktok,
+                                          default_model=cfg.higgsfield_mcp_walkthrough_model)
             job["status"] = "review"
             await _push(q, {"step": "done", "redirect": f"/jobs/{job['id']}/review"})
             return
@@ -1178,22 +1742,33 @@ async def _run_media_phase(job: dict):
             provider = improv.make_provider(
                 force_template=force_template, mcp_image_model=img_model,
             )
-            topic = content.get("title", "professional topic")
-            base_prompt = (
-                f"Editorial vertical photography about: {topic}. "
-                "Clean composition, soft natural lighting, muted professional palette, "
-                "9:16 vertical framing with negative space at the bottom for overlay text. "
-                "No text, no typography, no logos, no watermarks."
-            )
-            # Hook de portada: el image_text del modelo si vino; si no, la 1ª línea del caption.
-            image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
-            story_hook = ((image_text or {}).get("hook", "").strip()
-                          or _extract_hook(posts.get("instagram_text", ""), max_words=12))
+            # Hook de portada: el image_text del modelo si vino; si no, la 1ª línea del
+            # caption. Mismo helper que usa la regeneración de esta imagen.
+            story_hook = _texto_historia(posts)
+            con_texto = bool(story_hook) and _text_in_prompt(cfg)
+            # Escena anclada a la transcripción (image_prompt del LLM), en vertical.
+            base_prompt = _cover_image_prompt(posts, content, vertical=True, con_texto=con_texto)
+            aspect_story = hfmcp.image_aspect("9:16", model=img_model)
+
+            async def _prompt_story(refuerzo: bool = False) -> str:
+                return await _prompt_para(job, cfg, subkey="ig-story", prompt_base=base_prompt,
+                                          posts=posts, content=content, texto=story_hook,
+                                          rol="portada", aspect=aspect_story, lang=lang,
+                                          refuerzo=refuerzo)
+
+            async def _rehacer_story() -> str:
+                return await _run(provider.generate_base, await _prompt_story(True), aspect_ratio="9:16")
+
             story_url = ""
             try:
-                base_url = await _run(provider.generate_base, base_prompt, aspect_ratio="9:16")
+                base_url = await _run(provider.generate_base, await _prompt_story(),
+                                      aspect_ratio="9:16")
+                base_url = await _verificar_texto(job, q, cfg, subkey="ig-story", src=base_url,
+                                                  texto=story_hook, rehacer=_rehacer_story)
                 if _HAS_OVERLAY:
-                    png = await _run(ov.render_story, base_url, story_hook, lang=lang, tone=tono_ig)
+                    png = await _render_imagen(base_url, cfg=cfg, texto=story_hook,
+                                               rol="portada", historia=True,
+                                               identidad=_identidad(job))
                     _save_image(job["id"], "ig-story", png)
                     job["images"]["bytes"]["ig-story"] = png
                     story_url = await _run(bc.upload_media_local, png, "ig-story.png", api_key=cfg.blotato_api_key)
@@ -1223,9 +1798,9 @@ async def _run_media_phase(job: dict):
 
         # ── Steps 5-7: Images (generate + overlay + upload) ──────────────────
 
-        # Carousel slide count from the form (3–6); slide 0 = hook, last = credits,
-        # the slides in between are info/argument slides.
-        n_slides = max(3, min(6, int(params.get("carrusel_slides", 3) or 3)))
+        # Carousel slide count from the form (3–6); slide 0 = hook and every slide
+        # after it is an info/argument slide (there is no credits slide any more).
+        n_slides = _n_slides(params)
 
         # El formato aplica a TODAS las redes: en carrusel se genera UN solo juego de
         # slides (subkeys ig-N, nombre histórico) y se comparte con LinkedIn (document
@@ -1259,195 +1834,175 @@ async def _run_media_phase(job: dict):
         # image_bytes is mutable — /image/{key} can serve mid-pipeline as soon as a key is set
         image_bytes: dict[str, bytes] = job["images"]["bytes"]
         # raw_urls: provider image source per subkey (URL or local template path),
-        # used as upload fallback when overlay/upload fails
-        raw_urls: dict[str, str] = {}
+        # used as upload fallback when overlay/upload fails. Vive en el job (no en un
+        # local) porque la regeneración de una imagen suelta vuelve a subir el juego.
+        raw_urls: dict[str, str] = job["images"]["raw_urls"]
         # image_warnings: reasons Higgsfield fell back to local templates (empty when not applicable)
         image_warnings: list[str] = []
         # overlay_text_warnings: reasons the overlay copy fell back to heuristics (missing image_text)
         overlay_text_warnings: list[str] = []
 
+        # ── Copy de los visuales (se resuelve ANTES de generar) ───────────────────
+        # Antes esto vivía después de la generación, porque el texto se dibujaba
+        # encima al final. Ahora el texto viaja DENTRO del prompt, así que hay que
+        # saber qué dice cada imagen antes de pedirla.
+        # Se prefiere el bloque `image_text` del LLM (una frase de portada cerrada +
+        # una idea por slide) y se degrada a las heurísticas de siempre cuando falta.
+        # Number of info (argument) slides after the hook: TODOS los slides que
+        # siguen a la portada, incluido el último.
+        n_info = (n_slides - 1) if is_carousel else 1
+
+        copy_img = _copy_de_imagenes(
+            posts, cfg, n_info=n_info, is_carousel=is_carousel,
+            hay_redes=do_linkedin or do_instagram or do_facebook,
+        )
+        slide_texts: list[str] = copy_img["slides"]
+        cover_text = copy_img["portada"]
+        overlay_text_warnings.extend(copy_img["avisos"])
+        texto_en_prompt = _text_in_prompt(cfg)
+        aspect_feed = hfmcp.image_aspect(hfmcp.FEED_IMAGE_ASPECT, model=img_model)
+
         # ── 5a: Base image (shared by LinkedIn, Facebook, IG single, carousel slide 0) ──
         base_url: str | None = None
         if do_linkedin or do_instagram or do_facebook:
+            # La escena la escribe el LLM desde la transcripción (image_prompt); acá se
+            # le suma la dirección de arte y la composición, y `prompt_architect` lo
+            # convierte en el brief de 9 secciones con el texto de portada dentro. El
+            # aspecto se pide NATIVO (4:5, el vertical de feed).
+            con_texto_portada = bool(cover_text) and texto_en_prompt
+            base_scene = _cover_image_prompt(posts, content, con_texto=con_texto_portada)
+
+            async def _prompt_portada(refuerzo: bool = False) -> str:
+                return await _prompt_para(job, cfg, subkey="cover", prompt_base=base_scene,
+                                          posts=posts, content=content, texto=cover_text,
+                                          rol="portada", aspect=aspect_feed, lang=lang,
+                                          refuerzo=refuerzo)
+
+            async def _rehacer_portada() -> str:
+                # Se regenera con `generate_base` (no `generate_one`) a propósito: así el
+                # job_id de referencia que heredan los slides es el de la portada BUENA.
+                return await _run(provider.generate_base, await _prompt_portada(True),
+                                  aspect_ratio=hfmcp.FEED_IMAGE_ASPECT)
+
             try:
-                topic = content.get("title", "professional topic")
-                base_prompt = (
-                    f"Editorial photography about: {topic}. "
-                    "Clean composition, soft natural lighting, muted professional palette, "
-                    "composition with negative space at the bottom center for overlay text. "
-                    "No text, no typography, no logos, no watermarks."
-                )
-                base_url = await _run(provider.generate_base, base_prompt)
+                base_url = await _run(provider.generate_base, await _prompt_portada(),
+                                      aspect_ratio=hfmcp.FEED_IMAGE_ASPECT)
             except Exception as e:
                 await _push(q, {"step": "images", "status": "warn", "msg": f"Error generando imagen base: {e}"})
             image_warnings.extend(provider.pop_warnings())
+            if base_url:
+                base_url = await _verificar_texto(job, q, cfg, subkey="cover", src=base_url,
+                                                  texto=cover_text, rehacer=_rehacer_portada)
+                image_warnings.extend(provider.pop_warnings())
+            # Referencia visual de la portada (su job_id en el MCP). Se guarda en el
+            # job porque rehacer un slide desde la revisión crea su propio provider y
+            # necesita mirar la MISMA portada que miraron los demás slides.
+            job["images"]["reference"] = getattr(provider, "base_reference", "")
 
         # ── 5b: Pre-warm carousel extra slides immediately in background ──────────
         # The provider starts generating slides 1 & 2 while LinkedIn/IG-0 overlays run.
         extra_prompts: list[str] = []
         extra_handles: list = []
+        reference = ""
+        # Texto impreso en cada slide extra: una idea del carrusel por slide.
+        # Índice paralelo a `extra_prompts` / `extra_handles`.
+        extra_texts: list[str] = []
         if is_carousel and base_url:
-            topic = content.get("title", "engaging topic")
-            # Slides 1..n-1: (n_slides - 2) info slides + 1 closing/credits slide.
-            n_info = n_slides - 2
-            info_prompts = [
-                f"Conceptual editorial visual about: {topic}. Lateral composition or texture, variation {i + 1}. Same color palette as the main image. No text, no typography, no logos, no watermarks."
-                for i in range(n_info)
-            ]
-            credits_prompt = (
-                f"Minimal closing visual about: {topic}. Simple centered composition, low saturation. "
-                "Same style as the main image. No text, no typography, no logos, no watermarks."
-            )
-            extra_prompts = info_prompts + [credits_prompt]
+            # Slides 1..n-1: (n_slides - 1) slides de info. Cada uno sale de su propio
+            # prompt del LLM (un detalle distinto de la fuente), dentro del mismo mundo
+            # visual que la portada; el último no es la excepción.
+            extra_texts = [(slide_texts[i] if i < len(slide_texts) else "") for i in range(n_info)]
+            bases = _slide_image_prompts(posts, content, n_info,
+                                         con_texto=texto_en_prompt and any(extra_texts))
+            for i, base_prompt_slide in enumerate(bases):
+                extra_prompts.append(await _prompt_para(
+                    job, cfg, subkey=f"ig-{i + 1}", prompt_base=base_prompt_slide, posts=posts,
+                    content=content, texto=extra_texts[i] if i < len(extra_texts) else "",
+                    rol="contenido", aspect=aspect_feed, lang=lang,
+                ))
+            # Referencia visual: los slides se generan MIRANDO la portada (su job_id va
+            # en `medias`), que es lo que hace que compartan paleta y luz de verdad. Si
+            # el modelo no acepta referencias o la portada cayó a plantilla local, queda
+            # vacía y se genera como siempre — la coherencia la sostienen entonces la
+            # dirección de arte compartida y el grade de más abajo.
+            reference = job["images"]["reference"] if cfg.image_reference_slides else ""
             # Start generating slides 1..n-1 now (Higgsfield submits the jobs; the template
             # provider returns immediate handles) so they render while LinkedIn/IG-0 overlays run.
             # raw_urls for these slides are filled in at resolve time, once we have a real src.
-            extra_handles = await _run(provider.prewarm_extras, extra_prompts)
+            extra_handles = await _run(provider.prewarm_extras, extra_prompts,
+                                       aspect_ratio=hfmcp.FEED_IMAGE_ASPECT, reference=reference)
 
         if not _HAS_OVERLAY:
-            await _push(q, {"step": "images", "status": "warn", "msg": "Pillow no instalado — usando imágenes sin overlay"})
-
-        # Overlay copy — prefer the LLM's dedicated image_text block (a finished
-        # cover phrase + one closed idea per slide); degrade to the old heuristics
-        # (kept as a safety net) when it's missing/short, and warn visibly.
-        channel = content.get("channel", "")
-        title_str = content.get("title", "")
-        # Number of info (argument) slides between the hook and the credits slide.
-        n_info = (n_slides - 2) if is_carousel else 1
-
-        image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
-        llm_hook = (image_text or {}).get("hook", "").strip()
-        llm_slides = [s for s in (image_text or {}).get("slides", []) if s.strip()]
-
-        # Hook: image_text.hook for every network; fall back to the first caption line.
-        if llm_hook:
-            li_hook = llm_hook
-            ig_hook = llm_hook
-            fb_hook = llm_hook
-        else:
-            li_hook = _extract_hook(posts.get("linkedin_text", ""), max_words=12)
-            ig_hook = _extract_hook(posts.get("instagram_text", ""), max_words=10)
-            fb_hook = _extract_hook(posts.get("facebook_text", ""), max_words=12)
-            if do_linkedin or do_instagram or do_facebook:
-                overlay_text_warnings.append("sin texto de portada del modelo")
-
-        # Info slides: exactly one closed idea per slide. Use image_text.slides; if
-        # short, pad from the heuristic body lines (NOT a generic "watch the video").
-        slide_texts: list[str] = []
-        if is_carousel:
-            heur_lines = _extract_body_lines(posts.get("instagram_text", ""), max_lines=n_info)
-            for i in range(n_info):
-                if i < len(llm_slides):
-                    slide_texts.append(llm_slides[i])
-                elif i < len(heur_lines):
-                    slide_texts.append(heur_lines[i])
-                else:
-                    slide_texts.append("")  # renderer pads with empty (no filler phrase)
-            if len(llm_slides) < n_info:
-                overlay_text_warnings.append(
-                    f"el modelo dio {len(llm_slides)} de {n_info} frases para el carrusel"
-                )
+            await _push(q, {"step": "images", "status": "warn",
+                            "msg": "Pillow no instalado — las imágenes van sin recorte por red"})
 
         # ── 5c: LinkedIn overlay (uses base_url — emits done immediately) ────────
         # En carrusel no hay hook propio por red: LinkedIn/Facebook comparten los
         # slides del carrusel (se suben una sola vez más abajo).
-        if do_linkedin and not is_carousel:
-            if base_url:
-                raw_urls["li-hook"] = base_url
-                if _HAS_OVERLAY:
-                    try:
-                        png = await _run(ov.render_linkedin_hook, base_url, li_hook, lang=lang, tone=tono_li)
-                        image_bytes["li-hook"] = png
-                        _save_image(job["id"], "li-hook", png)
-                        await _push(q, {"step": "images", "status": "done", "subkey": "li-hook"})
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": "li-hook", "msg": f"Overlay falló: {e}"})
-                else:
-                    await _push(q, {"step": "images", "status": "done", "subkey": "li-hook"})
-            else:
-                await _push(q, {"step": "images", "status": "warn", "subkey": "li-hook", "msg": "Sin imagen base"})
-
-        # ── 5c-bis: Facebook overlay (mismo formato 4:5 que LinkedIn — usa base_url) ──
-        if do_facebook and not is_carousel:
-            if base_url:
-                raw_urls["fb-hook"] = base_url
-                if _HAS_OVERLAY:
-                    try:
-                        png = await _run(ov.render_linkedin_hook, base_url, fb_hook, lang=lang, tone=tono_fb)
-                        image_bytes["fb-hook"] = png
-                        _save_image(job["id"], "fb-hook", png)
-                        await _push(q, {"step": "images", "status": "done", "subkey": "fb-hook"})
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": "fb-hook", "msg": f"Overlay falló: {e}"})
-                else:
-                    await _push(q, {"step": "images", "status": "done", "subkey": "fb-hook"})
-            else:
-                await _push(q, {"step": "images", "status": "warn", "subkey": "fb-hook", "msg": "Sin imagen base"})
-
-        # ── 5d: Instagram single / carrusel compartido ────────────────────────────
-        if do_instagram and not is_carousel:
-            # Single image (uses base_url)
-            if base_url:
-                raw_urls["ig-single"] = base_url
-                if _HAS_OVERLAY:
-                    try:
-                        png = await _run(ov.render_single, base_url, ig_hook, lang=lang, tone=tono_ig)
-                        image_bytes["ig-single"] = png
-                        _save_image(job["id"], "ig-single", png)
-                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": f"Overlay falló: {e}"})
-                else:
-                    await _push(q, {"step": "images", "status": "done", "subkey": "ig-single"})
-            else:
-                await _push(q, {"step": "images", "status": "warn", "subkey": "ig-single", "msg": "Sin imagen base"})
+        # Las imágenes que salen de la base son las MISMAS para todas las redes: con
+        # el texto dentro del prompt, lo único que hacía distinta a la de LinkedIn de
+        # la de Instagram era el copy que se les dibujaba encima. Hoy solo queda el
+        # recorte al aspecto del feed, que es común, así que se prepara una vez y se
+        # comparte. Se conserva un subkey por red porque cada una publica su medio.
+        derivadas = ["ig-0"] if is_carousel else (
+            (["li-hook"] if do_linkedin else [])
+            + (["fb-hook"] if do_facebook else [])
+            + (["ig-single"] if do_instagram else [])
+        )
+        if derivadas and not base_url:
+            for key in derivadas:
+                await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": "Sin imagen base"})
+        elif derivadas:
+            png_base: bytes | None = None
+            if _HAS_OVERLAY:
+                try:
+                    png_base = await _render_imagen(base_url, cfg=cfg, texto=cover_text,
+                                                    rol="portada", identidad=_identidad(job))
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": derivadas[0],
+                                    "msg": f"No se pudo preparar la imagen: {e}"})
+            for key in derivadas:
+                raw_urls[key] = base_url
+                if png_base is not None:
+                    image_bytes[key] = png_base
+                    _save_image(job["id"], key, png_base)
+                await _push(q, {"step": "images", "status": "done", "subkey": key})
 
         if is_carousel:
-            # El carrusel se genera una sola vez y lo comparten todas las redes
-            # activas (IG nativo, LinkedIn document carousel, Facebook multi-foto).
-            # Portada: hook de IG con respaldo en los de las otras redes (por si
-            # Instagram está desactivado y su caption vino vacío).
-            cover_hook = ig_hook or li_hook or fb_hook
-            # Carousel slide 0 (uses base_url — no extra generation needed)
-            if base_url:
-                raw_urls["ig-0"] = base_url
-                if _HAS_OVERLAY:
-                    try:
-                        png = await _run(ov.render_hook, base_url, cover_hook, lang=lang, tone=tono_ig)
-                        image_bytes["ig-0"] = png
-                        _save_image(job["id"], "ig-0", png)
-                        await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": f"Overlay falló: {e}"})
-                else:
-                    await _push(q, {"step": "images", "status": "done", "subkey": "ig-0"})
-            else:
-                await _push(q, {"step": "images", "status": "warn", "subkey": "ig-0", "msg": "Sin imagen base"})
-
-            # Carousel slides 1..n-1: (n_info) info slides + 1 credits slide.
-            # ONE closed idea per info slide (from image_text.slides, padded
-            # from heuristics — never a generic "watch the video" filler).
-            extra_slide_defs = []
-            for s in range(n_info):
-                idea = slide_texts[s] if s < len(slide_texts) else ""
-                # Bind idea via default arg so each lambda captures its own text.
-                extra_slide_defs.append((
-                    f"ig-{s + 1}",
-                    lambda u, t=idea: ov.render_info(u, t, lang=lang, tone=tono_ig),
-                ))
-            extra_slide_defs.append(
-                (f"ig-{n_slides - 1}", lambda u: ov.render_credits(u, channel, title_str, lang=lang, tone=tono_ig))
-            )
-            for i, (fname, render_fn) in enumerate(extra_slide_defs):
+            # Carousel slides 1..n-1: (n_info) info slides, el último incluido.
+            for i, fname in enumerate(f"ig-{s + 1}" for s in range(n_info)):
                 if i >= len(extra_handles):
                     await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": "Sin imagen base"})
                     continue
                 try:
                     slide_url = await _run(provider.resolve, extra_handles[i])
                     image_warnings.extend(provider.pop_warnings())
+                    # QA del texto renderizado en ESTE slide. El reintento vuelve a
+                    # generar solo este (mismo aspecto y misma referencia a la portada),
+                    # con la instrucción de texto reforzada.
+                    texto_slide = extra_texts[i] if i < len(extra_texts) else ""
+                    if texto_slide:
+                        base_slide = _slide_image_prompts(posts, content, n_info, con_texto=True)[i]
+
+                        async def _rehacer_slide(_i=i, _base=base_slide,
+                                                 _texto=texto_slide, _key=fname) -> str:
+                            prompt = await _prompt_para(
+                                job, cfg, subkey=_key, prompt_base=_base, posts=posts,
+                                content=content, texto=_texto, rol="contenido", aspect=aspect_feed,
+                                lang=lang, refuerzo=True,
+                            )
+                            return await _run(provider.generate_one, prompt,
+                                              aspect_ratio=hfmcp.FEED_IMAGE_ASPECT,
+                                              reference=reference)
+
+                        slide_url = await _verificar_texto(job, q, cfg, subkey=fname, src=slide_url,
+                                                           texto=texto_slide, rehacer=_rehacer_slide)
+                        image_warnings.extend(provider.pop_warnings())
                     raw_urls[fname] = slide_url
                     if _HAS_OVERLAY:
-                        png = await _run(render_fn, slide_url)
+                        png = await _render_imagen(slide_url, cfg=cfg, texto=texto_slide,
+                                                   rol="contenido", identidad=_identidad(job))
+                        png = await _match_cover_grade(png, image_bytes.get("ig-0"), cfg)
                         image_bytes[fname] = png
                         _save_image(job["id"], fname, png)
                     await _push(q, {"step": "images", "status": "done", "subkey": fname})
@@ -1460,80 +2015,9 @@ async def _run_media_phase(job: dict):
                 await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": "No se pudo generar"})
 
         # ── 5e: Upload ────────────────────────────────────────────────────────────
-        li_media_urls: list[str] = []
-        ig_media_urls: list[str] = []
-        fb_media_urls: list[str] = []
-
-        if is_carousel:
-            # Un solo juego de slides subido una vez y compartido por las redes
-            # activas (LinkedIn document carousel / IG carousel / FB multi-foto).
-            carousel_urls: list[str] = []
-            for key in [f"ig-{i}" for i in range(n_slides)]:
-                if key in image_bytes:
-                    try:
-                        u = await _run(bc.upload_media_local, image_bytes[key], f"{key}.png", api_key=cfg.blotato_api_key)
-                        carousel_urls.append(u)
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                        carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
-                else:
-                    carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
-
-            li_media_urls = list(carousel_urls) if do_linkedin else []
-            ig_media_urls = list(carousel_urls) if do_instagram else []
-            fb_media_urls = list(carousel_urls) if do_facebook else []
-            if do_linkedin and carousel_urls:
-                job["images"]["blotato_urls"]["linkedin"] = carousel_urls[0]
-            if do_facebook and carousel_urls:
-                job["images"]["blotato_urls"]["facebook"] = carousel_urls[0]
-            if do_instagram:
-                job["images"]["blotato_urls"]["instagram"] = ig_media_urls
-        else:
-            if do_linkedin:
-                key = "li-hook"
-                if key in image_bytes:
-                    try:
-                        url_li = await _run(bc.upload_media_local, image_bytes[key], "linkedin-hook.png", api_key=cfg.blotato_api_key)
-                        li_media_urls = [url_li]
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                        li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
-                else:
-                    li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
-                if li_media_urls:
-                    job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
-
-            if do_facebook:
-                key = "fb-hook"
-                if key in image_bytes:
-                    try:
-                        url_fb = await _run(bc.upload_media_local, image_bytes[key], "facebook-hook.png", api_key=cfg.blotato_api_key)
-                        fb_media_urls = [url_fb]
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                        fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
-                else:
-                    fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
-                if fb_media_urls:
-                    job["images"]["blotato_urls"]["facebook"] = fb_media_urls[0]
-
-            if do_instagram:
-                key = "ig-single"
-                if key in image_bytes:
-                    try:
-                        u = await _run(bc.upload_media_local, image_bytes[key], "ig-single.png", api_key=cfg.blotato_api_key)
-                        ig_media_urls = [u]
-                    except Exception as e:
-                        await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
-                        ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
-                else:
-                    ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
-
-                job["images"]["blotato_urls"]["instagram"] = ig_media_urls
-
-        job["_li_media_urls"] = li_media_urls
-        job["_ig_media_urls"] = ig_media_urls
-        job["_fb_media_urls"] = fb_media_urls
+        await _subir_imagenes(job, q, cfg, is_carousel=is_carousel, n_slides=n_slides,
+                              do_linkedin=do_linkedin, do_instagram=do_instagram,
+                              do_facebook=do_facebook)
 
         # Surface warnings — live in the progress step and durably (stored on the
         # job → shown on the review screen). Two independent kinds can co-occur:
@@ -1569,7 +2053,6 @@ async def _run_media_phase(job: dict):
                 f"El texto sobre las imágenes usó el método de respaldo ({'; '.join(reasons)}) — "
                 "revisa que el copy de los visuales se lea bien."
             )
-
         if notices:
             notice = " ".join(notices)
             job["images"]["notice"] = notice
@@ -1585,6 +2068,286 @@ async def _run_media_phase(job: dict):
         job["status"] = "error"
         job["error_msg"] = str(e)
         await _push(q, {"step": "error", "msg": str(e)})
+
+
+async def _subir_imagenes(job: dict, q: asyncio.Queue, cfg, *, is_carousel: bool,
+                          n_slides: int, do_linkedin: bool, do_instagram: bool,
+                          do_facebook: bool) -> None:
+    """Sube el juego de imágenes a Blotato y deja las URLs publicables en el job.
+
+    Fuente única de la subida: la corre la fase de imágenes al terminar y la vuelve
+    a correr la regeneración de una imagen suelta, para que rehacer un slide deje el
+    juego publicable exactamente igual de armado (mismo orden, mismos respaldos).
+    Lee `images.bytes` (lo ya renderizado) con respaldo en `images.raw_urls`.
+    """
+    image_bytes: dict[str, bytes] = job["images"]["bytes"]
+    raw_urls: dict[str, str] = job["images"]["raw_urls"]
+    li_media_urls: list[str] = []
+    ig_media_urls: list[str] = []
+    fb_media_urls: list[str] = []
+
+    if is_carousel:
+        # Un solo juego de slides subido una vez y compartido por las redes
+        # activas (LinkedIn document carousel / IG carousel / FB multi-foto).
+        carousel_urls: list[str] = []
+        for key in [f"ig-{i}" for i in range(n_slides)]:
+            if key in image_bytes:
+                try:
+                    u = await _run(bc.upload_media_local, image_bytes[key], f"{key}.png", api_key=cfg.blotato_api_key)
+                    carousel_urls.append(u)
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                    carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
+            else:
+                carousel_urls.extend(await _media_fallback(q, raw_urls, key, f"{key}.png", cfg))
+
+        li_media_urls = list(carousel_urls) if do_linkedin else []
+        ig_media_urls = list(carousel_urls) if do_instagram else []
+        fb_media_urls = list(carousel_urls) if do_facebook else []
+        if do_linkedin and carousel_urls:
+            job["images"]["blotato_urls"]["linkedin"] = carousel_urls[0]
+        if do_facebook and carousel_urls:
+            job["images"]["blotato_urls"]["facebook"] = carousel_urls[0]
+        if do_instagram:
+            job["images"]["blotato_urls"]["instagram"] = ig_media_urls
+    else:
+        if do_linkedin:
+            key = "li-hook"
+            if key in image_bytes:
+                try:
+                    url_li = await _run(bc.upload_media_local, image_bytes[key], "linkedin-hook.png", api_key=cfg.blotato_api_key)
+                    li_media_urls = [url_li]
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                    li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
+            else:
+                li_media_urls = await _media_fallback(q, raw_urls, key, "linkedin-hook.png", cfg)
+            if li_media_urls:
+                job["images"]["blotato_urls"]["linkedin"] = li_media_urls[0]
+
+        if do_facebook:
+            key = "fb-hook"
+            if key in image_bytes:
+                try:
+                    url_fb = await _run(bc.upload_media_local, image_bytes[key], "facebook-hook.png", api_key=cfg.blotato_api_key)
+                    fb_media_urls = [url_fb]
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                    fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
+            else:
+                fb_media_urls = await _media_fallback(q, raw_urls, key, "facebook-hook.png", cfg)
+            if fb_media_urls:
+                job["images"]["blotato_urls"]["facebook"] = fb_media_urls[0]
+
+        if do_instagram:
+            key = "ig-single"
+            if key in image_bytes:
+                try:
+                    u = await _run(bc.upload_media_local, image_bytes[key], "ig-single.png", api_key=cfg.blotato_api_key)
+                    ig_media_urls = [u]
+                except Exception as e:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": key, "msg": f"Upload falló: {e}"})
+                    ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
+            else:
+                ig_media_urls = await _media_fallback(q, raw_urls, key, "ig-single.png", cfg)
+
+            job["images"]["blotato_urls"]["instagram"] = ig_media_urls
+
+    job["_li_media_urls"] = li_media_urls
+    job["_ig_media_urls"] = ig_media_urls
+    job["_fb_media_urls"] = fb_media_urls
+
+
+# ── Rehacer UNA imagen desde la revisión ────────────────────────────────────────
+#
+# Hasta acá, un slide que salía mal costaba rehacer el post entero: la unidad de
+# reintento era el job. Esto rehace UNA imagen —mismo prompt, mismo texto y misma
+# referencia visual que la primera vez—, vuelve a subir el juego a Blotato y deja
+# el resto del set intacto. Vive en el núcleo compartido, así que la revisión del
+# individual y la del lote usan el MISMO endpoint (`POST /jobs/{id}/regenerate`).
+
+# Subkeys que salen de la MISMA imagen base: rehacer cualquiera de ellas rehace la
+# base, y por lo tanto cambia la imagen de todas las redes del post.
+_SUBKEYS_PORTADA = ("ig-0", "li-hook", "fb-hook", "ig-single")
+
+
+def subkeys_regenerables(job: dict) -> list[str]:
+    """Imágenes de este job que la revisión puede rehacer de a una.
+
+    Vacía cuando la unidad de reintento no es una imagen: video (reel), medio
+    subido por el usuario o recorrido de fotos. El orden es el de la pieza
+    (portada primero), que es como los muestra la revisión.
+    """
+    params = job["params"]
+    if params.get("media_origin", "generar") != "generar":
+        return []
+    tipo_post = params.get("tipo_post", "post")
+    if tipo_post == "reel":
+        return []
+    if tipo_post == "historia":
+        return ["ig-story"] if params.get("historia_formato", "imagen") == "imagen" else []
+    if params.get("formato_instagram", "imagen-unica") == "carrusel":
+        return [f"ig-{i}" for i in range(_n_slides(params))]
+    nets = active_networks(params)
+    return [k for k, red in (("li-hook", "linkedin"), ("fb-hook", "facebook"),
+                             ("ig-single", "instagram")) if red in nets]
+
+
+async def regenerate_image(job: dict, subkey: str) -> dict:
+    """Rehace UNA imagen del set ya generado y vuelve a subir el juego a Blotato.
+
+    Cuesta una generación (2 créditos con el modelo por defecto). Devuelve
+    `{"subkeys": [...], "aviso": str}`: las imágenes que cambiaron y el aviso del
+    proveedor si hubo que degradar a plantilla local.
+
+    Rehacer la portada de un post de imagen única cambia la de las TRES redes: las
+    tres comparten la misma base y solo se diferencian en el recorte. En carrusel,
+    la portada nueva pasa a ser la referencia visual de los slides que se rehagan
+    después (los ya generados siguen mirando la anterior, que es la que los hizo).
+    """
+    params = job["params"]
+    cfg = job["_cfg"]
+    q: asyncio.Queue = job["_queue"]
+    posts = job["posts"]
+    content = job["content"]
+
+    if subkey not in subkeys_regenerables(job):
+        raise ValueError(f"No se puede rehacer «{subkey}» en este post.")
+
+    lang = params.get("lang") or content.get("lang", "es")
+    nets = active_networks(params)
+    is_carousel = params.get("formato_instagram", "imagen-unica") == "carrusel"
+    n_slides = _n_slides(params)
+    n_info = (n_slides - 1) if is_carousel else 1
+    texto_en_prompt = _text_in_prompt(cfg)
+
+    copy_img = _copy_de_imagenes(posts, cfg, n_info=n_info, is_carousel=is_carousel)
+    img_model = _job_model(job, "modelo_imagen", cfg.higgsfield_mcp_image_model)
+    provider = improv.make_provider(
+        force_template=params.get("fuente_imagen", "higgsfield") == "template",
+        mcp_image_model=img_model, template_set=_template_set(params),
+    )
+    image_bytes: dict[str, bytes] = job["images"]["bytes"]
+    raw_urls: dict[str, str] = job["images"]["raw_urls"]
+
+    es_historia = subkey == "ig-story"
+    es_portada = subkey in _SUBKEYS_PORTADA
+    pedido = "9:16" if es_historia else hfmcp.FEED_IMAGE_ASPECT
+    aspect = hfmcp.image_aspect(pedido, model=img_model)
+
+    await _push(q, {"step": "images", "status": "running", "msg": f"Rehaciendo {subkey}..."})
+
+    # ── Qué dice esta imagen y con qué prompt se pide ─────────────────────────
+    # El texto y la escena salen de las MISMAS funciones que la primera generación:
+    # rehacer un slide no puede cambiar lo que el slide dice ni su encuadre en la
+    # escalera, solo la tirada del modelo.
+    if es_historia:
+        texto = _texto_historia(posts)
+        base_prompt = _cover_image_prompt(posts, content, vertical=True,
+                                          con_texto=bool(texto) and texto_en_prompt)
+        rol = "portada"
+    elif es_portada:
+        texto = copy_img["portada"]
+        base_prompt = _cover_image_prompt(posts, content,
+                                          con_texto=bool(texto) and texto_en_prompt)
+        rol = "portada"
+    else:
+        i = int(subkey.rsplit("-", 1)[1]) - 1
+        slides = copy_img["slides"]
+        texto = slides[i] if i < len(slides) else ""
+        base_prompt = _slide_image_prompts(
+            posts, content, n_info, con_texto=texto_en_prompt and any(slides),
+        )[i]
+        rol = "contenido"
+
+    async def _prompt(refuerzo: bool = False) -> str:
+        return await _prompt_para(job, cfg, subkey=subkey, prompt_base=base_prompt,
+                                  posts=posts, content=content, texto=texto, rol=rol,
+                                  aspect=aspect, lang=lang, refuerzo=refuerzo)
+
+    referencia = job["images"].get("reference", "") if cfg.image_reference_slides else ""
+
+    if es_portada or es_historia:
+        # `generate_base` (no `generate_one`) a propósito: el job_id de la portada
+        # nueva es el que van a heredar como referencia los slides que se rehagan.
+        async def _rehacer() -> str:
+            return await _run(provider.generate_base, await _prompt(True), aspect_ratio=pedido)
+
+        src = await _run(provider.generate_base, await _prompt(), aspect_ratio=pedido)
+    else:
+        async def _rehacer() -> str:
+            return await _run(provider.generate_one, await _prompt(True),
+                              aspect_ratio=pedido, reference=referencia)
+
+        src = await _run(provider.generate_one, await _prompt(),
+                         aspect_ratio=pedido, reference=referencia)
+
+    # Mismo QA de texto que en la generación normal (lee lo impreso y el recorte).
+    src = await _verificar_texto(job, q, cfg, subkey=subkey, src=src, texto=texto,
+                                 rehacer=_rehacer)
+    avisos = provider.pop_warnings()
+    if (es_portada or es_historia) and getattr(provider, "base_reference", ""):
+        job["images"]["reference"] = provider.base_reference
+
+    # ── Recorte al aspecto de destino ─────────────────────────────────────────
+    # Rehacer la portada de un post de imagen única cambia la de las tres redes:
+    # las tres son la misma base con el mismo recorte de feed.
+    if es_historia:
+        destinos = ["ig-story"]
+    elif es_portada and is_carousel:
+        destinos = ["ig-0"]
+    elif es_portada:
+        destinos = [k for k, red in (("li-hook", "linkedin"), ("fb-hook", "facebook"),
+                                     ("ig-single", "instagram")) if red in nets]
+    else:
+        destinos = [subkey]
+
+    png = None
+    if _HAS_OVERLAY:
+        png = await _render_imagen(src, cfg=cfg, texto=texto, rol=rol, historia=es_historia,
+                                   identidad=_identidad(job))
+        if not (es_portada or es_historia):
+            # El slide nuevo se iguala a la portada, igual que en la generación.
+            png = await _match_cover_grade(png, image_bytes.get("ig-0"), cfg)
+
+    cambiados: list[str] = []
+    for key in destinos:
+        raw_urls[key] = src
+        if png is not None:
+            image_bytes[key] = png
+            _save_image(job["id"], key, png)
+        cambiados.append(key)
+        await _push(q, {"step": "images", "status": "done", "subkey": key})
+
+    # ── Volver a dejar el juego publicable ────────────────────────────────────
+    if es_historia:
+        png = image_bytes.get("ig-story")
+        if png:
+            url = await _run(bc.upload_media_local, png, "ig-story.png", api_key=cfg.blotato_api_key)
+        else:
+            url = await _run(_publishable_media, src, "ig-story.png", api_key=cfg.blotato_api_key)
+        do_instagram, do_facebook = "instagram" in nets, "facebook" in nets
+        job["_ig_media_urls"] = [url] if do_instagram else []
+        job["_fb_media_urls"] = [url] if do_facebook else []
+        job["images"]["blotato_urls"]["instagram"] = [url] if do_instagram else []
+        job["images"]["blotato_urls"]["facebook"] = url if do_facebook else ""
+    else:
+        await _subir_imagenes(job, q, cfg, is_carousel=is_carousel, n_slides=n_slides,
+                              do_linkedin="linkedin" in nets, do_instagram="instagram" in nets,
+                              do_facebook="facebook" in nets)
+
+    job["images"]["provider"] = provider.name
+    hf_gens = getattr(provider, "hf_generations", 0)
+    if hf_gens:
+        await _track(job, service="higgsfield_mcp", operation="image_generation",
+                     units={"generations": hf_gens}, model=img_model)
+
+    aviso = ""
+    if avisos:
+        aviso = (f"Higgsfield no disponible ({'; '.join(dict.fromkeys(avisos))}) — "
+                 "se usó la plantilla de respaldo.")
+        await _push(q, {"step": "images", "status": "warn", "subkey": subkey, "msg": aviso})
+    return {"subkeys": cambiados, "aviso": aviso}
 
 
 # ── Publishing ──────────────────────────────────────────────────────────────────

@@ -365,6 +365,22 @@ async def _track_extraccion(uso: dict) -> None:
         pass  # record_event ya es best-effort; este guard cubre el armado del contexto
 
 
+def _params_identidad(fila: dict) -> dict:
+    """La identidad activa, con el shape con el que entra en `params` de un job.
+
+    El id y el nombre viajan junto al JSON para poder decir DESPUÉS con qué identidad
+    salió cada post: el JSON está congelado y no se puede reconocer por sí solo si
+    entretanto la identidad se renombró o se editó.
+
+    Fuente única de esa forma para los DOS flujos: lo usan `create_job` y el lote.
+    """
+    return {
+        "identidad_visual": fila.get("identity_json") or {},
+        "identidad_visual_id": fila.get("id") or "",
+        "identidad_visual_nombre": fila.get("name") or "",
+    }
+
+
 @app.post("/identities/extract")
 async def extract_identity(request: Request,
                            photos: Annotated[list[UploadFile], File()] = []):
@@ -407,6 +423,7 @@ async def extract_identity(request: Request,
 
 @app.post("/jobs")
 async def create_job(
+    request: Request,
     source_type: Annotated[str, Form()] = "youtube",
     youtube_url: Annotated[str, Form()] = "",
     manual_text: Annotated[str, Form()] = "",
@@ -605,6 +622,10 @@ async def create_job(
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
+        # Identidad visual activa del usuario, CONGELADA en el job: cambiarla mientras
+        # esto genera no puede alterar un job en vuelo. `activa` nunca falla — sin base
+        # devuelve la de la casa y el post sale con el look de siempre.
+        **_params_identidad(await identity_store.activa(users.current_user_id(request))),
     }
     job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename,
                    final_media_bytes=final_media_bytes, final_media_filename=final_media_filename,
@@ -1112,6 +1133,7 @@ def sheets_template():
 
 @app.post("/sheets/jobs")
 async def create_sheet_batch(
+    request: Request,
     sheet_file: Annotated[UploadFile, File()],
     linkedin_account_id: Annotated[str, Form()] = "",
     linkedin_page_id: Annotated[str, Form()] = "",
@@ -1178,6 +1200,10 @@ async def create_sheet_batch(
         "dry_run": dry_run,
         "tz_offset": tz_offset,
         "account_params": account_params,
+        # Igual que en el individual, la identidad se congela al crear: UNA vez para
+        # todo el lote, para que no salgan dos filas con estéticas distintas.
+        "identidad_params": _params_identidad(
+            await identity_store.activa(users.current_user_id(request))),
         "rows": rows,
         "_cfg": cfg,
     }

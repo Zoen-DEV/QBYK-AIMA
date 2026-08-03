@@ -1,10 +1,19 @@
-"""Orquestador de la creación en lote (en dos fases, con aprobación intermedia).
+"""Orquestador de la creación en lote (tres fases, con dos aprobaciones).
 
-1. `run_batch` GENERA el contenido de cada fila (`make_job` → `run_pipeline`) pero
-   NO publica: al terminar deja el batch en estado "review" para que el usuario vea
-   un preview de todos los posts.
-2. Tras la aprobación del usuario, `publish_batch` PUBLICA/PROGRAMA en Blotato
+El lote recorre exactamente las mismas compuertas que el flujo individual, solo que
+a nivel de lote en vez de por post:
+
+1. `run_batch` ESCRIBE el contenido de cada fila (`make_job` → `run_pipeline`). El
+   pipeline pausa en `status="preview"` antes de gastar créditos, así que el batch
+   queda en "preview": el usuario revisa y edita guiones, storyboards y prompts de
+   todas las filas (con `POST /jobs/{id}/edit`, el mismo endpoint del individual).
+2. Tras esa aprobación, `generate_batch_media` GENERA el medio de cada fila
+   (`resume_media`) y deja el batch en "review" para ver los posts ya con imagen/video.
+3. Tras la segunda aprobación, `publish_batch` PUBLICA/PROGRAMA en Blotato
    (`publish_job_posts`) usando la fecha/hora de cada fila.
+
+La compuerta de la fase 1 existe porque el video es lo caro y lo que más falla: un
+storyboard malo detectado acá cuesta cero, detectado después cuesta el reel entero.
 
 Las filas se procesan de a una (secuencial) para no chocar con el rate-limit de
 subida de medios de Blotato (10 req/min). Cada fila queda registrada como un job
@@ -12,7 +21,7 @@ individual en el store global, así puede inspeccionarse con las páginas /jobs/
 """
 from datetime import datetime, timedelta
 
-from job_runner import make_job, run_pipeline, publish_job_posts
+from job_runner import make_job, run_pipeline, resume_media, publish_job_posts
 
 
 def to_utc_iso(dt: datetime | None, tz_offset_min: int) -> str | None:
@@ -45,22 +54,29 @@ def _row_status_from_result(result: dict, schedule_iso: str | None, dry_run: boo
 
 
 async def run_batch(batch: dict, jobs: dict) -> None:
-    """Fase 1 — genera el contenido de todas las filas (sin publicar).
+    """Fase 1 — escribe el contenido de todas las filas (sin generar medio ni publicar).
 
-    Al terminar deja el batch en "review": el usuario revisa el preview de cada post
-    y aprueba antes de que `publish_batch` los publique/programe.
+    Con la compuerta de preview activada (default) el pipeline de cada fila pausa
+    apenas termina la escritura, así que el batch queda en "preview" y espera a que
+    el usuario revise los guiones antes de que `generate_batch_media` gaste créditos.
     """
     cfg = batch["_cfg"]
 
     for row in batch["rows"]:
         spec = row["_spec"]
-        # params por fila + cuentas globales + dry-run global.
+        # params por fila + cuentas globales + dry-run global + identidad visual global.
         params = dict(spec["params"])
         params.update(batch["account_params"])
         params["dry_run"] = batch["dry_run"]
+        # La identidad se resolvió UNA vez al subir el sheet (no por fila): un lote es
+        # un envío de un usuario en un momento, y cambiar la identidad activa a mitad
+        # de la escritura no puede partir el lote en dos estéticas.
+        params.update(batch.get("identidad_params") or {})
 
         try:
-            row["status"] = "generating"
+            # "writing" (fase 1) vs "generating" (fase 2, el medio): estados distintos
+            # para que la UI sepa en qué compuerta está cada fila.
+            row["status"] = "writing"
             job = make_job(
                 cfg, params,
                 upload_bytes=spec["upload_bytes"],
@@ -77,9 +93,44 @@ async def run_batch(batch: dict, jobs: dict) -> None:
                 row["error"] = job.get("error_msg") or "Error generando el contenido."
                 continue
 
-            # El título ya está disponible tras el pipeline.
+            # El título ya está disponible tras la fase de escritura.
             row["title"] = (job.get("content") or {}).get("title") or row.get("label")
-            # Generado y a la espera de aprobación del usuario.
+            # Con la compuerta activada el job quedó en "preview": la fila espera la
+            # revisión del guion. Sin compuerta (preview_step=0) el medio ya se generó
+            # y la fila pasa directo a esperar la aprobación de publicación.
+            row["status"] = "preview" if job["status"] == "preview" else "ready"
+        except Exception as e:  # noqa: BLE001 - una fila no debe tumbar el batch
+            row["status"] = "error"
+            row["error"] = str(e)
+
+    # Si ninguna fila pausó (compuerta apagada, o todas fallaron) no hay nada que
+    # revisar: el lote salta directo a la aprobación de publicación.
+    batch["status"] = ("preview" if any(r["status"] == "preview" for r in batch["rows"])
+                       else "review")
+
+
+async def generate_batch_media(batch: dict, jobs: dict) -> None:
+    """Fase 2 — genera el medio de las filas aprobadas en el preview del lote.
+
+    Espejo exacto de `POST /jobs/{id}/generate` del flujo individual, aplicado a
+    todas las filas. Solo procesa las que están en "preview"; las que fallaron en la
+    escritura se dejan como están. Secuencial, como el resto del lote.
+    """
+    for row in batch["rows"]:
+        if row["status"] != "preview":
+            continue
+        job = jobs.get(row.get("job_id"))
+        if job is None:
+            row["status"] = "error"
+            row["error"] = "El contenido del post ya no está disponible (¿se reinició el servidor?)."
+            continue
+        try:
+            row["status"] = "generating"
+            await resume_media(job)
+            if job["status"] == "error":
+                row["status"] = "error"
+                row["error"] = job.get("error_msg") or "Error generando el medio."
+                continue
             row["status"] = "ready"
         except Exception as e:  # noqa: BLE001 - una fila no debe tumbar el batch
             row["status"] = "error"
