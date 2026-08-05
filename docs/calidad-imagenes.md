@@ -20,6 +20,96 @@ otro traje.
 | 9 · Retirar el overlay de Pillow (decisión tomada) | **Hecho** — ver más abajo |
 | 10 · El passe-partout: unos slides a sangre y otros con banda de color | **Hecho** — ver más abajo |
 | 11 · La plantilla de respaldo salía muda | **Hecho** — ver más abajo |
+| 12 · Los slides del carrusel eran versiones de la misma imagen | **Hecho** — ver más abajo |
+| 13 · Calidad profesional del carrusel (continuidad, luz, bandas, QA de conjunto) | **En curso** — ver más abajo |
+
+### Paso 13 — calidad profesional del carrusel
+
+Auditoría de un carrusel real de 5 piezas (agosto 2026): la estructura de la pieza cambiaba tres
+veces dentro del mismo carrusel, había cinco localizaciones y cinco luces distintas, el mismo
+chasis se repetía en 3 de 5 piezas, tres familias tipográficas y ninguna escalera de planos. El
+plan de ejecución completo, con las nueve causas raíz verificadas en el código, vive en
+[`plan-calidad-carrusel.md`](plan-calidad-carrusel.md). Acá se anota lo que hay que recordar
+después, no el plan.
+
+#### Presupuesto de caracteres — línea base (05/08/2026)
+
+Varias correcciones añaden texto **fijo** a todos los prompts, y ese presupuesto es finito. Se
+mide con [`api/scripts/medir_prompt.py`](../api/scripts/medir_prompt.py) (diagnóstico por
+terminal, sin red y sin modelo), sobre el peor caso: slide de info con beat, texto largo que se
+parte en titular + kicker, y `escena_portada` larga.
+
+| identidad | peor caso | largo | techo | margen |
+|---|---|---|---|---|
+| casa (`brand.json`) | `desarrollo` | 3469 | 3550 | **81** |
+| esquema (campos al tope) | `desarrollo` | 3818 | 3550 | **−268 · rechazado** |
+
+Dos cosas que la medición dejó claras y no eran obvias:
+
+1. **El presupuesto ya estaba agotado antes de empezar.** El peor caso de la casa entra pero
+   entra **podado**: `_ajustar_longitud` recorta las secciones creativas a 14 palabras, que es
+   justo el anclaje concreto del sujeto. Cualquier fase que añada texto fijo tiene que pagar el
+   techo, no el margen.
+2. **Una identidad de usuario válida puede tirar el prompt entero.** Con todos los campos de texto
+   en su tope de esquema (240 caracteres), la sección 5 sola pesa ~960 caracteres —`tipografia`,
+   `tipografia_secundaria`, `color_texto` y `color_acento` se pegan verbatim— y la poda **no toca
+   las secciones fijas**. El validador rechaza, y esa imagen se genera con el prompt base: **sin
+   bloque de texto**. No es hipotético: `visual_identity.validar` acepta exactamente esa identidad.
+
+### Paso 12 — cada slide con su función: la escalera de beats
+
+Síntoma reportado (05/08/2026): en imagen única la identidad visual funciona bien, pero **en el
+carrusel todos los slides se ven iguales**. Está bien que compartan estética; lo que falta es que
+cada uno tenga una función y que la imagen acompañe al texto que lleva impreso.
+
+**Diagnóstico.** La variación entre slides existía en el código, pero declarada en la única capa
+que el modelo puede pisar:
+
+1. `prompt_architect` solo conocía dos roles, `portada` y `contenido`. Los 2-5 slides de info
+   compartían la misma entrada de `piezas`, `zonas_texto` y `tipografia.escala`: el brief de nueve
+   secciones del slide 1 y el del slide 4 eran **idénticos salvo la sección 2**.
+2. La cláusula de lockup (`composicion_zona`) es una sola para todos: sujeto en la banda central,
+   tipo arriba y abajo. Cambiara o no el objeto, **el cuadro era el mismo cuadro**.
+3. `continuidad_set` pide *"same room, surfaces, light and palette"* — correcto para la cohesión,
+   pero sumado a 1 y 2 lo único que variaba era el objeto.
+4. La única variación estructural, la escalera `_SLIDE_FRAMINGS` de `job_runner`, entraba en el
+   **`prompt_base`**… que el arquitecto solo le enseña al modelo como *"BASE PROMPT (weak, to
+   rewrite)"*. Con el LLM disponible —el camino normal— el encuadre llegaba al prompt final solo si
+   el modelo lo repetía por su cuenta, mientras se le pedía a la vez *"do not open with a camera
+   instruction"* y se le pegaba encima el lockup. **La variación vivía en la capa blanda y la
+   uniformidad en la dura.**
+5. Nada relacionaba el encuadre con lo que el slide **dice**. `_SLIDE_FRAMINGS[i % 4]` era
+   posicional puro; el texto sí tenía secuencia narrativa (`post_writer`: la portada promete, i+1
+   avanza, el último remata) pero esa función no viajaba a la imagen. Los dos lados escribían una
+   secuencia y ninguno conocía la del otro.
+
+**Qué se hizo.** Tres capas:
+
+- **La escalera de beats** (`architect.json` → `roles` y `secuencia_roles`,
+  `prompt_architect.roles_carrusel`). Cada posición tiene una función —`tension` → `desarrollo` →
+  `prueba` → `remate`— y de ella dependen las tres cosas que escribe la app y el modelo no puede
+  pisar: la **escala del titular** (11-13% / 9-11% / 12-15%), la **presencia del acento** (la
+  tensión lo calla: un acento que sale en todos los slides deja de ser un acento) y el **plano**,
+  que pasa a ser cláusula determinista de la sección 3, junto al lockup y a la continuidad de set.
+  Lo que **no** cambia entre beats es el esqueleto —titular en la banda alta, apoyo al pie, sujeto
+  en la central—: unificarlo fue la corrección del paso 6 y es lo que hace que el set se lea como
+  un sistema.
+- **El ritmo, en la identidad visual** (`ritmo_carrusel`). El beat es estructura y es igual para
+  todas las marcas; **cómo se fotografía** ese beat es identidad: la misma escalera recorrida con
+  macros de textura o con naturalezas muertas abiertas da dos carruseles que no se parecen. Es una
+  lista ordenada por beat y opcional — vacío = el respaldo de `architect.json`, beat a beat.
+- **El beat le llega al redactor** (`post_writer._linea_beats` → `SLIDE BEATS` en el user message,
+  y `needs.beats` a las dos compuertas previas). El texto impreso del slide *i* y su escena se
+  encargan desde el mismo sitio, y quien reescribe a mano en la compuerta ve qué función cumple
+  cada slide.
+
+Costo de presupuesto: la cláusula de plano se paga con `composicion_zona_slide` (la versión corta
+del lockup, que ya no repite en genérico de qué está hecho el aire porque cada beat lo nombra en
+concreto) y con subir el techo a 3550 caracteres —y `higgsfield_mcp._MAX_PROMPT_CHARS` a 3600—,
+que es exactamente lo que la nota de la v3 de `architect.json` dejaba anticipado: con 3150 la poda
+recortaba el anclaje concreto del sujeto en **todos** los slides.
+
+Esto cierra **F6** (no había plan de encuadres) y completa **F2** por el lado estructural.
 
 ### Paso 11 — la plantilla de respaldo salía muda
 
@@ -515,7 +605,12 @@ encuadre de la escalera y lleva impresa su propia idea. Con eso desaparecieron l
 (`_texto_creditos`, `cierre_creditos` de `architect.json`), el rol `cierre` del arquitecto y el
 renderer `render_credits` de Pillow.
 
-### F6 · No hay plan de encuadres: la jerarquía visual queda al azar — **medio**
+### F6 · No hay plan de encuadres: la jerarquía visual queda al azar — **resuelto (ago 2026, paso 12)**
+
+> Lo que sigue describe el estado anterior. Hoy el encuadre lo fija el **beat** del slide
+> (`prompt_architect.roles_carrusel`) y se declara en la sección 3 del brief, que es determinista.
+> El intento intermedio —la escalera `_SLIDE_FRAMINGS`— fallaba por vivir en el `prompt_base`, que
+> el modelo puede ignorar; ver el paso 12.
 
 Al LLM se le *sugiere* variar el encuadre (*"close-up texture → wider still life → detail on a different
 object"*, [post_writer.py:62](../api/post_writer.py)), pero nada lo impone ni lo verifica, y el número de
