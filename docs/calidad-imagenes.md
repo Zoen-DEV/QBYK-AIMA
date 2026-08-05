@@ -32,6 +32,33 @@ plan de ejecución completo, con las nueve causas raíz verificadas en el códig
 [`plan-calidad-carrusel.md`](plan-calidad-carrusel.md). Acá se anota lo que hay que recordar
 después, no el plan.
 
+#### La lección transversal, que es lo que evita la próxima regresión
+
+Las nueve causas raíz son distintas, pero seis de ellas son la misma frase con otro traje:
+
+> **Una variación —o una restricción— declarada en la capa BLANDA pierde siempre contra lo
+> declarado en la dura.**
+
+La capa dura son las secciones que escribe la app con plantillas deterministas (1, 4, 5 y 9, más
+las cláusulas que se pegan a la 3 y a la 6). La blanda es todo lo que solo el LLM puede decidir:
+el `prompt_base`, que el arquitecto le enseña literalmente como *"BASE PROMPT (weak, to
+rewrite)"*, y las cinco secciones creativas. Lo que vive en la blanda llega al prompt final si el
+modelo tiene a bien repetirlo; lo que vive en la dura llega siempre. Por eso la escalera de
+planos se perdía, por eso la luz cambiaba en cada pieza, y por eso las correcciones de este paso
+mueven cosas de una capa a la otra en vez de pedirlas mejor.
+
+Y su **corolario nuevo**, que es el que nadie había visto:
+
+> **Una identidad puede escribir layout sin querer si sus campos entran verbatim en una sección
+> determinista.**
+
+`tipografia` = *"…set inside a headline **band**"* y `color_texto` = *"…over the **dark field**"*
+no son descripciones de tipo: son instrucciones de layout, y la sección 5 las pegaba tal cual. El
+modelo hizo lo que le pedían y pintó el rectángulo. La corrección no es prohibirle al usuario que
+escriba así —lo escribió el extractor, no el usuario— sino **sanear en la frontera**: los colores
+se reducen a su tinta (`prompt_architect.tinta`) y las familias pasan por `sin_layout`. Vale para
+cualquier campo que se añada mañana.
+
 #### Presupuesto de caracteres — línea base (05/08/2026)
 
 Varias correcciones añaden texto **fijo** a todos los prompts, y ese presupuesto es finito. Se
@@ -94,6 +121,32 @@ generaciones reales contra Higgsfield (créditos y sesión OAuth). Cómo hacerla
 Lo que sí está comprobado sin generar: `image_text_qa.coincide` normaliza mayúsculas y
 puntuación, así que ni la caja alta ni el reparto en líneas pueden hacer fallar la comparación
 por sí mismos. El riesgo que queda es de **render**, no de comparación.
+
+#### Qué se corrigió, causa por causa
+
+| # | Causa | Corrección | Dónde |
+|---|---|---|---|
+| C1 | `SET CONTINUITY` no se emitía en ningún slide: se comparaba el rol contra el literal `"contenido"` y los slides llegan con el nombre de su beat | Comparar contra `rol_base()` en las dos comparaciones (la cláusula y el briefing), con test parametrizado sobre `ROLES_BEAT` completo | `prompt_architect._clausula_set`, `_mensaje_arquitecto` |
+| C2 | La luz la escribía el LLM una vez por imagen, sin conocer a sus hermanas; ninguna temperatura de color en todo el pipeline | `LIGHT LOCK` prefijado a la sección 6, byte a byte idéntico en todas las piezas, con temperatura fija y app-owned. La luz pasa a ser propiedad de la identidad (`luz_identidad`), separada del tratamiento fotográfico | `architect.json`, `prompt_architect._clausula_luz`, `job_runner._marca_post` |
+| C3 | Bandas y marco: la identidad los fabricaba desde la capa dura, y el negativo por sí solo nunca bastó | Tres frentes: saneo de lo que entra en la sección 5 (`tinta`, `sin_layout`), sangrado en positivo en la sección 1, y **detector de bandas** sobre el píxel con un reintento | `prompt_architect`, `architect.json`, `image_overlay.bordes_planos`, `job_runner._verificar_bandas` |
+| C4 | Un `ritmo_carrusel` con personas contradice `No people as the main subject`: el modelo descarta el plano entero y se pierde la escalera | `PALABRAS_PERSONA` como **error** de `validar` (es inoperante, no discutible), la misma lista al extractor y al lint | `visual_identity`, `identity_extract`, `prompt_lint` |
+| C5 | Ninguna puerta comprobaba que la tipografía sirviera a escala de póster | `FAMILIAS_UI_PROHIBIDAS` como error; falta de `MARCAS_DISPLAY` y secundaria débil como reparos | `visual_identity` |
+| C6 | Nada dictaba la caja ni los cortes: la sección 5 pedía caja alta y la 4 citaba la contraria; las líneas las repartía el modelo | Caja alta en la cita cuando la identidad la declara, y cortes dictados con partición equilibrada y regla de viuda (tras `IMAGE_LINE_BREAKS`) | `prompt_architect.pide_caja_alta`, `lineas_titular` |
+| C7 | No existía QA de conjunto: cada imagen se validaba aislada | `image_set_qa`: una llamada de visión que ve las N piezas juntas, cuatro veredictos binarios con motivo, una sola ronda de regeneración | `image_set_qa`, `job_runner._verificar_conjunto` |
+| C8 | El sujeto pedía desorden y cada objeto secundario era una superficie más donde escribir pseudo-texto | Máximo 2 secundarios y ninguno rotulable; HARD RULE de plausibilidad física | `architect.json` (`llm.instruccion`) |
+| C9 | El idioma llegaba solo a la sección de texto: props por defecto estadounidenses | `CULTURAL CONTEXT` en el briefing + negativo de moneda cuando el contenido no es inglés | `prompt_architect._mensaje_arquitecto`, `_seccion_negativos` |
+
+#### Los tres controles automáticos, y por qué son tres
+
+Se acumulan a propósito, porque miran cosas distintas y ninguno ve lo del otro:
+
+1. **`prompt_lint`** — antes de generar, gratis. Mira lo que el LLM escribió y lo que la app va a
+   hacer con ello. Es el único que puede evitar el gasto.
+2. **`image_text_qa` + `bordes_planos`** — por imagen, después de generar. Ortografía, recorte y
+   passe-partout. El de bandas es Pillow (gratis); el de texto es una llamada de visión.
+3. **`image_set_qa`** — por carrusel, con todas las piezas juntas. Es el único capaz de ver que
+   cinco imágenes no se parecen entre sí, y por tanto **el único que evita que todo esto vuelva a
+   degradarse sin que nadie se entere**.
 
 ### Paso 12 — cada slide con su función: la escalera de beats
 

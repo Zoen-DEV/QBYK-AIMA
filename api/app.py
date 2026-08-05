@@ -29,7 +29,8 @@ import users
 import visual_identity
 from config import load_config
 from job_runner import (run_pipeline, resume_media, make_job, publish_job_posts, _media_mime,
-                        regenerate_image, subkeys_regenerables, _n_slides, rewrite_job_posts)
+                        regenerate_image, subkeys_regenerables, _n_slides, rewrite_job_posts,
+                        _identidad as job_identidad)
 from post_writer import (_wants_images, _wants_video, _faltantes, _segments_needed,
                          captions_needed)
 from networks import active_networks, networks_for_format, FORMATS
@@ -744,6 +745,9 @@ def _lint_job(job: dict, posts: dict | None = None) -> list[dict]:
         is_carousel=is_carousel,
         quiere_imagenes=_wants_images(params),
         quiere_video=_wants_video(params),
+        # La identidad CONGELADA en el job, no la activa del perfil: es la que va a
+        # generar estas imágenes, aunque el usuario haya cambiado de identidad después.
+        identidad=job_identidad(job),
     )
     origen = [a for a in job.get("avisos", []) if a.get("campo") != "escritura" or avisos]
     return origen + avisos

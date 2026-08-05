@@ -17,6 +17,9 @@ Cada aviso es `{"campo", "nivel", "mensaje"}` con `nivel` ∈ {"alto", "medio"}.
 import re
 from difflib import SequenceMatcher
 
+import prompt_architect as parch
+import visual_identity as vi
+
 # Escenas prohibidas por la regla de GROUNDING del prompt del sistema. Es un espejo
 # de la lista que vive en `post_writer._system_prompt`; `test_prompt_lint` comprueba
 # que sigan diciendo lo mismo, para que no se separen con el tiempo.
@@ -202,18 +205,88 @@ def _revisar_copy(posts: dict, *, avisos: list[dict]) -> None:
                 })
 
 
+# ── Red de seguridad: la identidad activa y la continuidad del set ────────────
+#
+# Los dos avisos de abajo no miran lo que escribió el LLM sino lo que va a HACER la
+# app con ello. Son la última compuerta antes de gastar créditos, y existen porque los
+# dos defectos que cubren son silenciosos por naturaleza: la continuidad de set se cayó
+# entera durante meses sin un solo error en el log, y una identidad guardada sigue
+# generando mal para siempre porque `validar` no corre al leerla.
+
+
+def _revisar_continuidad(posts: dict, *, n_info: int, avisos: list[dict]) -> None:
+    """¿La cláusula SET CONTINUITY va a llegar al prompt de los slides?
+
+    Es el canario de la regresión que originó todo esto: `_clausula_set` comparaba el
+    rol contra el literal `"contenido"` y los slides llegan con el nombre de su beat,
+    así que la cláusula dejó de emitirse en TODOS los slides de carrusel. Se comprueba
+    construyendo la cláusula de verdad —es determinista y no llama a nadie—, no
+    leyendo el código: un test protege el módulo, esto protege al usuario.
+    """
+    portada = (posts.get("image_prompt") or "").strip()
+    if not portada or n_info < 1:
+        return
+    roles = parch.roles_carrusel(n_info)
+    sin_clausula = [r for r in roles if not parch._clausula_set({
+        "contenido": {"rol_slide": r, "escena_portada": portada},
+        "marca": {}, "referencias": [], "ritmo_carrusel": [],
+    })]
+    if sin_clausula:
+        avisos.append({
+            "campo": "image_slide_prompts", "nivel": "alto",
+            "mensaje": "Los slides van a generarse SIN la cláusula de continuidad de set "
+                       f"({', '.join(sorted(set(sin_clausula)))}): cada uno inventaría su "
+                       "propia localización y su propia luz, y el carrusel saldría con "
+                       "tantos mundos como piezas. Es un fallo del código, no de lo que "
+                       "escribiste — avisa antes de gastar créditos.",
+        })
+
+
+def _revisar_identidad(identidad: dict, *, avisos: list[dict]) -> None:
+    """Reparos de la identidad activa, con las reglas de `visual_identity`.
+
+    Las identidades guardadas NO se revalidan al leerlas (a propósito: una identidad
+    guardada nunca puede tumbar una generación en curso), así que una anterior a las
+    puertas del esquema sigue generando mal hasta que alguien la abra en `/cuenta`.
+    Este es el sitio donde se entera quien está a punto de generar.
+
+    Las reglas se REUSAN, no se reimplementan: si se escribieran otra vez aquí, el
+    lint y el validador se separarían en cuanto alguien tocara una constante.
+    """
+    if not identidad:
+        return
+    ident = vi.normalizar(identidad)
+    for error in vi.validar(ident) + vi.revisar_diseno(ident):
+        # Solo lo que afecta a la IMAGEN: de una paleta corta o un hex ausente ya se
+        # queja el editor de identidades, y repetirlo acá sería ruido en otra pantalla.
+        if not any(c in error for c in ("ritmo_carrusel", "tipografia", "`desarrollo`",
+                                        "`tension`", "`prueba`", "`remate`")):
+            continue
+        avisos.append({
+            "campo": "identidad", "nivel": "medio",
+            "mensaje": f"La identidad visual activa tiene un reparo que afecta a estas "
+                       f"imágenes: {error} Corrígela en /cuenta — se guardó antes de que "
+                       "existiera esta comprobación y no se revalida al generar.",
+        })
+
+
 def revisar(posts: dict, *, n_info: int = 0, is_carousel: bool = False,
-            quiere_imagenes: bool = True, quiere_video: bool = False) -> list[dict]:
+            quiere_imagenes: bool = True, quiere_video: bool = False,
+            identidad: dict | None = None) -> list[dict]:
     """Avisos sobre los prompts y el copy de ESTE job. Nunca lanza: sin datos, [].
 
     `n_info` es la cantidad de slides de info del carrusel (los que siguen a la
     portada) — es contra ese número que se comprueba si el modelo entregó de menos.
+    `identidad` es la identidad congelada en el job (`{}` = la de la casa).
     """
     avisos: list[dict] = []
     try:
         _revisar_copy(posts, avisos=avisos)
         if quiere_imagenes:
             _revisar_imagenes(posts, n_info=n_info, is_carousel=is_carousel, avisos=avisos)
+            if is_carousel:
+                _revisar_continuidad(posts, n_info=n_info, avisos=avisos)
+            _revisar_identidad(identidad or {}, avisos=avisos)
         if quiere_video:
             _revisar_video(posts, avisos=avisos)
     except Exception as e:  # noqa: BLE001 - un lint roto no puede tapar la pantalla

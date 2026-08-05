@@ -235,3 +235,89 @@ def test_avisa_cuando_dos_redes_abren_con_la_misma_frase():
 
 def test_sin_captions_el_lint_de_copy_no_dice_nada():
     assert _msgs(pl.revisar(_posts(), n_info=3, is_carousel=True), "copy") == []
+
+
+# ── Red de seguridad: la continuidad del set y la identidad activa ───────────
+#
+# Estos dos no miran lo que escribió el LLM sino lo que va a HACER la app con ello.
+# Existen porque los dos defectos que cubren son silenciosos por naturaleza: la
+# continuidad de set se cayó entera durante meses sin un solo error en el log, y una
+# identidad guardada sigue generando mal para siempre porque `validar` no corre al
+# leerla.
+
+import prompt_architect as pa                       # noqa: E402
+import visual_identity as vi                        # noqa: E402
+
+
+def test_un_carrusel_correcto_no_avisa_de_la_continuidad():
+    assert _msgs(pl.revisar(_posts(), n_info=3, is_carousel=True),
+                 "image_slide_prompts") == []
+
+
+def test_si_la_clausula_de_set_deja_de_emitirse_el_lint_lo_canta(monkeypatch):
+    # El canario de la regresión de la fase 1, simulada: si `_clausula_set` volviera a
+    # comparar contra el literal "contenido", ningún beat la recibiría.
+    monkeypatch.setattr(pa, "_clausula_set", lambda norm: "")
+    avisos = _msgs(pl.revisar(_posts(), n_info=3, is_carousel=True), "image_slide_prompts")
+    assert any("continuidad de set" in m for m in avisos)
+
+
+def test_sin_escena_de_portada_no_se_avisa_dos_veces():
+    # Ya hay un aviso de "sin escena de portada": el de continuidad sería su eco.
+    avisos = _msgs(pl.revisar(_posts(image_prompt=""), n_info=3, is_carousel=True),
+                   "image_slide_prompts")
+    assert not any("continuidad de set" in m for m in avisos)
+
+
+# ── Identidad activa ─────────────────────────────────────────────────────────
+
+_IDENTIDAD_OK = {
+    "paleta": ["#0B0C0E", "#EDEAE0", "#C9F227"],
+    "paleta_nombres": ["near-black", "bone white", "acid lime"],
+    "color_texto": "bone white (#EDEAE0)",
+    "color_acento": "acid lime (#C9F227)",
+    "tipografia": "ultra-condensed heavy display grotesque, ALL CAPS, tight tracking",
+    "tipografia_secundaria": "same face, bold, tracking opened",
+    "tono_visual": "cinematic poster still, one spotlit subject",
+    "aspect_ratio": "4:5",
+    "referencias": ["film-poster art direction"],
+}
+
+
+def _con_identidad(identidad):
+    return _msgs(pl.revisar(_posts(), n_info=3, is_carousel=True, identidad=identidad),
+                 "identidad")
+
+
+def test_sin_identidad_no_hay_aviso_de_identidad():
+    assert _con_identidad(None) == [] and _con_identidad({}) == []
+
+
+def test_una_identidad_sana_no_genera_ruido():
+    assert _con_identidad(_IDENTIDAD_OK) == []
+    assert _con_identidad(vi.identidad_system()) == []
+
+
+def test_un_ritmo_con_personas_se_avisa_antes_de_gastar_creditos():
+    ident = {**_IDENTIDAD_OK,
+             "ritmo_carrusel": ["Tight shot of a person at the bench.", "", "", ""]}
+    avisos = _con_identidad(ident)
+    assert avisos and "person" in avisos[0]
+    assert "/cuenta" in avisos[0]
+
+
+def test_una_tipografia_de_interfaz_se_avisa():
+    avisos = _con_identidad({**_IDENTIDAD_OK, "tipografia": "Helvetica bold, ALL CAPS"})
+    assert avisos and "helvetica" in avisos[0].lower()
+
+
+def test_un_reparo_que_no_afecta_a_la_imagen_no_se_repite_aqui():
+    # De una paleta rota ya se queja el editor de identidades: repetirlo en otra
+    # pantalla es ruido, y el ruido entrena a ignorar los avisos.
+    assert _con_identidad({**_IDENTIDAD_OK, "paleta": ["#000000"]}) == []
+
+
+def test_el_lint_no_avisa_de_la_identidad_cuando_el_job_no_lleva_imagenes():
+    ident = {**_IDENTIDAD_OK, "tipografia": "Inter, medium"}
+    assert _msgs(pl.revisar(_posts(), quiere_imagenes=False, quiere_video=True,
+                            identidad=ident), "identidad") == []
