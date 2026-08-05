@@ -737,13 +737,24 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
     return " ".join(seccion.split())
 
 
-def _seccion_negativos(_norm: dict) -> str:
-    negs = _cfg_arch().get("negativos")
+def _seccion_negativos(norm: dict) -> str:
+    arch = _cfg_arch()
+    negs = arch.get("negativos")
     if not isinstance(negs, list) or not negs:
         negs = [
             "no extra text beyond the quoted string", "no watermarks", "no lorem ipsum",
             "no deformed hands", "no fake logos",
         ]
+    negs = list(negs)
+    # El atrezzo por defecto de estos modelos es estadounidense —en un post sobre
+    # España salían billetes de dólar—, así que se prohíbe explícitamente cuando el
+    # contenido NO está en inglés. Limitación conocida y deliberada: el pipeline
+    # detecta idioma, no país, y `es` no distingue España de LatAm. Esto elimina el
+    # DEFAULT, que es el fallo observado, y no pretende más.
+    if norm.get("contenido", {}).get("idioma", "es") != "en":
+        extra = arch.get("negativos_no_ingles")
+        if isinstance(extra, list):
+            negs += extra
     return "; ".join(str(n).strip() for n in negs if str(n).strip()) + "."
 
 
@@ -1084,9 +1095,18 @@ def _mensaje_arquitecto(norm: dict) -> str:
         )
     except (KeyError, IndexError):
         pass
+    idiomas = arch.get("idiomas") or {}
+    idioma = idiomas.get(c["idioma"]) or c["idioma"].upper()
     datos = [
         f"TOPIC: {c['tema'] or '(not given)'}",
         f"ANGLE: {c['angulo'] or '(not given)'}",
+        # El idioma llegaba solo a la sección de texto, nunca al brief del sujeto, así
+        # que el atrezzo salía con el default del modelo: estadounidense. Va como línea
+        # dura y no como sugerencia porque compite contra ese default.
+        (arch.get("contexto_cultural") or
+         "CULTURAL CONTEXT: the source is in {idioma} — props, currency, plugs, "
+         "packaging and signage must match that context; never default to US props or "
+         "US currency.").format(idioma=idioma),
         f"SLIDE ROLE: {c['rol_slide']}",
         *_linea_beat(c["rol_slide"]),
         f"ASPECT RATIO: {m['aspect_ratio']}",

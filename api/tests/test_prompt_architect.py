@@ -785,6 +785,47 @@ def test_los_negativos_prohiben_los_rotulos_dentro_de_la_escena(sin_llm):
     assert "screens" in negs and "no readable words" in negs
 
 
+# ── Atrezzo, física y contexto cultural ──────────────────────────────────────
+
+
+def _negativos(prompt: str) -> str:
+    return [l for l in prompt.splitlines() if l.startswith("9.")][0]
+
+
+def test_el_negativo_de_moneda_aparece_en_espanol_y_no_en_ingles(sin_llm):
+    # El atrezzo por defecto de estos modelos es estadounidense: en un post sobre
+    # España salían billetes de dólar. En un post en inglés ese atrezzo puede ser el
+    # correcto, así que el negativo NO se pone.
+    es = pa.construir(_spec(contenido={"idioma": "es"}), cfg=sin_llm).prompt
+    en = pa.construir(_spec(contenido={"idioma": "en"}), cfg=sin_llm).prompt
+    assert "US currency" in _negativos(es)
+    assert "US currency" not in _negativos(en)
+
+
+@pytest.mark.parametrize("codigo, nombre", [("es", "Spanish"), ("en", "English")])
+def test_el_contexto_cultural_llega_al_briefing(codigo, nombre):
+    # El idioma llegaba solo a la sección de texto (para las tildes), nunca al brief
+    # del sujeto: por eso los props salían con el default del modelo.
+    mensaje = pa._mensaje_arquitecto(pa.normalizar_spec(_spec(contenido={"idioma": codigo})))
+    assert "CULTURAL CONTEXT" in mensaje
+    assert nombre in mensaje
+
+
+def test_la_instruccion_prohibe_las_superficies_rotulables():
+    # Quitar la superficie funciona donde prohibir el texto no: cada carátula, pantalla
+    # o etiqueta es un sitio más donde el generador escribe pseudo-texto.
+    instruccion = (prompt_config.architect().get("llm") or {}).get("instruccion", "")
+    assert "At most 2 secondary objects" in instruccion
+    assert "cluttered" in instruccion
+
+
+def test_la_instruccion_exige_plausibilidad_fisica():
+    # El disco flotando sin bandeja y el objeto sin sombra de contacto del set auditado.
+    instruccion = (prompt_config.architect().get("llm") or {}).get("instruccion", "")
+    assert "PHYSICAL PLAUSIBILITY" in instruccion
+    assert "nothing floats" in instruccion
+
+
 def test_el_recorte_no_deja_un_parentesis_abierto(sin_llm):
     # La poda cortaba la paleta a mitad — "acid lime (#0B0C0E." — y ese paréntesis
     # colgando viajaba al modelo como ruido.
