@@ -23,6 +23,7 @@ import cost_tracker
 import db
 import identity_extract
 import identity_store
+import prompt_architect
 import prompt_lint
 import users
 import visual_identity
@@ -488,6 +489,9 @@ async def create_job(
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     publicar: Annotated[str, Form()] = "",
+    # Identidad visual elegida para ESTE post (id de GET /identities). Vacío = la
+    # activa del perfil, que es como se generaba antes de que el campo existiera.
+    identidad_visual_id: Annotated[str, Form()] = "",
 ):
     try:
         cfg = load_config()
@@ -639,10 +643,12 @@ async def create_job(
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
-        # Identidad visual activa del usuario, CONGELADA en el job: cambiarla mientras
-        # esto genera no puede alterar un job en vuelo. `activa` nunca falla — sin base
-        # devuelve la de la casa y el post sale con el look de siempre.
-        **_params_identidad(await identity_store.activa(users.current_user_id(request))),
+        # Identidad visual elegida en el form (vacío = la activa del perfil), CONGELADA
+        # en el job: cambiarla mientras esto genera no puede alterar un job en vuelo.
+        # `elegida` nunca falla — sin base, o con un id que ya no existe, devuelve la
+        # activa y el post sale con el look de siempre.
+        **_params_identidad(await identity_store.elegida(
+            users.current_user_id(request), identidad_visual_id)),
     }
     job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename,
                    final_media_bytes=final_media_bytes, final_media_filename=final_media_filename,
@@ -834,6 +840,11 @@ def _needs_job(job: dict, posts: dict | None = None) -> dict:
         # ya se había corregido para los prompts visuales).
         "captions": captions_needed(params),
         "n_info": (_n_slides(params) - 1) if is_carousel else 0,
+        # El beat de cada slide, en orden. Va acá y no en cada UI porque la secuencia
+        # tiene que ser la MISMA que la del prompt y la del redactor: quien edita a
+        # mano el texto del slide 2 necesita saber que ahí va el desarrollo, o
+        # reescribirá una conclusión sobre una imagen generada para desarrollar.
+        "beats": prompt_architect.roles_carrusel((_n_slides(params) - 1) if is_carousel else 0),
         "n_shots": _segments_needed(params) if quiere_video else 0,
         "faltan": _faltantes(posts if posts is not None else job["posts"], params),
     }
@@ -1159,12 +1170,17 @@ async def create_sheet_batch(
     facebook_page_id: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     tz_offset: Annotated[int, Form()] = 0,
+    identidad_visual_id: Annotated[str, Form()] = "",
 ):
     """Parsea el sheet, crea un batch y lanza la generación + programación por fila.
 
-    Las cuentas y el dry-run son globales (de la UI) y se inyectan en cada fila.
-    `tz_offset` (minutos, de Date.getTimezoneOffset()) convierte cada fecha/hora
-    local del sheet a UTC para programar en Blotato.
+    Las cuentas, el dry-run y la identidad visual son globales (de la UI) y se
+    inyectan en cada fila. `tz_offset` (minutos, de Date.getTimezoneOffset())
+    convierte cada fecha/hora local del sheet a UTC para programar en Blotato.
+
+    La identidad va en la UI y no en una columna del sheet a propósito: un lote es un
+    envío de un usuario en un momento, y las filas comparten estética por diseño (ver
+    `batch_runner.run_batch`).
     """
     try:
         cfg = load_config()
@@ -1217,10 +1233,11 @@ async def create_sheet_batch(
         "dry_run": dry_run,
         "tz_offset": tz_offset,
         "account_params": account_params,
-        # Igual que en el individual, la identidad se congela al crear: UNA vez para
-        # todo el lote, para que no salgan dos filas con estéticas distintas.
-        "identidad_params": _params_identidad(
-            await identity_store.activa(users.current_user_id(request))),
+        # Igual que en el individual, la identidad se congela al crear: la elegida en
+        # la UI (vacío = la activa del perfil) UNA vez para todo el lote, para que no
+        # salgan dos filas con estéticas distintas.
+        "identidad_params": _params_identidad(await identity_store.elegida(
+            users.current_user_id(request), identidad_visual_id)),
         "rows": rows,
         "_cfg": cfg,
     }

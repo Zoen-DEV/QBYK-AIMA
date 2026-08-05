@@ -64,6 +64,50 @@ async def test_activa_sin_ninguna_marcada_devuelve_la_de_la_casa(identidades):
     assert (await store.activa(_YO))["id"] == vi.SYSTEM_ID
 
 
+# ── Elegida (la que se eligió al crear el post) ───────────────────────────────
+
+async def test_elegida_vacia_es_la_activa(identidades):
+    """Vacío significa "la de siempre": es lo que hacían los dos flujos antes de que
+    el formulario dejara elegir."""
+    creada = await _crear(activar_al_crear=True)
+    for vacio in ("", "   ", None):
+        assert (await store.elegida(_YO, vacio))["id"] == creada["id"]
+
+
+async def test_elegida_gana_a_la_activa(identidades):
+    activa = await _crear("La activa", activar_al_crear=True)
+    otra = await _crear("La otra")
+    fila = await store.elegida(_YO, otra["id"])
+    assert fila["id"] == otra["id"] != activa["id"]
+
+
+async def test_se_puede_elegir_la_de_la_casa_teniendo_otra_activa(identidades):
+    await _crear(activar_al_crear=True)
+    assert (await store.elegida(_YO, vi.SYSTEM_ID))["id"] == vi.SYSTEM_ID
+
+
+async def test_elegir_una_identidad_borrada_cae_en_la_activa(identidades):
+    """La identidad pudo borrarse entre que se pintó el formulario y se envió: eso no
+    puede tumbar la creación del job."""
+    activa = await _crear("La activa", activar_al_crear=True)
+    borrada = await _crear("La borrada")
+    await store.eliminar(_YO, borrada["id"])
+    assert (await store.elegida(_YO, borrada["id"]))["id"] == activa["id"]
+
+
+async def test_elegir_la_identidad_de_otro_usuario_cae_en_la_activa(identidades):
+    ajena = await _crear(user=_OTRO)
+    assert (await store.elegida(_YO, ajena["id"]))["id"] == vi.SYSTEM_ID
+
+
+async def test_elegida_nunca_lanza_aunque_mongo_reviente(monkeypatch):
+    async def _boom():
+        raise RuntimeError("mongo caído")
+
+    monkeypatch.setattr(db, "get_identities", _boom)
+    assert (await store.elegida(_YO, "la-que-sea"))["id"] == vi.SYSTEM_ID
+
+
 # ── Crear ─────────────────────────────────────────────────────────────────────
 
 async def test_crear_valida_el_json_antes_de_escribir(identidades):

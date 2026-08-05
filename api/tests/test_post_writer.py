@@ -873,3 +873,43 @@ async def test_sin_url_la_reparacion_no_inventa_un_cta(monkeypatch):
     reparaciones = _fake_repair(monkeypatch, {"linkedin_text": "x"})
     await pw.write_posts({}, _CARRUSEL, "", asyncio.Queue(), _Cfg())
     assert "There is NO source URL" in reparaciones[0]["mensaje"]
+
+
+# ── Beats del carrusel: el texto y la imagen se encargan desde el mismo sitio ──
+#
+# La app le da a cada slide su plano, su escala de titular y su acento según el beat
+# que le toca. Si el redactor no supiera cuál es, los dos lados escribirían una
+# secuencia sin conocer la del otro: la app pide el plano más cerrado del set para el
+# slide 2 y el modelo le escribe encima una conclusión.
+
+def _msg_carrusel(slides: int = 4) -> str:
+    return pw._user_message(_CONTENT, {"tipo_post": "post", "redes": ["instagram"],
+                                       "formato_instagram": "carrusel",
+                                       "carrusel_slides": slides}, "")
+
+
+def test_el_user_message_nombra_el_beat_de_cada_slide():
+    import prompt_architect as pa
+
+    msg = _msg_carrusel(5)          # 5 slides = 4 de info
+    assert "SLIDE BEATS" in msg
+    for i, rol in enumerate(pa.roles_carrusel(4), 1):
+        assert f"slide {i} — {rol}" in msg
+
+
+def test_los_beats_del_redactor_son_los_mismos_que_los_de_la_imagen():
+    # Fuente única: `roles_carrusel`. Si el briefing contara otra secuencia, el texto
+    # del slide 2 se escribiría para un beat y su imagen se generaría para otro.
+    import prompt_architect as pa
+
+    for slides in (3, 4, 5, 6):
+        msg = _msg_carrusel(slides)
+        roles = pa.roles_carrusel(slides - 1)
+        assert msg.count("slide 1 — ") == 1
+        assert f"slide {len(roles)} — {roles[-1]}" in msg
+
+
+def test_una_imagen_unica_no_trae_beats():
+    msg = pw._user_message(_CONTENT, {"tipo_post": "post", "redes": ["instagram"],
+                                      "formato_instagram": "imagen-unica"}, "")
+    assert "SLIDE BEATS" not in msg

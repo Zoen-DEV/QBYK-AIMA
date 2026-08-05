@@ -42,7 +42,8 @@ interface RowPreviewData {
   // (misma fuente que el escritor y el lint): el editor dibuja sus campos a partir de
   // esto y no de lo que el modelo entregó, para que cuando la escritura devuelva los
   // prompts vacíos haya dónde escribirlos.
-  needs?: { imagenes?: boolean; video?: boolean; captions?: string[]; n_info?: number; n_shots?: number; faltan?: string[] };
+  needs?: { imagenes?: boolean; video?: boolean; captions?: string[]; n_info?: number;
+            beats?: string[]; n_shots?: number; faltan?: string[] };
   video?: { url?: string };
   params: Record<string, unknown>;
   li_media_urls: string[];
@@ -385,6 +386,7 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
   // modelo, para que los huecos que falten se vean y se puedan llenar.
   const needs = row.preview?.needs || {};
   const nInfo: number = Number(needs.n_info) || 0;
+  const beats: string[] = Array.isArray(needs.beats) ? needs.beats : [];
   const [imgTexts, setImgTexts] = useState<string[]>(() =>
     Array.from({ length: nInfo }, (_, i) => (p?.image_text?.slides || [])[i] || "")
   );
@@ -550,15 +552,20 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
             <div className="space-y-2">
               <span className="text-[11px] text-gray-400 block">Texto de cada slide</span>
               <p className="text-[11px] text-gray-500">
-                Una idea por slide, en secuencia: cada una avanza sobre la anterior y la última
-                remata. Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                Una idea por slide, en secuencia. Cada slide tiene su función —la etiqueta de la
+                izquierda— y su imagen se genera para ese momento. Si la idea tiene dos tiempos,
+                sepáralos con una raya espaciada
                 (<code className="text-gray-400">Titular — apoyo</code>): lo de antes va grande
                 arriba y lo de después, pequeño, al pie. La raya no se imprime.
               </p>
               {imgTexts.map((t, i) => (
                 <label key={i} className="flex items-start gap-2">
-                  <span className="text-[11px] text-gray-500 font-mono mt-2 w-12 flex-shrink-0">
-                    Slide {i + 2}
+                  {/* El beat sale del backend (`needs.beats`), la misma secuencia con la
+                      que se genera la imagen de ese slide: quien reescribe el texto a
+                      mano tiene que ver qué función cumple ahí. */}
+                  <span className="mt-2 w-20 flex-shrink-0 text-[11px] text-gray-500">
+                    <span className="block font-mono">Slide {i + 2}</span>
+                    {beats[i] && <span className="block text-gray-600">{beats[i]}</span>}
                   </span>
                   <textarea
                     value={t}

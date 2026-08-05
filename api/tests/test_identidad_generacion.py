@@ -231,6 +231,48 @@ def test_el_flujo_individual_congela_la_identidad_activa(sin_pipeline, identidad
     assert params["identidad_visual_nombre"] == "Mía"
 
 
+def test_el_flujo_individual_congela_la_identidad_elegida_en_el_form(sin_pipeline, identidades):
+    """El campo del formulario gana a la activa: es la elección de ESTE post."""
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "La activa", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        otra = c.post("/identities", json={
+            "name": "La elegida",
+            "identity_json": {**_IDENTIDAD, "paleta": ["#FFFFFF", "#222222", "#0055FF"],
+                              "paleta_nombres": ["white", "charcoal", "blue"],
+                              "color_texto": "charcoal (#222222)",
+                              "color_acento": "blue (#0055FF)"},
+        }).json()
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": otra["id"]})
+    assert res.status_code == 200
+    params = sin_pipeline[0]
+    assert params["identidad_visual_id"] == otra["id"]
+    assert params["identidad_visual_nombre"] == "La elegida"
+    assert params["identidad_visual"]["paleta"] == ["#FFFFFF", "#222222", "#0055FF"]
+
+
+def test_el_flujo_individual_puede_elegir_la_de_la_casa(sin_pipeline, identidades):
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "Mía", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": vi.SYSTEM_ID})
+    assert res.status_code == 200
+    assert sin_pipeline[0]["identidad_visual"] == vi.identidad_system()
+
+
+def test_una_identidad_que_ya_no_existe_no_tumba_la_creacion(sin_pipeline, identidades):
+    """Se borró entre que se pintó el formulario y se envió: se genera con la activa."""
+    with TestClient(api.app) as c:
+        creada = c.post("/identities", json={"name": "Mía", "identity_json": _IDENTIDAD,
+                                             "activar": True}).json()
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": "no-existe"})
+    assert res.status_code == 200
+    assert sin_pipeline[0]["identidad_visual_id"] == creada["id"]
+
+
 def test_el_flujo_individual_sin_identidad_propia_congela_la_de_la_casa(sin_pipeline, sin_base):
     with TestClient(api.app) as c:
         c.post("/jobs", data={"source_type": "manual", "manual_text": "hola"})
@@ -315,6 +357,33 @@ def test_el_sheet_congela_la_identidad_al_subirlo(monkeypatch, identidades):
 
     assert res.status_code == 200
     assert lanzados[0]["identidad_params"]["identidad_visual"] == vi.normalizar(_IDENTIDAD)
+
+
+def test_el_lote_congela_la_identidad_elegida_en_la_ui(monkeypatch, identidades):
+    """La identidad del lote se elige en la UI (no es una columna del sheet) y pisa a
+    la activa, igual que las cuentas y el dry-run."""
+    lanzados: list[dict] = []
+    monkeypatch.setattr(api, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(api.sheets, "parse_sheet", lambda data, nombre: (
+        [{"source": "manual", "label": "fila", "schedule_dt": None, "params": {},
+          "upload_bytes": None, "upload_filename": None}], []))
+
+    async def _run_batch(batch, jobs):
+        lanzados.append(batch)
+
+    monkeypatch.setattr(api, "run_batch", _run_batch)
+
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "La activa", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        elegida = c.post("/identities", json={"name": "La elegida",
+                                              "identity_json": _IDENTIDAD}).json()
+        res = c.post("/sheets/jobs", files={"sheet_file": ("posts.xlsx", b"xx")},
+                     data={"identidad_visual_id": elegida["id"]})
+
+    assert res.status_code == 200
+    assert lanzados[0]["identidad_params"]["identidad_visual_id"] == elegida["id"]
+    assert lanzados[0]["identidad_params"]["identidad_visual_nombre"] == "La elegida"
 
 
 # ── Cambiar de identidad cambia el prompt (el criterio de aceptación) ─────────

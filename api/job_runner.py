@@ -310,7 +310,11 @@ def _lockup_plantilla(cfg, src: str, *, texto: str, rol: str,
         "titular": titular,
         "kicker": kicker,
         "acento": acento,
-        "rol": rol,
+        # El renderizador de plantilla solo conoce los dos roles de siempre: un beat
+        # se le pasa como `contenido`, que es el que tiene su escala de cuerpo. Sin
+        # esto, `image_overlay` trata cualquier nombre desconocido como portada y la
+        # pieza de respaldo saldría con el titular a escala de portada.
+        "rol": parch.rol_base(rol),
         # Los colores son marca: salen de brand.json, el mismo archivo que gobierna
         # el look de las imágenes generadas.
         "color_texto": marca.get("color_texto") or (paleta[1] if len(paleta) > 1 else ""),
@@ -512,19 +516,14 @@ _IMAGE_FULL_FRAME_VERTICAL = (
     "Vertical 9:16 framing composed full-bleed edge to edge with deliberate "
     "balance: no empty band reserved for text, no dead space."
 )
-# Escalera de encuadres del carrusel: el encuadre de cada slide lo fija su POSICIÓN,
-# no el LLM. Antes se le sugería "varía el encuadre" y salía una secuencia arbitraria
-# (tres primeros planos seguidos, el slide más potente en cuarto lugar). Fijándolo
-# acá, el set tiene ritmo y jerarquía: la portada manda y el resto son fragmentos de
-# su mismo mundo. Se recorre en orden y se cicla si hay más slides que encuadres.
-# La escalera vale para TODOS los slides extra: el carrusel ya no lleva slide de
-# créditos ni de cierre, así que el último no tiene tratamiento aparte.
-_SLIDE_FRAMINGS = (
-    "Tight macro detail of a single surface or texture, filling the frame.",
-    "Wide still life with generous air around the subject, seen from slightly above.",
-    "Mid-distance view of a different object in the same setting, shallow focus.",
-    "Low-angle fragment with strong foreground depth.",
-)
+# El encuadre de cada slide lo fija su BEAT (`prompt_architect.roles_carrusel`), no el
+# LLM ni una escalera posicional suelta. La tupla `_SLIDE_FRAMINGS` que vivía acá era
+# lo único que variaba entre slides y era también lo más débil de la cadena: solo
+# entraba en el `prompt_base`, que el arquitecto le enseña al modelo como "BASE PROMPT
+# (weak, to rewrite)", así que con el LLM disponible casi nunca llegaba al prompt final
+# — mientras que la cláusula de lockup, que pide siempre el mismo cuadro, sí llegaba
+# siempre. Ahora el plano se declara en la sección 3 (determinista) y acá solo se
+# repite, literal, para que el prompt base no contradiga al brief.
 
 
 def _image_space_clause(vertical: bool, con_texto: bool = False) -> str:
@@ -583,14 +582,25 @@ def _cover_image_prompt(posts: dict, content: dict, *, vertical: bool = False,
                                  con_texto=con_texto)
 
 
+def _rol_slide(i: int, n_info: int) -> str:
+    """El beat del slide de info `i` (0-based). Fuente única para los dos flujos.
+
+    La generación, la regeneración de un slide suelto y el briefing del redactor
+    tienen que contar la MISMA secuencia: si no, rehacer un slide le cambia el plano
+    y el texto del slide 2 se escribe para un beat que su imagen no tiene.
+    """
+    roles = parch.roles_carrusel(n_info)
+    return roles[i] if 0 <= i < len(roles) else "contenido"
+
+
 def _slide_image_prompts(posts: dict, content: dict, n_info: int,
-                         con_texto: bool = False) -> list[str]:
+                         con_texto: bool = False, identidad: dict | None = None) -> list[str]:
     """Prompts de los slides extra del carrusel: n_info slides de info.
 
     Cada slide toma su escena del LLM (un detalle concreto distinto de la fuente) y
-    su encuadre de la escalera; los que falten caen a la variación genérica del
-    título. Todos comparten la misma dirección de arte que la portada. El último no
-    tiene tratamiento especial: es un slide de info como los del centro.
+    su plano del BEAT que le toca por posición —el mismo que `prompt_architect` vuelve
+    a declarar, literal, en la sección 3—; los que falten caen a la variación genérica
+    del título. Todos comparten la misma dirección de arte que la portada.
     """
     topic = content.get("title", "engaging topic")
     style = _image_style(posts)
@@ -601,7 +611,8 @@ def _slide_image_prompts(posts: dict, content: dict, n_info: int,
             f"Conceptual editorial visual about: {topic}. Lateral composition or texture, variation {i + 1}."
         )
         prompts.append(_compose_image_prompt(
-            scene, style=style, framing=_SLIDE_FRAMINGS[i % len(_SLIDE_FRAMINGS)],
+            scene, style=style,
+            framing=parch.encuadre_beat(_rol_slide(i, n_info), identidad),
             con_texto=con_texto,
         ))
     return prompts
@@ -728,7 +739,7 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
     # fuente de carruseles con la misma foto repetida, independiente del image-to-image.
     # Ahora la portada viaja como `escena_portada`, que es continuidad de set, no encargo.
     escena_portada = (posts.get("image_prompt") or "").strip()
-    es_slide = rol == "contenido"
+    es_slide = parch.rol_base(rol) == "contenido"
     spec = {
         "contenido": {
             "tema": content.get("title", ""),
@@ -746,6 +757,12 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
     referencias = identidad.get("referencias") if isinstance(identidad, dict) else None
     if referencias:
         spec["referencias"] = list(referencias)
+    # El ritmo del carrusel viaja igual que las referencias (nivel de arriba, no dentro
+    # de `marca`): es una lista ORDENADA por beat y `_texto_plano` la aplanaría a una
+    # frase con comas. Vacío = el respaldo de `architect.json`, beat a beat.
+    ritmo = identidad.get("ritmo_carrusel") if isinstance(identidad, dict) else None
+    if ritmo:
+        spec["ritmo_carrusel"] = list(ritmo)
     try:
         res = parch.construir(
             spec, cfg=cfg,
@@ -1913,12 +1930,13 @@ async def _run_media_phase(job: dict):
             # visual que la portada; el último no es la excepción.
             extra_texts = [(slide_texts[i] if i < len(slide_texts) else "") for i in range(n_info)]
             bases = _slide_image_prompts(posts, content, n_info,
-                                         con_texto=texto_en_prompt and any(extra_texts))
+                                         con_texto=texto_en_prompt and any(extra_texts),
+                                         identidad=_identidad(job))
             for i, base_prompt_slide in enumerate(bases):
                 extra_prompts.append(await _prompt_para(
                     job, cfg, subkey=f"ig-{i + 1}", prompt_base=base_prompt_slide, posts=posts,
                     content=content, texto=extra_texts[i] if i < len(extra_texts) else "",
-                    rol="contenido", aspect=aspect_feed, lang=lang,
+                    rol=_rol_slide(i, n_info), aspect=aspect_feed, lang=lang,
                 ))
             # Referencia visual: los slides se generan MIRANDO la portada (su job_id va
             # en `medias`), que es lo que hace que compartan paleta y luz de verdad. Si
@@ -1982,13 +2000,14 @@ async def _run_media_phase(job: dict):
                     # con la instrucción de texto reforzada.
                     texto_slide = extra_texts[i] if i < len(extra_texts) else ""
                     if texto_slide:
-                        base_slide = _slide_image_prompts(posts, content, n_info, con_texto=True)[i]
+                        base_slide = _slide_image_prompts(posts, content, n_info, con_texto=True,
+                                                          identidad=_identidad(job))[i]
 
-                        async def _rehacer_slide(_i=i, _base=base_slide,
-                                                 _texto=texto_slide, _key=fname) -> str:
+                        async def _rehacer_slide(_i=i, _base=base_slide, _texto=texto_slide,
+                                                 _key=fname, _rol=_rol_slide(i, n_info)) -> str:
                             prompt = await _prompt_para(
                                 job, cfg, subkey=_key, prompt_base=_base, posts=posts,
-                                content=content, texto=_texto, rol="contenido", aspect=aspect_feed,
+                                content=content, texto=_texto, rol=_rol, aspect=aspect_feed,
                                 lang=lang, refuerzo=True,
                             )
                             return await _run(provider.generate_one, prompt,
@@ -2257,8 +2276,11 @@ async def regenerate_image(job: dict, subkey: str) -> dict:
         texto = slides[i] if i < len(slides) else ""
         base_prompt = _slide_image_prompts(
             posts, content, n_info, con_texto=texto_en_prompt and any(slides),
+            identidad=_identidad(job),
         )[i]
-        rol = "contenido"
+        # El beat sale de la MISMA secuencia que en la primera tirada: rehacer un slide
+        # solo puede cambiar la tirada del modelo, nunca su función en el carrusel.
+        rol = _rol_slide(i, n_info)
 
     async def _prompt(refuerzo: bool = False) -> str:
         return await _prompt_para(job, cfg, subkey=subkey, prompt_base=base_prompt,

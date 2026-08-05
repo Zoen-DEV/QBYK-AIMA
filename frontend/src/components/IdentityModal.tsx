@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  BEATS_CARRUSEL,
   ErrorApi,
   ROLES_PALETA,
   actualizar,
@@ -354,6 +355,20 @@ function Editor({
     });
   }
 
+  /**
+   * Un campo POR BEAT, no un textarea de una línea por plano: la posición es el beat,
+   * así que vaciar el segundo tiene que dejarlo vacío —y caer al respaldo de la casa
+   * en ESE beat— en vez de correr el tercero a su sitio. Los vacíos del final sí se
+   * recortan: eso no es un hueco, es una lista más corta.
+   */
+  function cambiarRitmo(i: number, valor: string) {
+    const ritmo = [...(json.ritmo_carrusel ?? [])];
+    while (ritmo.length <= i) ritmo.push("");
+    ritmo[i] = valor;
+    while (ritmo.length > 0 && !ritmo[ritmo.length - 1].trim()) ritmo.pop();
+    set("ritmo_carrusel", ritmo);
+  }
+
   function quitarColor(i: number) {
     setJson(
       sincronizarColores({
@@ -497,6 +512,34 @@ function Editor({
           className={ENTRADA}
         />
       </Campo>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-300">Ritmo del carrusel</label>
+        <p className="mb-2.5 text-xs text-gray-500">
+          Cómo fotografía esta marca cada momento del carrusel. Lo que decide qué cuenta cada
+          slide es la estructura (igual para todas las identidades); lo que eliges aquí es la
+          distancia, la altura de cámara y qué llena el cuadro — sin nombrar luz ni colores, de
+          eso ya se ocupan la paleta y el tratamiento. Deja en blanco lo que quieras heredar de
+          la identidad de la casa.
+        </p>
+        <div className="space-y-2">
+          {BEATS_CARRUSEL.map((beat, i) => (
+            <div key={beat.clave} className="flex items-center gap-2">
+              <span className="w-24 shrink-0 text-right text-[11px] text-gray-500">
+                {beat.clave}
+              </span>
+              <input
+                value={(json.ritmo_carrusel ?? [])[i] ?? ""}
+                onChange={(e) => cambiarRitmo(i, e.target.value)}
+                disabled={deshabilitado}
+                placeholder={beat.ayuda}
+                aria-label={`Plano del beat ${beat.clave}`}
+                className={ENTRADA}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

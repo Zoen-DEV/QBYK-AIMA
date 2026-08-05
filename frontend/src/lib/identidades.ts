@@ -20,6 +20,11 @@ export type IdentityJson = {
   tono_visual: string;
   aspect_ratio: string;
   referencias: string[];
+  /**
+   * ORDENADA por los beats del carrusel: [tensión, desarrollo, prueba, remate]. La
+   * posición ES el beat. Opcional: lo que falte cae al respaldo de la casa.
+   */
+  ritmo_carrusel: string[];
 };
 
 export type Identidad = {
@@ -48,6 +53,18 @@ export type Usuario = { id: string; nombre: string };
 
 /** Roles de los tres primeros colores. El resto de la paleta son colores de apoyo. */
 export const ROLES_PALETA = ["Fondo", "Texto", "Acento"];
+
+/**
+ * Los beats del carrusel, en el orden de `ritmo_carrusel` (espejo de
+ * `prompt_architect.ROLES_BEAT`). Cada uno es la función del slide en la secuencia:
+ * el plano que se escribe aquí es cómo la marca fotografía ESE momento.
+ */
+export const BEATS_CARRUSEL = [
+  { clave: "tensión", ayuda: "el problema — el plano más cerrado del set" },
+  { clave: "desarrollo", ayuda: "la explicación — plano medio, legible" },
+  { clave: "prueba", ayuda: "el dato — un objeto solo, a plomo" },
+  { clave: "remate", ayuda: "el cierre — el plano más abierto y profundo" },
+];
 
 export function usuarioActual(): string {
   try {
@@ -152,5 +169,6 @@ export function identidadVacia(): IdentityJson {
     tono_visual: "",
     aspect_ratio: "4:5",
     referencias: [],
+    ritmo_carrusel: [],
   };
 }

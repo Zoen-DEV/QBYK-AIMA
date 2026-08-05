@@ -49,6 +49,17 @@ const imgSlides: string[] = Array.isArray(imageText?.slides) ? imageText.slides 
 // lint de arriba. Fuera del carrusel no hay slides.
 const nInfoSlides: number = Number(needs.n_info) || 0;
 
+// El beat de cada slide, tal como lo calculó el backend (misma secuencia que usan el
+// prompt de la imagen y el redactor). Quien edita el texto a mano tiene que ver qué
+// función cumple ese slide: la imagen ya se va a generar para ese beat.
+const beats: string[] = Array.isArray(needs.beats) ? needs.beats : [];
+const BEAT_AYUDA: Record<string, string> = {
+  tension: "el problema que el lector reconoce",
+  desarrollo: "la explicación que hace avanzar la idea",
+  prueba: "el dato o ejemplo concreto que lo demuestra",
+  remate: "el cierre — la frase que se captura en pantalla",
+};
+
 // Prompts visuales de las imágenes (la escena que genera el modelo, en inglés).
 const imgPrompt: string = posts.image_prompt || "";
 const imgStyle: string = posts.image_style || "";
@@ -168,15 +179,25 @@ const inputCls =
             <div class="space-y-3">
               <span class="text-xs text-gray-400 block">Texto de cada slide</span>
               <p class="text-[11px] text-gray-500 -mt-2">
-                Una idea por slide, en secuencia: cada una avanza sobre la anterior y la última
-                remata. Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                Una idea por slide, en secuencia. Cada slide tiene su función —la etiqueta de la
+                izquierda— y su imagen ya se está generando para ese momento: el plano, el tamaño
+                del titular y el color de acento salen de ahí. Si la idea tiene dos tiempos,
+                sepáralos con una raya espaciada
                 (<code class="text-gray-400">Titular — apoyo</code>): lo de antes va grande arriba y
                 lo de después, pequeño, al pie. La raya no se imprime.
               </p>
               {Array.from({ length: nInfoSlides }).map((_, i) => (
                 <label class="flex items-start gap-3">
-                  <span class="text-[11px] text-gray-500 font-mono mt-2.5 w-14 flex-shrink-0">Slide {i + 2}</span>
-                  <textarea name={`image_slide_text_${i}`} rows="2" class={inputCls}>{imgSlides[i] || ""}</textarea>
+                  <span class="mt-2.5 w-24 flex-shrink-0 text-[11px] text-gray-500">
+                    <span class="font-mono block">Slide {i + 2}</span>
+                    {beats[i] && <span class="block text-gray-600">{beats[i]}</span>}
+                  </span>
+                  <div class="flex-1">
+                    <textarea name={`image_slide_text_${i}`} rows="2" class={inputCls}>{imgSlides[i] || ""}</textarea>
+                    {beats[i] && BEAT_AYUDA[beats[i]] && (
+                      <p class="text-[11px] text-gray-600 mt-1">{BEAT_AYUDA[beats[i]]}</p>
+                    )}
+                  </div>
                 </label>
               ))}
             </div>

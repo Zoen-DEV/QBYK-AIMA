@@ -157,6 +157,62 @@ def test_exigir_valida_devuelve_la_identidad_normalizada():
     assert ident["paleta"][0] == "#0B0C0E"
 
 
+# ── Criterio de diseño ────────────────────────────────────────────────────────
+
+def test_la_identidad_de_la_casa_pasa_su_propio_criterio_de_diseno():
+    """Si la identidad de la casa no cumpliera lo que se le exige a las extraídas,
+    la regla estaría mal calibrada, no la identidad."""
+    assert vi.revisar_diseno(vi.identidad_system()) == []
+
+
+def test_el_contraste_es_el_ratio_wcag():
+    assert vi.contraste("#000000", "#FFFFFF") == pytest.approx(21, abs=0.01)
+    assert vi.contraste("#C9F227", "#C9F227") == pytest.approx(1.0, abs=0.01)
+
+
+def test_un_titular_que_no_se_lee_sobre_su_fondo_es_un_reparo():
+    """El caso que hoy pasaría entero: valida, y la plantilla de respaldo se dibuja
+    con un texto que no se ve."""
+    reparos = vi.revisar_diseno(_con(
+        paleta=["#8A9A8B", "#A8B4A6", "#C9F227"],
+        color_texto="sage (#A8B4A6) on the moss",
+    ))
+    assert any("contrasta" in r and "#A8B4A6" in r for r in reparos)
+
+
+def test_un_acento_que_es_otro_gris_es_un_reparo():
+    reparos = vi.revisar_diseno(_con(paleta=["#0B0C0E", "#EDEAE0", "#9A9C99"],
+                                     color_acento="warm grey (#9A9C99)"))
+    assert any("neutro" in r for r in reparos)
+
+
+def test_un_acento_confundible_con_el_texto_es_un_reparo():
+    reparos = vi.revisar_diseno(_con(paleta=["#0B0C0E", "#EDEAE0", "#EFE7DC"],
+                                     color_acento="ivory (#EFE7DC)"))
+    assert any("el texto" in r for r in reparos)
+
+
+def test_el_acento_se_juzga_por_croma_y_no_por_brillo():
+    """Hueso y lima ácido contrastan 1.03:1 y nadie los confunde: medir el acento con
+    el ratio de contraste marcaría como reparo la identidad de la casa."""
+    assert vi.contraste("#EDEAE0", "#C9F227") < 1.1
+    assert vi.distancia("#EDEAE0", "#C9F227") > vi.DISTANCIA_MIN
+
+
+def test_los_reparos_de_diseno_no_son_errores_de_esquema():
+    """`validar` no puede mirarlos: un reparo discutible no puede volver una identidad
+    imposible de guardar."""
+    floja = _con(paleta=["#8A9A8B", "#A8B4A6", "#9A9C99"],
+                 color_texto="sage (#A8B4A6) on the moss",
+                 color_acento="warm grey (#9A9C99)")
+    assert vi.validar(floja) == []
+    assert vi.revisar_diseno(floja)
+
+
+def test_una_paleta_incompleta_no_duplica_el_ruido_del_esquema():
+    assert vi.revisar_diseno(vi.normalizar({"paleta": ["#0B0C0E"]})) == []
+
+
 # ── Nombre ────────────────────────────────────────────────────────────────────
 
 def test_el_nombre_sugerido_usa_el_acento_y_el_fondo():
@@ -206,3 +262,63 @@ def test_un_usuario_desconocido_cae_al_por_defecto(valor):
 def test_el_usuario_por_defecto_existe():
     assert users.existe(users.DEFAULT_USER_ID)
     assert len(users.listar()) == len(users.USERS)
+
+
+# ── Ritmo del carrusel ────────────────────────────────────────────────────────
+#
+# El beat de cada slide (qué cuenta) es estructura y vive en `architect.json`; con
+# qué plano se recorre esa escalera es marca y vive acá. Es un campo OPCIONAL: la
+# regla de la feature es "vacío = lo de siempre", así que las identidades guardadas
+# antes de existir el campo tienen que seguir validando y generando igual.
+
+_RITMO = ["Extreme macro of wet slate filling the frame.",
+          "Table-height still life on bare pine.",
+          "Overhead of one tool on an empty field.",
+          "Wide room from low, the subject tiny."]
+
+
+def test_un_ritmo_completo_valida():
+    assert vi.validar(_con(ritmo_carrusel=_RITMO)) == []
+
+
+def test_el_ritmo_es_opcional():
+    ident = vi.normalizar({k: v for k, v in _VALIDA.items()})
+    assert ident["ritmo_carrusel"] == []
+    assert vi.validar(ident) == []
+
+
+def test_el_ritmo_admite_un_plano_por_beat_y_no_mas():
+    assert vi.MAX_RITMO == len(vi.ROLES_RITMO)
+    errores = vi.validar(_con(ritmo_carrusel=_RITMO + ["Uno de más."]))
+    assert any("ritmo_carrusel" in e for e in errores)
+
+
+def test_un_ritmo_parcial_es_una_decision_valida():
+    # Definir solo el remate y heredar el resto de la casa no es un error.
+    assert vi.validar(_con(ritmo_carrusel=["", "", "", _RITMO[3]])) == []
+
+
+def test_los_huecos_interiores_del_ritmo_se_conservan():
+    # La posición ES el beat: descartar el vacío le daría a la prueba el plano del
+    # desarrollo, y no habría un solo error en ningún log.
+    ident = _con(ritmo_carrusel=[_RITMO[0], "", _RITMO[2]])
+    assert ident["ritmo_carrusel"] == [_RITMO[0], "", _RITMO[2]]
+
+
+def test_los_vacios_del_final_del_ritmo_se_recortan():
+    # Eso no es un hueco, es una lista más corta.
+    assert _con(ritmo_carrusel=[_RITMO[0], "", ""])["ritmo_carrusel"] == [_RITMO[0]]
+    assert _con(ritmo_carrusel=["", "", ""])["ritmo_carrusel"] == []
+
+
+def test_un_plano_demasiado_largo_se_rechaza():
+    errores = vi.validar(_con(ritmo_carrusel=["x" * (vi.MAX_RITMO_ITEM + 1)]))
+    assert any("ritmo_carrusel" in e for e in errores)
+
+
+def test_el_orden_de_los_beats_no_se_copia_a_mano():
+    """La posición dentro de `ritmo_carrusel` es el beat, así que este orden y el de
+    `prompt_architect` tienen que ser literalmente la misma tupla."""
+    import prompt_architect as pa
+
+    assert vi.ROLES_RITMO is pa.ROLES_BEAT

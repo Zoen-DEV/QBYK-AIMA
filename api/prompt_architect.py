@@ -27,6 +27,12 @@ Reparto de responsabilidades (importante para entender el diseño):
   afinado. **Generar nunca se interrumpe por esto.**
 - A la sección 3 la app le añade siempre, literal, la cláusula del lockup de póster:
   las dos bandas reservadas para el tipo y el sujeto anclado en la banda central.
+- En un carrusel, el rol del slide no es un genérico "contenido" sino un **beat** con
+  función narrativa (`tension` → `desarrollo` → `prueba` → `remate`), y de él dependen
+  la escala del titular, la presencia del acento y el plano. Los tres los escribe la
+  app, en secciones que el modelo no puede pisar: cuando esa variación vivía en el
+  `prompt_base` —que el arquitecto solo ve como "BASE PROMPT (weak, to rewrite)"— se
+  perdía casi siempre y los slides salían como versiones de la misma imagen.
 
 Todo es síncrono (quien llama lo envuelve en `job_runner._run`). Los textos de
 plantilla, el rubric y la marca viven en `api/prompts/*.json`, no aquí.
@@ -54,7 +60,13 @@ _SECCIONES_FALLBACK = [
     {"clave": "negativos", "etiqueta": "NEGATIVE"},
 ]
 _CLAVES_CREATIVAS = ("sujeto", "composicion", "luz", "estilo", "camara")
-_ROLES = ("portada", "contenido")
+# Beats del carrusel, en el orden canónico. Es el orden en el que una identidad
+# visual escribe su `ritmo_carrusel` (lista ORDENADA, igual que `paleta`), así que
+# mover uno de sitio reasigna el ritmo de todas las identidades guardadas.
+ROLES_BEAT = ("tension", "desarrollo", "prueba", "remate")
+# `contenido` sigue siendo un rol válido y significa "slide de info sin beat": es lo
+# que se generaba antes de la escalera y el respaldo de cualquier beat desconocido.
+_ROLES = ("portada", "contenido") + ROLES_BEAT
 _MAX_PALABRAS_BLOQUE = 8
 _MAX_PALABRAS_SECCION = 55
 _MIN_CARACTERES = 400
@@ -106,6 +118,148 @@ def _entero(cfg: dict, clave: str, defecto: int) -> int:
         return int(cfg.get(clave, defecto))
     except (TypeError, ValueError):
         return defecto
+
+
+# ── Beats del carrusel ────────────────────────────────────────────────────────
+#
+# Un carrusel cuyos slides comparten pieza, banda, escala y composición no es un
+# carrusel: son versiones de la misma imagen con otro objeto. La escalera de beats
+# le da a cada posición una FUNCIÓN (tensión → desarrollo → prueba → remate) y hace
+# que de ella dependan las tres cosas que la app escribe y el modelo no puede pisar:
+# la escala del titular, la presencia del acento y el plano. Lo que NO cambia entre
+# beats es el esqueleto del lockup —titular arriba, apoyo al pie, sujeto en la banda
+# central—: unificarlo fue una corrección deliberada y es lo que hace que el set se
+# lea como un sistema.
+
+# Respaldos mínimos por si `architect.json` falta entero: como en el resto del
+# módulo, sin config el prompt sale menos afinado pero igual de válido.
+_COMPOSICION_BEAT_FALLBACK = {
+    "tension": "SHOT — TENSION, the closest framing of the set: the subject fills the central "
+               "band edge to edge, its own falloff and defocus forming the clear zones.",
+    "desarrollo": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole in the "
+                  "central band, the set legible behind it, bare surface forming the clear zones.",
+    "prueba": "SHOT — EVIDENCE, shot square-on: one object alone, centred on a bare field that "
+              "forms the clear zones, nothing else competing in the frame.",
+    "remate": "SHOT — PAYOFF, the widest and deepest frame of the set: the subject reads small "
+              "in the central band, quiet space opening above and below it.",
+}
+_FUNCION_BEAT_FALLBACK = {
+    "tension": "the tension — the problem, symptom or cost the reader recognises",
+    "desarrollo": "the development — the explanation or step that moves the idea one notch forward",
+    "prueba": "the evidence — the concrete figure, example or result that proves it",
+    "remate": "the payoff — the line the reader would screenshot, still an idea from the source",
+}
+_RITMO_FALLBACK = {
+    "tension": "Tight macro of a single worn surface or texture, hard raking light across it.",
+    "desarrollo": "Mid-distance still life on a bare surface, shallow focus, camera at object height.",
+    "prueba": "Flat overhead of one object centred on an empty field, single hard key light.",
+    "remate": "Wide low three-quarter view with strong foreground depth, the subject small in a "
+              "large space.",
+}
+
+
+def rol_base(rol: str) -> str:
+    """El rol clásico del que hereda un beat: `"portada"` o `"contenido"`.
+
+    Todo lo que no se declara por beat —la pieza, las bandas de texto— cae al bloque
+    `contenido` de `architect.json`. Es también el rol que hay que pasarle al
+    renderizador de la plantilla de respaldo, que solo conoce esos dos.
+    """
+    return "portada" if str(rol or "").strip().lower() == "portada" else "contenido"
+
+
+def _escalera(n: int) -> list[str]:
+    """La escalera canónica para `n` slides de info. La tensión abre, el remate
+    cierra y lo que se estira en el medio es el desarrollo."""
+    if n <= 0:
+        return []
+    if n == 1:
+        return ["remate"]
+    if n == 2:
+        return ["tension", "remate"]
+    if n == 3:
+        return ["tension", "desarrollo", "remate"]
+    if n == 4:
+        return ["tension", "desarrollo", "prueba", "remate"]
+    return ["tension"] + ["desarrollo"] * (n - 3) + ["prueba", "remate"]
+
+
+def roles_carrusel(n_info: int) -> list[str]:
+    """Qué beat le toca a cada slide de info, en orden.
+
+    Fuente única de la secuencia: la usan el prompt de cada imagen, la regeneración
+    de un slide suelto y el briefing del redactor. Si los tres no contaran lo mismo,
+    el texto del slide 2 se escribiría para un beat y su imagen para otro.
+
+    La tabla de `architect.json` manda; una entrada de longitud distinta a `n_info`
+    se descarta entera (media escalera es peor que la escalera de siempre).
+    """
+    try:
+        n = max(0, int(n_info or 0))
+    except (TypeError, ValueError):
+        return []
+    tabla = _cfg_arch().get("secuencia_roles")
+    if isinstance(tabla, dict):
+        crudo = tabla.get(str(n))
+        if isinstance(crudo, list) and len(crudo) == n:
+            seq = [str(r).strip().lower() for r in crudo]
+            if all(r in _ROLES for r in seq):
+                return seq
+    return _escalera(n)
+
+
+def funcion_beat(rol: str) -> str:
+    """Qué cuenta ese beat, en una frase. `""` si el rol no es un beat.
+
+    Es lo que hace que el TEXTO impreso y la IMAGEN del slide i se encarguen desde el
+    mismo sitio: `post_writer` se la pasa al redactor y `prompt_architect` al
+    arquitecto de la imagen. Antes la secuencia se pedía solo en prosa ("cada slide
+    avanza al anterior") sin nombrar posiciones, así que el texto del slide 2 no sabía
+    que le tocaba desarrollar y su imagen no sabía que el texto lo haría.
+    """
+    if rol not in ROLES_BEAT:
+        return ""
+    cfg_rol = (_cfg_arch().get("roles") or {}).get(rol) or {}
+    return str(cfg_rol.get("funcion") or _FUNCION_BEAT_FALLBACK[rol]).strip()
+
+
+def _ritmo_beat(norm: dict, rol: str) -> str:
+    """Cómo fotografía ESTA marca el beat `rol`.
+
+    El beat es estructura (universal, `architect.json`); el ritmo es identidad: la
+    misma escalera recorrida por una marca de macros y por una de naturalezas muertas
+    abiertas no produce el mismo carrusel. La identidad lo declara en
+    `ritmo_carrusel`, una lista ORDENADA por `ROLES_BEAT`; lo que no traiga cae al
+    respaldo de `architect.json` beat a beat, así que una identidad sin el campo
+    genera exactamente como antes de la escalera.
+    """
+    ritmo = norm.get("ritmo_carrusel") or []
+    i = ROLES_BEAT.index(rol)
+    propio = ritmo[i].strip() if i < len(ritmo) and isinstance(ritmo[i], str) else ""
+    if not propio:
+        cfg_rol = (_cfg_arch().get("roles") or {}).get(rol) or {}
+        propio = str(cfg_rol.get("ritmo") or "").strip()
+    return _recortar(propio or _RITMO_FALLBACK[rol],
+                     _entero(_validacion_cfg(), "ritmo_palabras", 18))
+
+
+def encuadre_beat(rol: str, identidad: dict | None = None) -> str:
+    """El plano del beat, para el `prompt_base` que ve el LLM.
+
+    El prompt base es lo único que el arquitecto le enseña al modelo como punto de
+    partida, así que tiene que decir el MISMO plano que la cláusula determinista de
+    la sección 3 — si dijeran cosas distintas, el brief se contradiría a sí mismo.
+    """
+    if rol not in ROLES_BEAT:
+        return ""
+    ident = identidad if isinstance(identidad, dict) else {}
+    # La MISMA cadena de respaldo que `normalizar_spec`: identidad → `brand.json` →
+    # el `ritmo` del beat en `architect.json`. Si esta se saltara la identidad de la
+    # casa, un job sin identidad propia diría un plano en el prompt base y otro en la
+    # sección 3 — el brief contradiciéndose a sí mismo.
+    ritmo = ident.get("ritmo_carrusel") or prompt_config.brand().get("ritmo_carrusel") or []
+    norm = {"ritmo_carrusel": [str(r) for r in ritmo] if isinstance(ritmo, (list, tuple)) else []}
+    return _ritmo_beat(norm, rol)
 
 
 # ── Entrada ───────────────────────────────────────────────────────────────────
@@ -180,6 +334,13 @@ def normalizar_spec(spec: dict) -> dict:
     if not referencias:
         referencias = marca_def.get("referencias") or []
 
+    # Mismo trato que `referencias`: viaja al nivel de arriba de la spec (no dentro de
+    # `marca`, donde `_texto_plano` la aplanaría a una frase con comas) y lo que no
+    # llega cae a `brand.json`. Es una lista ORDENADA por `ROLES_BEAT`.
+    ritmo = spec.get("ritmo_carrusel")
+    if not ritmo:
+        ritmo = marca_def.get("ritmo_carrusel") or []
+
     return {
         "contenido": {
             "tema": str(contenido.get("tema") or "").strip(),
@@ -207,6 +368,10 @@ def normalizar_spec(spec: dict) -> dict:
         },
         "prompt_base": str(spec.get("prompt_base") or "").strip(),
         "referencias": [str(r).strip() for r in referencias if str(r).strip()],
+        # Sin filtrar los vacíos: la posición ES el beat, así que una entrada en
+        # blanco tiene que dejar su hueco y caer al respaldo de ESE beat, no correr
+        # el siguiente a su sitio.
+        "ritmo_carrusel": [str(r).strip() for r in ritmo] if isinstance(ritmo, (list, tuple)) else [],
     }
 
 
@@ -268,7 +433,8 @@ def _bloques(texto: str) -> list[str]:
 def _seccion_pieza(norm: dict) -> str:
     piezas = _cfg_arch().get("piezas") or {}
     rol = norm["contenido"]["rol_slide"]
-    plantilla = piezas.get(rol) or "Editorial social image, {aspect}, print-quality single still."
+    plantilla = (piezas.get(rol) or piezas.get(rol_base(rol))
+                 or "Editorial social image, {aspect}, print-quality single still.")
     return plantilla.format(aspect=norm["marca"]["aspect_ratio"])
 
 
@@ -282,7 +448,10 @@ def _zona(norm: dict) -> dict:
     """
     zonas = _cfg_arch().get("zonas_texto") or {}
     rol = norm["contenido"]["rol_slide"]
-    z = zonas.get(rol) or zonas.get("portada") or {}
+    # Las bandas NO cambian por beat a propósito: el esqueleto compartido es lo que
+    # hace que el set se lea como un sistema. Lo que distingue a un slide de otro es
+    # la escala del titular, el acento y el plano, no dónde se apoya el tipo.
+    z = zonas.get(rol) or zonas.get(rol_base(rol)) or zonas.get("portada") or {}
     return {
         "zona": z.get("zona") or "the upper band, below an 8% top margin and above the 42% height line",
         "zona_kicker": z.get("zona_kicker") or "the bottom band, above an 8% bottom margin",
@@ -352,8 +521,14 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
     m = norm["marca"]
     rol = norm["contenido"]["rol_slide"]
     escalas = cfg_tip.get("escala") or {}
-    escala = (escalas.get(rol) or escalas.get("portada")
+    escala = (escalas.get(rol) or escalas.get(rol_base(rol)) or escalas.get("portada")
               or "Each headline line stands 13-16% of the frame height, broken over 2-3 lines.")
+    # Un acento que aparece en TODOS los slides deja de ser un acento: el beat que lo
+    # calla (la tensión) es lo que hace que el color se note en los que lo llevan. Solo
+    # se calla la elección AUTOMÁTICA — un span marcado a mano por el usuario manda
+    # siempre, que es la única palanca que tiene sobre la jerarquía del titular.
+    omitido = cfg_tip.get("acento_omitido")
+    sin_acento_auto = rol in [str(r).strip().lower() for r in omitido] if isinstance(omitido, list) else False
     acento = ""
     if m["color_acento"]:
         # El span elegido a mano en la revisión previa manda sobre la elección
@@ -364,7 +539,7 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
                             'Exactly this fragment — "{acento}" — in {color_acento}; every other '
                             "word stays in the headline color.")
             acento = plantilla_ac.format(acento=elegido, color_acento=m["color_acento"])
-        else:
+        elif not sin_acento_auto:
             acento = (cfg_tip.get("acento") or
                       "Exactly one span — the single most load-bearing word of the quoted string — in "
                       "{color_acento}; every other word stays in the headline color.").format(
@@ -412,14 +587,46 @@ def _clausula_aire(norm: dict) -> str:
     pintado con el hueso de la propia paleta— en vez de una zona tranquila de la foto,
     y el mismo carrusel salía con unos slides a sangre y otros enmarcados. Ahora el
     sangrado se declara y el aire se nombra por sus medios fotográficos.
+
+    En un slide con beat el lockup va en su versión CORTA: el beat ya nombra de qué
+    está hecho el aire en ese plano concreto (el falloff de la propia masa, la
+    superficie desnuda, el campo vacío), así que la versión larga lo repetiría en
+    genérico y costaría ~180 caracteres del presupuesto del brief.
     """
-    plantilla = (_cfg_arch().get("composicion_zona") or
+    arch = _cfg_arch()
+    es_beat = norm["contenido"]["rol_slide"] in ROLES_BEAT
+    plantilla = ((arch.get("composicion_zona_slide") if es_beat else "") or
+                 arch.get("composicion_zona") or
                  "Poster lockup, full bleed to all four edges: reserve two uncluttered clear zones for "
                  "the type — {zona} and {zona_kicker} — negative space made of the photograph itself "
                  "(shadow, defocus, bare surface), never panels of flat colour; anchor the subject in "
                  "the central band between them, lit so its silhouette separates from the type; they "
                  "overlap only where the frame falls to near-black.")
-    return " ".join(p for p in (plantilla.format(**_zona(norm)), _clausula_set(norm)) if p)
+    partes = (plantilla.format(**_zona(norm)), _clausula_beat(norm), _clausula_set(norm))
+    return " ".join(p for p in partes if p)
+
+
+def _clausula_beat(norm: dict) -> str:
+    """El plano del beat: la mitad determinista de lo que distingue un slide de otro.
+
+    Vive acá, pegada al lockup, y no en el `prompt_base` — que es donde vivía la
+    escalera de encuadres anterior. Esa diferencia lo es todo: el `prompt_base` solo
+    le llega al arquitecto como "BASE PROMPT (weak, to rewrite)", así que con el LLM
+    disponible el encuadre aparecía en el prompt final únicamente si el modelo lo
+    repetía por su cuenta… mientras que la cláusula de lockup —que pide siempre el
+    mismo cuadro— sí llegaba siempre. La variación estaba en la capa blanda y la
+    uniformidad en la dura, y el carrusel salía como versiones de una misma imagen.
+
+    El texto tiene dos mitades con dueños distintos: la FUNCIÓN del plano la fija
+    `architect.json` (estructura, igual para todas las marcas) y su ejecución
+    fotográfica sale del `ritmo_carrusel` de la identidad activa (marca).
+    """
+    rol = norm["contenido"]["rol_slide"]
+    if rol not in ROLES_BEAT:
+        return ""
+    cfg_rol = (_cfg_arch().get("roles") or {}).get(rol) or {}
+    composicion = str(cfg_rol.get("composicion") or _COMPOSICION_BEAT_FALLBACK[rol]).strip()
+    return " ".join(p for p in (composicion, _ritmo_beat(norm, rol)) if p)
 
 
 def _clausula_set(norm: dict) -> str:
@@ -627,6 +834,24 @@ def adjetivos_vacios(texto: str) -> list[str]:
 
 # ── LLM: arquitectura y auto-crítica ──────────────────────────────────────────
 
+def _linea_beat(rol: str) -> list[str]:
+    """El beat, para el arquitecto: su función y la prohibición de repetir el plano.
+
+    Sin la prohibición el modelo escribe su propio encuadre en `composicion` y choca
+    con la cláusula determinista que la app le pega debajo — dos instrucciones de
+    cámara contradictorias en la misma sección.
+    """
+    if rol not in ROLES_BEAT:
+        return []
+    cfg_rol = (_cfg_arch().get("roles") or {}).get(rol) or {}
+    funcion = str(cfg_rol.get("funcion") or "").strip()
+    linea = f"CAROUSEL BEAT: {rol}"
+    if funcion:
+        linea += f" — {funcion}"
+    return [linea + ". The app appends this beat's shot scale and framing verbatim: describe "
+                    "the subject and its scene, never the camera distance or the type zones."]
+
+
 def _mensaje_arquitecto(norm: dict) -> str:
     arch = _cfg_arch()
     llm_cfg = arch.get("llm") or {}
@@ -642,6 +867,7 @@ def _mensaje_arquitecto(norm: dict) -> str:
         f"TOPIC: {c['tema'] or '(not given)'}",
         f"ANGLE: {c['angulo'] or '(not given)'}",
         f"SLIDE ROLE: {c['rol_slide']}",
+        *_linea_beat(c["rol_slide"]),
         f"ASPECT RATIO: {m['aspect_ratio']}",
         f"BRAND PALETTE: {m['paleta_nombres']} ({m['paleta']})" if m["paleta_nombres"]
         else f"BRAND PALETTE: {m['paleta']}",

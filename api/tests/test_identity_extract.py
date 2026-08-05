@@ -15,6 +15,7 @@ from PIL import Image
 import app as api
 import identity_extract as ie
 import llm_json
+import prompt_config
 import visual_identity as vi
 
 _IDENTIDAD = {
@@ -31,6 +32,13 @@ _IDENTIDAD = {
 
 # Un JSON que el modelo devuelve a menudo: el acento no es el tercer color de la paleta.
 _ROTA = {**_IDENTIDAD, "color_acento": "hot pink (#FF00AA)"}
+
+# Valida entera y produciría piezas de aficionado: el titular no se lee sobre su fondo.
+# Es lo que sale de describir con fidelidad un set de fotos de teléfono mal iluminadas.
+_FLOJA = {**_IDENTIDAD,
+          "paleta": ["#8A9A8B", "#A8B4A6", "#FF5C2B"],
+          "paleta_nombres": ["moss", "sage", "ember"],
+          "color_texto": "sage (#A8B4A6) over the moss"}
 
 
 class _Cfg:
@@ -205,6 +213,42 @@ def test_una_respuesta_vacia_tambien_se_reintenta(modelo):
     assert ie.extraer(_fotos(), cfg=_Cfg()).intentos == 2
 
 
+# ── Criterio de diseño ────────────────────────────────────────────────────────
+
+def test_una_identidad_que_valida_pero_no_se_lee_se_reintenta(modelo):
+    """El caso que motiva todo esto: el JSON está perfecto y la pieza saldría amateur."""
+    modelo.respuestas = [dict(_FLOJA), dict(_IDENTIDAD)]
+    res = ie.extraer(_fotos(), cfg=_Cfg())
+    assert res.intentos == 2 and res.identidad == vi.normalizar(_IDENTIDAD)
+    assert "contrasta" in modelo.mensajes[1] and "#A8B4A6" in modelo.mensajes[1]
+
+
+def test_un_reparo_de_diseno_que_sobrevive_no_tira_la_identidad(modelo):
+    """Un reparo discutible no puede costar la extracción entera: vuelve como aviso,
+    y el editor —donde cambiar un hex son dos segundos— ya está en pantalla."""
+    modelo.respuestas = [dict(_FLOJA), dict(_FLOJA)]
+    res = ie.extraer(_fotos(), cfg=_Cfg())
+    assert res.identidad == vi.normalizar(_FLOJA)
+    assert vi.validar(res.identidad) == []
+    assert any("reparo de diseño" in a for a in res.avisos)
+
+
+def test_un_segundo_intento_peor_no_pierde_lo_que_ya_servia(modelo):
+    """Válida-con-reparo primero y rota después: se devuelve la primera, no un 502."""
+    modelo.respuestas = [dict(_FLOJA), dict(_ROTA)]
+    res = ie.extraer(_fotos(), cfg=_Cfg())
+    assert res.identidad == vi.normalizar(_FLOJA)
+
+
+def test_un_json_roto_no_se_juzga_ademas_por_su_diseño(modelo):
+    """Los reparos solo se miran sobre lo que ya valida: sobre una paleta rota dirían
+    lo mismo dos veces y con peores palabras."""
+    modelo.respuestas = [dict(_ROTA), dict(_ROTA)]
+    with pytest.raises(ie.ExtraccionInvalida) as exc:
+        ie.extraer(_fotos(), cfg=_Cfg())
+    assert all("contrasta" not in e for e in exc.value.errores)
+
+
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
 def test_las_reglas_del_prompt_salen_de_las_constantes_del_esquema():
@@ -227,6 +271,44 @@ def test_el_prompt_declara_los_dos_contratos_que_fallan_en_silencio():
 def test_el_prompt_prohibe_nombrar_colores_en_el_tono_visual():
     """Misma regla que vigila `prompt_lint`: dos paletas en un prompt se pelean."""
     assert "do not name any colour here" in ie._reglas_esquema().lower()
+
+
+def test_las_reglas_de_diseno_llevan_los_numeros_que_aplica_el_codigo():
+    """Mismo anti-drift que el esquema: pedir 3:1 y comprobar 4.5:1 sería pedirle al
+    modelo que falle."""
+    reglas = ie._reglas_diseno()
+    assert str(vi.CONTRASTE_MIN) in reglas
+    assert str(round(vi.SATURACION_ACENTO_MIN * 100)) in reglas
+
+
+def test_el_sistema_lleva_el_encuadre_del_archivo_y_las_reglas_de_la_app():
+    """El reparto del módulo, hecho comprobable: el JSON aporta el criterio creativo y
+    la app pega detrás lo que no se delega."""
+    cfg_ex = prompt_config.identity_extract()
+    sistema = ie._sistema(cfg_ex)
+    assert cfg_ex["sistema"] in sistema
+    for linea in cfg_ex["criterio"]:
+        assert linea in sistema
+    for linea in cfg_ex["prohibiciones"]:
+        assert linea in sistema
+    assert ie._reglas_esquema() in sistema and ie._reglas_diseno() in sistema
+
+
+def test_el_encuadre_pide_una_pieza_de_diseñador_no_una_descripcion_de_las_fotos():
+    """Describir con fidelidad un set de fotos de teléfono produce una identidad de
+    fotos de teléfono: el encuadre tiene que pedir la intención, no el inventario."""
+    sistema = ie._sistema(prompt_config.identity_extract()).lower()
+    assert "designer" in sistema
+    assert "poster" in sistema          # la pieza que van a producir estos valores
+    assert "production quality" in sistema
+
+
+def test_sin_archivo_de_prompt_el_sistema_sigue_siendo_util():
+    """`prompt_config.load` devuelve {} ante un archivo ausente o roto y eso no puede
+    dejar al extractor sin criterio."""
+    sistema = ie._sistema({})
+    assert ie._reglas_esquema() in sistema and ie._reglas_diseno() in sistema
+    assert "designer" in sistema.lower()
 
 
 # ── Preparación de las imágenes ───────────────────────────────────────────────

@@ -5,6 +5,7 @@ import re
 import urllib.request
 import urllib.error
 
+import prompt_architect as parch
 from networks import active_networks
 
 PERPLEXITY_MODEL = "sonar-pro"
@@ -62,6 +63,7 @@ The `image_text` object is the text that gets printed ON the images/carousel —
 - `hook`: ONE short, complete, punchy phrase for the cover image (max ~10 words). It must read as a finished statement, not a truncated sentence. No hashtags, no emojis, no URL, no trailing "…". Capitalize naturally (sentence case, not ALL CAPS).
 - `slides`: an array of short idea-statements, ONE per info slide. When the piece is a carousel the user message says "INFO SLIDES NEEDED: N" — output EXACTLY that many strings; when that line is absent the piece is a single image and `slides` is an empty array. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
 - THE SLIDES ARE ONE SEQUENCE, NOT N INDEPENDENT PHRASES. The cover states the promise or the tension; every info slide moves it ONE step forward (slide i+1 must say something slide i did not, and reordering them should break the reading); the LAST one lands the payoff — the line the reader would screenshot. That last slide is still an informative idea taken from the source: never a sign-off, never credits, never "sígueme"/"follow me", never a summary of the slides before it.
+- EACH SLIDE HAS A NAMED BEAT. When the piece is a carousel the user message lists "SLIDE BEATS": one job per info slide (tension → development → evidence → payoff). Write `image_text.slides[i]` to do the job of beat i — that beat is not a suggestion, the app is already building slide i's image for it (its shot distance, its type size and whether the accent colour appears there all come from that beat). A slide whose line ignores its beat gets a picture that argues with its own text.
 - TWO-BEAT LINES: when a slide idea has a headline and a qualifier, write it as `Headline — support` with a spaced em dash. The app prints what comes before the dash as the big headline and what comes after it smaller, anchored at the foot of the frame; the dash itself is never printed. Keep the headline at 6 words or fewer and the support at 8 or fewer. When one beat already says it, write a single phrase with NO dash — never force the split.
 - If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
 Write `image_text` in the same language as the posts.
@@ -90,7 +92,7 @@ This section applies when `image_prompt`, `image_style` and `image_slide_prompts
 `image_slide_prompts`: an array of prompts for the remaining carousel slides. The user message says "IMAGE SLIDE PROMPTS NEEDED: N" — output EXACTLY N. (When that line is absent the piece is a single image: `image_prompt` and `image_style` are still mandatory and `image_slide_prompts` is an empty array.) Each is 20–40 words and:
 - has its own HERO OBJECT: a physically different thing from the cover's and from every other slide's. Before writing them, list N+1 distinct objects the source actually mentions and assign one per image. "The same device seen closer", "another view of it" or the same object with a different part in focus do NOT count as different — that produces a carousel that reads as one photo repeated, which is the failure mode here;
 - stays in the SAME visual world as `image_prompt` — same room, same surfaces, same materials — so the set holds together through the setting, never through the subject (the palette and light come from `image_style`; do not restate them);
-- describes only its own subject: the app assigns each slide its framing and angle, so do not open with a camera instruction;
+- describes only its own subject: the app assigns each slide its framing and angle from its BEAT (see "SLIDE BEATS" in the user message), so do not open with a camera instruction and never state a shot distance — pick an object that works at the distance that beat is shot from (the tension is the tightest shot of the set, the payoff the widest);
 {space_slides}
 
 === VIDEO PROMPT, STYLE & STORYBOARD (text-to-video generation) ===
@@ -340,6 +342,23 @@ def _voiceover_word_budget(params: dict) -> tuple[int, int]:
 # campos los rellena `_parse_raw` con el vacío, no el modelo.
 
 
+def _linea_beats(n_info_slides: int) -> str:
+    """La escalera de beats del carrusel, para el redactor.
+
+    Es el otro extremo de `prompt_architect.roles_carrusel`: la app le da a cada slide
+    un plano, una escala de titular y un acento según su beat, y acá se le pide al
+    modelo el TEXTO de ese mismo beat. Sin esto los dos lados escriben una secuencia
+    y ninguno conoce la del otro: la app pide el plano más cerrado del set para el
+    slide 2 y el modelo le escribe encima una conclusión.
+    """
+    lineas = ["SLIDE BEATS (each info slide has a job in the sequence — its printed idea AND "
+              "its scene are written for it):"]
+    for i, rol in enumerate(parch.roles_carrusel(n_info_slides), 1):
+        funcion = parch.funcion_beat(rol)
+        lineas.append(f"  slide {i} — {rol}: {funcion}" if funcion else f"  slide {i} — {rol}")
+    return "\n".join(lineas)
+
+
 def _briefing_visual(*, lang: str, wants_images: bool, wants_video: bool,
                      n_info_slides: int, n_image_slide_prompts: int,
                      n_video_segments: int, vo_lo: int, vo_hi: int) -> tuple[str, list[str]]:
@@ -357,6 +376,7 @@ def _briefing_visual(*, lang: str, wants_images: bool, wants_video: bool,
             lineas.append(f"IMAGE SLIDE PROMPTS NEEDED: {n_image_slide_prompts}  (EXACTLY this "
                           "many scenes in image_slide_prompts, one per info slide, each built "
                           "on a DIFFERENT concrete detail of the source)")
+            lineas.append(_linea_beats(n_info_slides))
             requeridos += ["image_text.slides", "image_prompt", "image_style",
                            f"image_slide_prompts (x{n_image_slide_prompts})"]
         else:

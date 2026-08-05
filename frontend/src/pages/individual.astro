@@ -2,6 +2,7 @@
 import Base from "../layouts/Base.astro";
 import BackLink from "../components/BackLink.astro";
 import VoicePicker from "../components/VoicePicker.astro";
+import IdentityPicker from "../components/IdentityPicker.astro";
 ---
 
 <Base title="Nuevo post">
@@ -211,6 +212,9 @@ import VoicePicker from "../components/VoicePicker.astro";
           </select>
           <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Estilo de las plantillas de imagen. Aplica cuando la fuente es "Plantillas directamente" o como respaldo si Higgsfield falla.</span>
         </label>
+
+        <!-- Identidad visual del post (vacío = la activa del perfil) -->
+        <IdentityPicker />
 
         <div class="grid grid-cols-2 gap-4">
           <!-- Formato (aplica a todas las redes) -->

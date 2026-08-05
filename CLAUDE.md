@@ -115,11 +115,12 @@ Gotchas verificados en producción, no romper:
 - Video largo = **N segmentos** concatenados. Con voz en off (default para text-to-video de 2+ shots) los une la tool `explainer_video` del server en bloques de ventana fija ~10s; **todo bloque enviado a `explainer_video` debe llevar audio** o el join queda colgado para siempre. Sin voz, concat local con ffmpeg. Cualquier fallo de la rama con voz degrada al camino mudo.
 - Antes de generar video se hace preflight `video_cost` (`get_cost:true`, no encola ni cobra) y se muestra en la revisión.
 - Lo que se le puede pedir a cada modelo de imagen (aspectos, `resolution`, rol de `medias`) vive en `_IMAGE_MODEL_CAPS` de `higgsfield_mcp`, **verificado contra el catálogo en vivo** (`mcp_bootstrap.py --models image`): un parámetro que el modelo no acepta puede tumbar el submit entero. Las imágenes de feed se piden en **4:5 nativo** (no 1:1 recortado). `medias` **no es una referencia de estilo**: el único rol que expone el catálogo es `image` y esos modelos están tagueados `image-to-image`, así que pasarle la portada a un slide no le presta la paleta — le da la imagen a EDITAR, y el slide vuelve siendo la portada re-encuadrada, con su mismo objeto y otro recorte, ignorando su propia escena. Por eso `image_reference_slides` está **apagado** por defecto y la coherencia del set la sostienen la dirección de arte compartida, el lockup tipográfico y `match_grade`. Ver [`docs/calidad-imagenes.md`](docs/calidad-imagenes.md).
-- **Estructura del carrusel**: portada (hook) + `carrusel_slides - 1` slides **informativos**. El último NO es de créditos ni de cierre: es informativo igual que los del centro (su propia escena del LLM, su encuadre de la escalera, su propia idea impresa). La cuenta vive en un solo lugar por lado: `n_info` en `job_runner._run_media_phase` y `INFO SLIDES NEEDED` / `IMAGE SLIDE PROMPTS NEEDED` en `post_writer._user_message`; si cambia, cambia en los dos o el LLM entrega menos frases que slides.
+- **Estructura del carrusel**: portada (hook) + `carrusel_slides - 1` slides **informativos**, y cada uno con su **beat** (ver más abajo). El último NO es de créditos ni de cierre: es informativo igual que los del centro (su propia escena del LLM, su propio plano, su propia idea impresa). La cuenta vive en un solo lugar por lado: `n_info` en `job_runner._run_media_phase` y `INFO SLIDES NEEDED` / `IMAGE SLIDE PROMPTS NEEDED` en `post_writer._user_message`; si cambia, cambia en los dos o el LLM entrega menos frases que slides.
   Las frases impresas son **una secuencia, no N frases sueltas**: la portada plantea, cada slide avanza sobre el anterior y el último remata (sigue siendo informativo — nunca despedida ni créditos). Ojo con las plataformas: el caption es **uno solo por post** (`publish_post` manda un `text` y N `mediaUrls`), así que "copy por slide" solo existe **dentro** de la imagen. La jerarquía de cada slide se puede marcar a mano con una **raya espaciada**: `Titular — apoyo` parte el texto en los dos bloques del lockup (`prompt_architect._SEPARADOR_RE`) sin depender del corte por longitud, que reparte según cuántas palabras caben y no según lo que la frase dice; la raya es notación y nunca se imprime. Un titular explícito más largo que `max_palabras_bloque` se ignora y se vuelve al corte automático.
 - El texto de la pieza (hook de portada, idea de cada slide) lo **renderiza el propio modelo**: viaja dentro del prompt (`IMAGE_TEXT_IN_PROMPT`, encendido). Que la imagen lleve texto o no cambia además la composición que se le pide al modelo (reservar bandas para el titular vs. llenar el cuadro).
   **La plantilla de respaldo es la excepción**, y no lo contradice: como no pasa por ningún modelo, el PNG llega mudo y el post salía con una foto genérica donde iba el titular. Por eso `image_overlay.py` vuelve a dibujar texto —**solo ahí**— con el mismo lockup que el prompt le pide al modelo (caja alta, titular en la banda alta, kicker anclado al pie, área segura del 8%, colores de `brand.json`) y con el mismo reparto (`prompt_architect.dividir_texto` / `separar_acento`), así que la pieza dice lo mismo salga por donde salga. Quién dibuja lo decide `job_runner._lockup_plantilla`, que solo pasa el texto cuando `image_provider.es_plantilla(src)` — se compara contra `assets/templates/`, **no** "¿es una ruta local?": una salida del proveedor también puede ser un archivo local y esa ya trae el texto puesto (sobreimprimirla lo duplicaría). El interruptor es uno solo: apagado `IMAGE_TEXT_IN_PROMPT`, la pieza no lleva texto por ningún camino. Sin Pillow no hay recorte ni texto: se publica la plantilla cruda (`_publishable_media`).
-- Antes de generar, el prompt pasa por [`prompt_architect.py`](api/prompt_architect.py): convierte el prompt de una frase en un brief de **9 secciones fijas** (formato, sujeto, composición, texto a renderizar, tipografía, luz y paleta, estilo, cámara, negativos). Las secciones **1, 4, 5 y 9** las escribe la app con plantillas deterministas —el string exacto entrecomillado, sus acentos, su jerarquía, el área segura y la familia tipográfica no se delegan nunca al LLM—; las creativas (2, 3, 6, 7, 8) las escribe el LLM y, si falla, entran los respaldos y el prompt sale igual de válido. Un segundo llamado lo puntúa contra el rubric y lo reescribe si algún criterio baja de 4 (máx. 2 vueltas). El validador rechaza un prompt sin el texto literal, sin alguna sección, sin aspecto, aire negativo o **área segura** declarados, o fuera del rango de longitud (`validacion.max_caracteres`, hoy 3000, por debajo del corte del cliente `higgsfield_mcp._MAX_PROMPT_CHARS`). Prompts, rubric y datos de marca en [`api/prompts/*.json`](api/prompts/) — **nunca hardcodeados** (`PROMPTS_DIR` los reapunta).
+- Antes de generar, el prompt pasa por [`prompt_architect.py`](api/prompt_architect.py): convierte el prompt de una frase en un brief de **9 secciones fijas** (formato, sujeto, composición, texto a renderizar, tipografía, luz y paleta, estilo, cámara, negativos). Las secciones **1, 4, 5 y 9** las escribe la app con plantillas deterministas —el string exacto entrecomillado, sus acentos, su jerarquía, el área segura y la familia tipográfica no se delegan nunca al LLM—; las creativas (2, 3, 6, 7, 8) las escribe el LLM y, si falla, entran los respaldos y el prompt sale igual de válido. Un segundo llamado lo puntúa contra el rubric y lo reescribe si algún criterio baja de 4 (máx. 2 vueltas). El validador rechaza un prompt sin el texto literal, sin alguna sección, sin aspecto, aire negativo o **área segura** declarados, o fuera del rango de longitud (`validacion.max_caracteres`, hoy 3550, por debajo del corte del cliente `higgsfield_mcp._MAX_PROMPT_CHARS`). Prompts, rubric y datos de marca en [`api/prompts/*.json`](api/prompts/) — **nunca hardcodeados** (`PROMPTS_DIR` los reapunta).
+- **Qué hace distinto a cada slide** (y qué los hacía verse iguales). Cada slide de info tiene un **beat** con función narrativa —`tension` → `desarrollo` → `prueba` → `remate`, la escalera de `architect.json` → `roles`/`secuencia_roles`, recorrida por `prompt_architect.roles_carrusel`— y de él dependen las **tres** cosas que la app escribe y el modelo no puede pisar: la escala del titular (sección 5), la presencia del acento (sección 5; la tensión lo calla, porque un acento en todos los slides deja de serlo) y el plano (sección 3, junto al lockup y a la continuidad de set). Lo que **no** cambia entre beats es el esqueleto —titular en la banda alta, apoyo al pie, sujeto en la central—: unificarlo fue una corrección deliberada y es lo que hace que el set se lea como un sistema. La lección de por qué la versión anterior no funcionaba vale para cualquier variación futura: la escalera `_SLIDE_FRAMINGS` vivía en el `prompt_base`, que el arquitecto solo le enseña al LLM como *"BASE PROMPT (weak, to rewrite)"*, así que con el LLM arriba casi nunca llegaba al prompt final — mientras que la cláusula de lockup, que pide siempre el mismo cuadro, sí llegaba siempre. **Una variación declarada en la capa blanda pierde siempre contra una uniformidad declarada en la dura.** El mismo beat viaja al redactor (`SLIDE BEATS` en `post_writer._user_message`) y a las dos compuertas previas (`needs.beats`), para que el texto impreso del slide *i* y su imagen se encarguen desde el mismo sitio. Fuente única de la secuencia: `roles_carrusel` — la generación, `regenerate_image` (que recalcula el rol por índice) y el briefing tienen que contar lo mismo. `job_runner._rol_slide` es el único punto que la consulta desde el pipeline. Contexto en [`docs/calidad-imagenes.md`](docs/calidad-imagenes.md) (paso 12).
 - **Qué mantiene unido al carrusel** (y qué lo hacía repetirse). Cada slide se genera solo, con su escena. Lo que comparten se declara por texto en dos mitades: `continuidad_set` de `architect.json` nombra lo que se conserva (set, superficies, luz, paleta) **y** lo que tiene que cambiar (objeto protagonista, posición de cámara); sin la segunda mitad el modelo repite el objeto de la portada por su cuenta. La escena de la portada viaja a los slides como `contenido.escena_portada` (contexto), **nunca** como `contenido.angulo` — pasarla de ángulo era pedirle a cada slide el sujeto de la portada, y era una causa de carruseles con la misma foto repetida independiente del `medias`. El acento de color se puede fijar a mano marcando **`**así**`** en el texto de la pieza: `prompt_architect.separar_acento` lo extrae y **quita las marcas** antes de que el texto llegue al prompt y al QA, así que los asteriscos no pueden acabar impresos; sin marcas, la palabra la elige el modelo como siempre.
 - La pieza es un **póster diseñado**, no una foto con un caption: base fotográfica + capa tipográfica, con el mismo lockup en portada y slides (titular en la banda alta, segunda línea anclada al pie, sujeto en la banda central iluminado para separarse del tipo). La identidad —paleta, familia condensada en caja alta, color de acento— vive **entera** en [`api/prompts/brand.json`](api/prompts/brand.json): es el único archivo a editar para cambiar el look de todos los posts. La escala del titular (% del alto del cuadro) es layout y va por rol en `architect.json`. `image_style` describe solo el tratamiento fotográfico y **no** inventa paleta: si lo hiciera, habría dos paletas compitiendo en el mismo prompt. La foto va **a sangre** (full bleed) y el aire para el titular es una zona tranquila de la propia escena (sombra, desenfoque, superficie desnuda): pedir bandas **`flat`** hacía que el modelo pintara un passe-partout de color liso en unos slides sí y en otros no. La regla se declara en las secciones 1, 3 y 9 y **también** en el rubric — mientras el rubric premiaba bandas planas, la auto-crítica revertía el arreglo. Contexto en [`docs/calidad-imagenes.md`](docs/calidad-imagenes.md) (pasos 6 y 10).
 - Tras generar, [`image_text_qa.py`](api/image_text_qa.py) le pide a un modelo de visión que lea el texto impreso y lo compara con el esperado **con acentos** (ignora mayúsculas y puntuación), y le pregunta aparte si el borde **corta** el texto (`recortado`): un titular bien escrito pero recortado antes pasaba el QA, porque la comparación de strings no lo ve. Cualquiera de los dos fallos regenera esa imagen con la instrucción reforzada, hasta 2 veces; cada intento queda en `job["images"]["qa"]`. El prompt final de cada imagen queda en `job["images"]["prompts"]` y en el log.
@@ -130,9 +131,10 @@ Gotchas verificados en producción, no romper:
 ### Identidades visuales (el look de las piezas)
 
 `brand.json` dejó de ser la única identidad: ahora es la identidad **system** (la de la casa) y
-cada usuario puede tener las suyas. El esquema **no cambió** — una identidad guardada tiene
-exactamente los mismos campos y tipos que `brand.json`. Contexto completo y checklist de pruebas
-manuales en [`docs/identidades-visuales.md`](docs/identidades-visuales.md).
+cada usuario puede tener las suyas. El esquema es **exactamente** el de `brand.json` —una
+identidad guardada tiene sus mismos campos y tipos— y se amplía en los dos sitios a la vez o en
+ninguno. Contexto completo y checklist de pruebas manuales en
+[`docs/identidades-visuales.md`](docs/identidades-visuales.md).
 
 - **La system no es una fila**: se sirve desde `brand.json` con el id `system`. Editar ese archivo
   sigue cambiando el look de la casa, no hay drift entre dos fuentes, y la identidad existe aunque
@@ -140,11 +142,29 @@ manuales en [`docs/identidades-visuales.md`](docs/identidades-visuales.md).
   se **clona**. La activa se marca con `is_default` en las filas del usuario: **ninguna marcada =
   manda la system**, así que activar la system es limpiar las marcas y borrar la activa devuelve
   solo a la de la casa.
-- `visual_identity.py` es el esquema hecho validador, y hace comprobables **dos contratos que hoy
+- `visual_identity.py` es el esquema hecho validador, y hace comprobables **tres contratos que
   fallarían en silencio**: `paleta` está ORDENADA (`[fondo, texto, acento]` — es lo que indexa
-  `_lockup_plantilla`) y `color_texto`/`color_acento` tienen que llevar su hex y ser el de la
+  `_lockup_plantilla`), `color_texto`/`color_acento` tienen que llevar su hex y ser el de la
   paleta (sin él, `image_overlay._color` dibuja la plantilla de respaldo con el color de otra
-  marca). Los topes de longitud son presupuesto del brief de 9 secciones, no estética.
+  marca) y `ritmo_carrusel` está ORDENADO por `prompt_architect.ROLES_BEAT` —la tupla se importa,
+  no se copia—: ahí la posición ES el beat, así que una lista en otro orden le da a cada slide el
+  plano de otro sin un solo error. Los topes de longitud son presupuesto del brief de 9 secciones,
+  no estética.
+  Aparte del esquema está el **criterio de diseño** (`revisar_diseno`): tres defectos que valen
+  la pieza entera y que `validar` no ve —titular que no contrasta con su fondo (4.5:1 WCAG; el
+  tipo va sobre una fotografía, que se come parte del contraste), «acento» que es un tercer gris
+  (25% de saturación HSV) y acento confundible con el texto o el fondo—. El tercero se mide por
+  **croma, no por contraste**: hueso y lima ácido contrastan 1.03:1 y nadie los confunde. Son
+  avisos y no errores a propósito: un reparo discutible no puede volver una identidad imposible
+  de guardar.
+- **La identidad se elige al crear el post** (`IdentityPicker` → `identidad_visual_id` →
+  `identity_store.elegida`), en los **dos flujos**: el `<select>` del form en individual /
+  historia, y en `/bulk` junto a las cuentas y el dry-run —no como columna del sheet, porque
+  las filas de un lote comparten estética por diseño—. `/reel` no lo lleva: un reel siempre es
+  video y la identidad solo pinta imágenes. **Vacío = la identidad activa del perfil**, que es
+  como se generaba antes del campo, y `elegida` hereda de `activa` la regla de que **nunca
+  lanza**: un id borrado entre que se pintó el form y se envió cae a la activa en vez de
+  tumbar la creación.
 - **La identidad se congela en el job al crearlo** (`_params_identidad` → `params.identidad_visual`
   → `job_runner._identidad`), en los **dos flujos**: cambiarla a mitad de una generación no altera
   un job en vuelo, y el lote la resuelve UNA vez al subir el sheet, no por fila. **Vacío significa
@@ -155,9 +175,36 @@ manuales en [`docs/identidades-visuales.md`](docs/identidades-visuales.md).
 - **`image_style` sigue ganando a `tono_visual`**: la identidad fija paleta, tipografía y
   referencias (lo que hace reconocible a la marca entre posts) y el tratamiento fotográfico lo
   sigue eligiendo el LLM por post. Es una decisión, no un pendiente.
+- **`ritmo_carrusel` es la frontera del carrusel**: qué CUENTA cada slide (el beat) es estructura
+  y vive en `architect.json`, igual para todas las marcas; **cómo se fotografía** ese beat
+  —distancia, altura de cámara, qué llena el cuadro— es marca y vive en la identidad. Lista
+  ordenada por beat, opcional, y lo que falte cae al respaldo de `architect.json` **beat a beat**
+  (un hueco interior no corre el resto de sitio: `visual_identity._ritmo` los conserva y el editor
+  pinta un campo por beat, no un textarea). El único punto que resuelve la cadena identidad →
+  `brand.json` → beat es `prompt_architect`, y lo hace igual desde los dos lados (`_ritmo_beat`
+  para la sección 3 y `encuadre_beat` para el `prompt_base`) o el brief se contradiría a sí mismo.
 - `identity_extract.py` saca una identidad de 5–10 fotos con el modelo de visión —sirve
   **cualquiera de los dos proveedores**: la Sonar API acepta bloques `image_url`, aunque cada uno
   recibe el layout de bloques que documenta el suyo (`test_llm_vision.py` fija los dos cuerpos).
+  Se extrae **con ojo de diseñador, no de notario**: describir con fidelidad un set de fotos de
+  teléfono produce una identidad de fotos de teléfono, y de ahí salen piezas de aficionado por
+  muy afinado que esté el prompt de generación. El encuadre pide lo que hace un director de arte
+  con el moodboard del cliente —leer la INTENCIÓN del set y especificarla a calidad de
+  producción: fiel en identidad (familia de color, luz, materiales, registro), sin heredar los
+  accidentes de la referencia (flash directo, balance mezclado, fondo con ruido)— y le nombra la
+  pieza que sus valores van a producir, porque un campo que no sabe para qué se usa se escribe
+  suelto. El `criterio` del JSON dice cómo se lee cada campo: `paleta` son tres ROLES y no los
+  tres colores más frecuentes, `tipografia` es la clase que aguanta un titular al 9-16% del alto
+  (nunca una sans neutra de UI, que devuelve el «caption pegado sobre una foto»), `tono_visual`
+  una receta de luz repetible que deja zonas tranquilas donde apoyar el tipo, y `ritmo_carrusel`
+  lo único que el set contiene de verdad y nadie más leía: su **abanico de distancias**, ordenado
+  del plano más cerrado al más abierto sobre los cuatro beats (un moodboard nunca está rodado a
+  una sola distancia, y cuatro slides a la misma distancia son justo el carrusel que se lee como
+  una foto repetida). Las reglas
+  **comprobables** (contraste, saturación del acento) las escribe la app en `_reglas_diseno` con
+  las constantes que aplica `revisar_diseno`: pedir 3:1 y comprobar 4.5:1 sería pedirle al
+  modelo que falle. Un reparo de diseño gasta el reintento igual que un error de esquema, pero
+  si sobrevive **no tumba la extracción**: sale como aviso junto al editor.
   El QA de texto de las imágenes (`image_text_qa`) sigue pidiendo Anthropic **a propósito**:
   abrirlo a Perplexity añadiría una llamada por imagen generada a quien hoy lo tiene apagado, y
   eso se decide aparte. Las fotos se

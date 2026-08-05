@@ -95,7 +95,11 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # `prompts/architect.json` → `validacion.max_caracteres`: si truncara, lo que se pierde
 # es la última sección, que son justo los negativos. Si Higgsfield rechazara un prompt
 # largo, el submit falla visible (RuntimeError → aviso en el job) y se baja este número.
-_MAX_PROMPT_CHARS = 3200
+# Subió de 3200 a 3600 con la escalera de beats del carrusel: el brief de un slide
+# incorporó la cláusula de plano del beat, y con el techo anterior la poda de
+# `_ajustar_longitud` se comía el anclaje concreto de las secciones creativas —justo
+# lo que evita que la imagen salga genérica— en TODOS los slides.
+_MAX_PROMPT_CHARS = 3600
 # Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
 # (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
 # scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado

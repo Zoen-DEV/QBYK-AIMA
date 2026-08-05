@@ -564,3 +564,168 @@ def test_sin_raya_todo_sigue_igual():
     assert pa.dividir_texto(_CORTO) == (_CORTO, "")
     titular, kicker = pa.dividir_texto(_TEXTO)
     assert f"{titular} {kicker}" == _TEXTO
+
+
+# ── Beats del carrusel ────────────────────────────────────────────────────────
+#
+# El defecto que arreglan: con un único rol `contenido`, los 2-5 slides de info
+# compartían pieza, banda, escala y composición, así que entre un slide y otro solo
+# cambiaba el objeto — versiones de la misma imagen. La única variación que existía
+# (la escalera de encuadres) viajaba en el `prompt_base`, que el arquitecto solo le
+# enseña al modelo como "BASE PROMPT (weak, to rewrite)": con el LLM disponible no
+# llegaba al prompt final, mientras que el lockup —que pide siempre el mismo cuadro—
+# sí llegaba siempre.
+
+def _tipografia(prompt: str) -> str:
+    return [l for l in prompt.splitlines() if l.startswith("5.")][0]
+
+
+def test_la_escalera_abre_con_tension_y_cierra_con_remate():
+    for n in range(2, 6):
+        roles = pa.roles_carrusel(n)
+        assert len(roles) == n
+        assert roles[0] == "tension"
+        assert roles[-1] == "remate"
+
+
+def test_la_escalera_estira_el_desarrollo_en_el_medio():
+    assert pa.roles_carrusel(3) == ["tension", "desarrollo", "remate"]
+    assert pa.roles_carrusel(4) == ["tension", "desarrollo", "prueba", "remate"]
+    assert pa.roles_carrusel(7).count("desarrollo") == 4
+
+
+def test_una_tabla_de_longitud_equivocada_se_descarta_entera(monkeypatch):
+    # Media escalera es peor que la escalera de siempre: se ignora y se usa la canónica.
+    cfg = dict(pa._cfg_arch(), secuencia_roles={"3": ["tension", "remate"]})
+    monkeypatch.setattr(pa.prompt_config, "architect", lambda: cfg)
+    assert pa.roles_carrusel(3) == ["tension", "desarrollo", "remate"]
+
+
+def test_cada_beat_declara_su_plano_en_la_composicion(sin_llm):
+    planos = set()
+    for rol in pa.ROLES_BEAT:
+        comp = _composicion(pa.construir(_spec(contenido={"rol_slide": rol}), cfg=sin_llm).prompt)
+        assert "SHOT —" in comp
+        planos.add(comp)
+    # Cuatro beats, cuatro composiciones distintas: es lo único que impide que el
+    # carrusel salga como el mismo cuadro con otro objeto.
+    assert len(planos) == len(pa.ROLES_BEAT)
+
+
+def test_el_plano_del_beat_no_se_puede_podar(sin_llm):
+    # Va en la cláusula que la app pega SIEMPRE, no en las secciones creativas: la
+    # poda por longitud no puede dejar un slide sin su plano.
+    largo = " ".join(["a very long cover scene clause with materials"] * 40)
+    r = pa.construir(_spec(contenido={"rol_slide": "prueba", "escena_portada": largo}), cfg=sin_llm)
+    assert "SHOT — EVIDENCE" in _composicion(r.prompt)
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+@pytest.mark.parametrize("rol", list(pa.ROLES_BEAT))
+def test_todo_beat_produce_un_prompt_valido(sin_llm, rol):
+    r = pa.construir(_spec(contenido={"rol_slide": rol, "escena_portada": "A dark mixing desk"}),
+                     cfg=sin_llm)
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+def test_la_escala_del_titular_cambia_con_el_beat(sin_llm):
+    escalas = {rol: _tipografia(pa.construir(_spec(contenido={"rol_slide": rol}),
+                                             cfg=sin_llm).prompt)
+               for rol in ("tension", "desarrollo", "remate")}
+    assert "11-13%" in escalas["tension"]
+    assert "9-11%" in escalas["desarrollo"]
+    assert "12-15%" in escalas["remate"]
+
+
+def test_el_beat_de_tension_calla_el_acento(sin_llm):
+    # Un acento que aparece en todos los slides deja de ser un acento.
+    tension = _tipografia(pa.construir(_spec(contenido={"rol_slide": "tension"}), cfg=sin_llm).prompt)
+    remate = _tipografia(pa.construir(_spec(contenido={"rol_slide": "remate"}), cfg=sin_llm).prompt)
+    assert "One word only" not in tension
+    assert "One word only" in remate
+
+
+def test_un_acento_marcado_a_mano_manda_incluso_en_el_beat_que_lo_calla(sin_llm):
+    # La marca del usuario es su única palanca sobre la jerarquía: no se la come el ritmo.
+    r = pa.construir(_spec(contenido={"rol_slide": "tension",
+                                      "texto_exacto_a_renderizar": "El factor Q **cambia** todo"}),
+                     cfg=sin_llm)
+    assert '"cambia"' in _tipografia(r.prompt)
+
+
+def test_el_esqueleto_del_lockup_es_el_mismo_en_todos_los_beats(sin_llm):
+    # Lo que cambia entre slides es la escala, el acento y el plano — nunca dónde se
+    # apoya el tipo: unificar las bandas fue una corrección deliberada.
+    for rol in pa.ROLES_BEAT:
+        p = pa.construir(_spec(contenido={"rol_slide": rol}), cfg=sin_llm).prompt
+        texto = [l for l in p.splitlines() if l.startswith("4.")][0]
+        assert "upper band" in texto
+        assert "full bleed" in p.lower()
+        assert "clear zone" in p.lower()
+
+
+# ── Ritmo: el beat es estructura, su ejecución es marca ───────────────────────
+
+_RITMO = ["Extreme macro of wet slate filling the frame.",
+          "Table-height still life on bare pine.",
+          "Overhead of one tool on an empty field.",
+          "Wide room from low, the subject tiny."]
+
+
+def test_el_ritmo_de_la_identidad_entra_en_el_prompt(sin_llm):
+    r = pa.construir(_spec(contenido={"rol_slide": "tension"}, ritmo_carrusel=_RITMO), cfg=sin_llm)
+    assert "Extreme macro of wet slate" in _composicion(r.prompt)
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+def test_el_ritmo_se_indexa_por_beat_y_no_por_slide(sin_llm):
+    # La posición dentro de `ritmo_carrusel` ES el beat: el remate toma el cuarto
+    # plano aunque sea el segundo slide de un carrusel de tres.
+    r = pa.construir(_spec(contenido={"rol_slide": "remate"}, ritmo_carrusel=_RITMO), cfg=sin_llm)
+    assert "Wide room from low" in _composicion(r.prompt)
+
+
+def test_un_hueco_del_ritmo_cae_al_respaldo_de_ese_beat(sin_llm):
+    r = pa.construir(_spec(contenido={"rol_slide": "desarrollo"},
+                           ritmo_carrusel=["Extreme macro of wet slate.", ""]), cfg=sin_llm)
+    comp = _composicion(r.prompt)
+    assert "Extreme macro" not in comp          # no se corre el plano del beat anterior
+    assert "Mid-distance still life" in comp    # el respaldo de architect.json
+
+
+def test_sin_ritmo_el_slide_usa_el_de_la_casa(sin_llm):
+    # "Vacío = lo de siempre": una identidad sin el campo genera como antes.
+    sin = pa.construir(_spec(contenido={"rol_slide": "prueba"}), cfg=sin_llm).prompt
+    assert pa.encuadre_beat("prueba") in _composicion(sin)
+
+
+def test_el_arquitecto_le_dice_al_llm_su_beat_y_le_prohibe_el_encuadre(monkeypatch):
+    registro: list[str] = []
+    monkeypatch.setattr(pa.llm_json, "complete_json", _llm_fijo([_SECCIONES_LLM], registro))
+    pa.construir(_spec(contenido={"rol_slide": "tension"}), cfg=_Cfg(), autocritica=False)
+    assert "CAROUSEL BEAT: tension" in registro[0]
+    assert "never the camera distance" in registro[0]
+
+
+def test_la_portada_no_lleva_beat(sin_llm):
+    p = pa.construir(_spec(), cfg=sin_llm).prompt
+    assert "SHOT —" not in p
+
+
+def test_el_peor_caso_de_un_slide_cabe_en_el_presupuesto(sin_llm):
+    """El caso peor real: beat + continuidad de set + kicker + un ritmo de identidad
+    del largo máximo, con todo lo creativo al tope.
+
+    Vale la pena fijarlo porque el fallo es silencioso y caro: si el prompt se pasa
+    del techo, el validador lo tira entero y `job_runner._prompt_imagen` cae al
+    prompt base — la imagen sale SIN bloque de texto y sin brief.
+    """
+    largo = " ".join(["a very long cover scene clause with materials and light"] * 10)
+    for rol in pa.ROLES_BEAT:
+        r = pa.construir(_spec(
+            contenido={"rol_slide": rol, "escena_portada": largo,
+                       "texto_exacto_a_renderizar": "China entra en la liga alta de la IA global"},
+            marca={"tono_visual": "y" * 240},
+            ritmo_carrusel=["x" * 160] * 4,
+        ), cfg=sin_llm)
+        assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == [], rol

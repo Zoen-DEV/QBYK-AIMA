@@ -42,6 +42,39 @@
     }
   },
 
+  "_comment_roles": "ESCALERA DE BEATS DEL CARRUSEL. Antes solo existían dos roles —`portada` y `contenido`— así que los 2-5 slides de info compartían pieza, banda, escala y composición: cambiaba el objeto y nada más, y el carrusel salía como versiones de la misma imagen. La única variación que había (`_SLIDE_FRAMINGS` en job_runner) viajaba en el `prompt_base`, que el arquitecto solo ve como 'BASE PROMPT (weak, to rewrite)': con el LLM arriba no llegaba al prompt final casi nunca, mientras que la cláusula de lockup —que pide siempre el mismo cuadro— sí llega siempre. La variación estaba en la capa blanda y la uniformidad en la dura. Ahora cada posición tiene un BEAT con función narrativa, y lo que cambia entre beats se declara donde el LLM no lo puede pisar: la escala del titular (sección 5), la presencia del acento (sección 5) y el plano (sección 3, junto al lockup y a la continuidad de set). Lo que NO cambia entre beats es el esqueleto —banda alta para el titular, banda baja para el apoyo, sujeto en la central—: unificarlo fue una corrección deliberada y es lo que hace que el set se lea como un sistema. `funcion` va al redactor (post_writer) para que el TEXTO del slide i y su IMAGEN se encarguen desde el mismo beat; `composicion` y `ritmo` van al prompt de imagen. `ritmo` es el respaldo: si la identidad visual activa trae `ritmo_carrusel`, su entrada para ese beat lo reemplaza — el beat es estructura (universal) y el ritmo es marca (cómo ESTA marca fotografía ese beat).",
+  "roles": {
+    "tension": {
+      "funcion": "the tension — the problem, symptom or cost the reader recognises; it makes the promise of the cover urgent",
+      "composicion": "SHOT — TENSION, the closest framing of the set: the subject fills the central band edge to edge, its own falloff and defocus forming the clear zones.",
+      "ritmo": "Tight macro of a single worn surface or texture, hard raking light across it."
+    },
+    "desarrollo": {
+      "funcion": "the development — the explanation, mechanism or step that moves the idea one notch forward",
+      "composicion": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole in the central band, the set legible behind it, bare surface forming the clear zones.",
+      "ritmo": "Mid-distance still life on a bare surface, shallow focus, camera at object height."
+    },
+    "prueba": {
+      "funcion": "the evidence — the concrete figure, example or result from the source that proves the development",
+      "composicion": "SHOT — EVIDENCE, shot square-on: one object alone, centred on a bare field that forms the clear zones, nothing else competing in the frame.",
+      "ritmo": "Flat overhead of one object centred on an empty field, single hard key light."
+    },
+    "remate": {
+      "funcion": "the payoff — the line the reader would screenshot; still an informative idea from the source, never a sign-off or a summary",
+      "composicion": "SHOT — PAYOFF, the widest and deepest frame of the set: the subject reads small in the central band, quiet space opening above and below it.",
+      "ritmo": "Wide low three-quarter view with strong foreground depth, the subject small in a large space."
+    }
+  },
+
+  "_comment_secuencia_roles": "Qué beat le toca a cada posición según cuántos slides de info tenga el carrusel (n_info = carrusel_slides - 1, así que va de 2 a 5). La tensión abre y el remate cierra siempre; lo que se estira en el medio es el desarrollo. La clave es el número de slides de info EN TEXTO (JSON no admite claves numéricas); n_info fuera de la tabla cae a la escalera más larga, ciclando el desarrollo.",
+  "secuencia_roles": {
+    "1": ["remate"],
+    "2": ["tension", "remate"],
+    "3": ["tension", "desarrollo", "remate"],
+    "4": ["tension", "desarrollo", "prueba", "remate"],
+    "5": ["tension", "desarrollo", "desarrollo", "prueba", "remate"]
+  },
+
   "idiomas": {
     "es": "Spanish",
     "en": "English"
@@ -57,13 +90,18 @@
     "refuerzo": "TEXT ACCURACY AND FRAMING ARE THE PRIMARY REQUIREMENT of this render: spell the quoted string character by character, keep every accent, fit it whole inside the safe area with nothing cropped, and print no other glyph anywhere."
   },
 
-  "_comment_tipografia": "Sección 5, determinista. `escala` es lo que separa una pieza de diseñador de un caption: sin altura declarada el modelo pone cuerpo de pie de foto. `acento` es la plancha/palabra en color de la referencia — un solo span, si no se convierte en confeti. `acento_explicito` es el que marcó el usuario con **dobles asteriscos** en la revisión previa: cuando existe manda sobre la elección automática, y los asteriscos NUNCA llegan al render (se quitan al normalizar la spec).",
+  "_comment_tipografia": "Sección 5, determinista. `escala` es lo que separa una pieza de diseñador de un caption: sin altura declarada el modelo pone cuerpo de pie de foto. `acento` es la plancha/palabra en color de la referencia — un solo span, si no se convierte en confeti. `acento_explicito` es el que marcó el usuario con **dobles asteriscos** en la revisión previa: cuando existe manda sobre la elección automática, y los asteriscos NUNCA llegan al render (se quitan al normalizar la spec). La escala por BEAT es una de las dos cosas que distinguen un slide de otro dentro del carrusel (la otra es el plano): la tensión aprieta y sube el cuerpo, el desarrollo es el tamaño de lectura, el remate vuelve a subir para cerrar. `acento_omitido` es la otra mitad del ritmo: un acento que aparece en TODOS los slides deja de ser un acento. Se calla en la tensión, así que el color cae en la portada, en la prueba y en el remate.",
   "tipografia": {
     "plantilla": "{display}. {escala} Set solid, flush left, optical alignment, no hyphenation; {color}. {acento}",
     "escala": {
       "portada": "Each headline line stands 13-16% of the frame height, broken over 2-3 lines.",
-      "contenido": "Each headline line stands 9-12% of the frame height, broken over 2-3 lines."
+      "contenido": "Each headline line stands 9-12% of the frame height, broken over 2-3 lines.",
+      "tension": "Each headline line stands 11-13% of the frame height, broken over 2-3 lines.",
+      "desarrollo": "Each headline line stands 9-11% of the frame height, broken over 2-3 lines.",
+      "prueba": "Each headline line stands 9-11% of the frame height, broken over 2-3 lines.",
+      "remate": "Each headline line stands 12-15% of the frame height, broken over 2-3 lines."
     },
+    "acento_omitido": ["tension"],
     "acento": "One word only — the most load-bearing of the string — in {color_acento}; the rest in the headline color.",
     "acento_explicito": "Exactly this fragment — \"{acento}\" — in {color_acento}; every other word stays in the headline color.",
     "secundaria": "Second line: {secundaria}."
@@ -71,6 +109,9 @@
 
   "_comment_composicion_zona": "Cláusula que la app pega SIEMPRE a la composición. En la v1 decía 'keep focal elements out of it': eso garantizaba el look 'foto arriba, texto en la banda'. La v2 declaró el lockup de póster (tipo arriba y abajo, sujeto en el centro) con el solape controlado, que es lo que integra tipo e imagen. La v3 corrige la palabra que rompía la pieza: 'flat'. Para un modelo de imagen 'flat band' es un RECTÁNGULO DE COLOR LISO, no una zona tranquila de la foto — de ahí que algunos slides salieran con un passe-partout hueso (#EDEAE0 está en la paleta, así que lo pintaba con la marca) y otros a sangre, según cómo resolviera la ambigüedad esa tirada. El aire se sigue pidiendo, pero se dice DE QUÉ está hecho: sombra, desenfoque, superficie desnuda. Conserva los marcadores 'clear zone'/'negative space' que exige el validador.",
   "composicion_zona": "Poster lockup, full bleed to all four edges: the upper and bottom bands are uncluttered clear zones for the type — negative space made of the photograph itself (shadow, defocus, bare surface), never panels of flat colour; anchor the subject in the central band between them, lit so its silhouette separates from the type, overlapping it only where the frame falls to near-black.",
+
+  "_comment_composicion_zona_slide": "La misma cláusula, corta, para los slides con beat. No es un recorte cosmético: el beat ya nombra DE QUÉ está hecho el aire en ese plano concreto (el falloff de la propia masa, la superficie desnuda, el campo vacío), que es lo que la versión larga dice en genérico, así que repetirlo cuesta ~180 caracteres del presupuesto y no aporta. Conserva los tres marcadores que no pueden faltar: el sangrado, 'clear zones' (lo exige el validador) y la prohibición de las bandas planas.",
+  "composicion_zona_slide": "Poster lockup, full bleed to all four edges: upper and bottom bands stay uncluttered clear zones for the type, never panels of flat colour; the subject anchored in the central band between them.",
 
   "_comment_continuidad_set": "Lo que mantiene unido al carrusel ahora que los slides NO se generan pasando la portada en `medias`. Aquella vía parecía coherencia y era otra cosa: con estos modelos `medias` es image-to-image, así que cada slide volvía siendo la portada re-encuadrada. La continuidad se declara entonces por texto y en las dos direcciones: lo que se COMPARTE (set, superficies, luz, paleta, óptica) y lo que tiene que CAMBIAR (el objeto protagonista y la posición de cámara). Sin la segunda mitad, el modelo repite el objeto de la portada por su cuenta. Solo se pega a los slides.",
   "continuidad_set": "SET CONTINUITY: same room, surfaces, light and palette as the carousel cover ({escena_portada}) — but a DIFFERENT hero object, camera position and framing; never the cover restaged or re-cropped.",
@@ -103,12 +144,13 @@
   ],
 
   "validacion": {
-    "_comment": "max_caracteres va por debajo del corte de higgsfield_mcp._MAX_PROMPT_CHARS: un prompt truncado pierde justo la sección de negativos. Subió de 1950 a 3000 en la v2: las secciones deterministas (póster + área segura + tipografía) crecieron ~200 caracteres y el presupuesto anterior ya estaba saturado (1888 de 1950 en el camino de respaldo), así que con 2500 la poda se comía el anclaje concreto de las secciones creativas — justo lo que evita que la imagen salga genérica. Con 3000 el caso peor entraba sin podar; subió a 3100 al añadirse la cláusula de continuidad de set en los slides, que en el peor caso empujaba la poda hasta romper la paleta a mitad del paréntesis. En la v3 sube a 3150: declarar el sangrado en las secciones 1, 3 y 9 costó ~110 caracteres fijos en TODOS los prompts (se pagó parte quitando 'art-directed as print' de la sección 1, que además era el propio guiño al passe-partout), y sin este margen el peor caso —slide con kicker Y continuidad de set— se pasaba del techo incluso podado a 10 palabras: ahí el validador tira el prompt entero y la imagen sale con el prompt base, sin bloque de texto. Sigue 50 caracteres por debajo del corte del cliente, así que un prompt válido nunca llega a truncarse. OJO: la poda ya era agresiva antes de la v3 (14-18 palabras en el caso típico); si hay que dar más aire a las creativas, el techo real a subir es higgsfield_mcp._MAX_PROMPT_CHARS, que es una cota nuestra —el catálogo no declara maxLength para `prompt`— y no un límite documentado de Higgsfield. max_palabras_seccion acota cada sección creativa para que el total quepa.",
+    "_comment": "max_caracteres va por debajo del corte de higgsfield_mcp._MAX_PROMPT_CHARS: un prompt truncado pierde justo la sección de negativos. Subió de 1950 a 3000 en la v2: las secciones deterministas (póster + área segura + tipografía) crecieron ~200 caracteres y el presupuesto anterior ya estaba saturado (1888 de 1950 en el camino de respaldo), así que con 2500 la poda se comía el anclaje concreto de las secciones creativas — justo lo que evita que la imagen salga genérica. Con 3000 el caso peor entraba sin podar; subió a 3100 al añadirse la cláusula de continuidad de set en los slides, que en el peor caso empujaba la poda hasta romper la paleta a mitad del paréntesis. En la v3 sube a 3150: declarar el sangrado en las secciones 1, 3 y 9 costó ~110 caracteres fijos en TODOS los prompts (se pagó parte quitando 'art-directed as print' de la sección 1, que además era el propio guiño al passe-partout), y sin este margen el peor caso —slide con kicker Y continuidad de set— se pasaba del techo incluso podado a 10 palabras: ahí el validador tira el prompt entero y la imagen sale con el prompt base, sin bloque de texto. Sigue 50 caracteres por debajo del corte del cliente, así que un prompt válido nunca llega a truncarse. En la v4 sube a 3550, que es justo lo que la nota de la v3 anticipaba: la escalera de beats añade al slide su cláusula de plano (se paga en parte con `composicion_zona_slide`, la versión corta del lockup), y con 3150 la poda dejaba las secciones creativas en 14-22 palabras en TODOS los slides — es decir, se recortaba el anclaje concreto del sujeto, que es lo único que evita que la imagen salga genérica. El techo real es higgsfield_mcp._MAX_PROMPT_CHARS (subido a 3600 a la vez), una cota NUESTRA —el catálogo no declara maxLength para `prompt`— y no un límite documentado de Higgsfield; 3550 caracteres son ~900 tokens. Se mantienen los 50 caracteres de margen para que un prompt válido nunca llegue a truncarse. max_palabras_seccion acota cada sección creativa para que el total quepa.",
     "min_caracteres": 400,
-    "max_caracteres": 3150,
+    "max_caracteres": 3550,
     "max_palabras_bloque": 8,
     "max_palabras_seccion": 26,
     "continuidad_set_palabras": 12,
+    "ritmo_palabras": 18,
     "marcas_aire_negativo": ["negative space", "clear zone", "reserved", "empty band"],
     "marcas_area_segura": ["safe margin", "safe area"]
   },

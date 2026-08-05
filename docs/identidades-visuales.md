@@ -9,10 +9,10 @@ El esquema no cambió. Una identidad guardada tiene exactamente los mismos campo
 mismos tipos que `brand.json` — lo que se persiste es otro valor del mismo contrato, no
 un formato nuevo.
 
-## El esquema y sus dos contratos escondidos
+## El esquema y sus tres contratos escondidos
 
 [`api/visual_identity.py`](../api/visual_identity.py) es el esquema hecho validador. Los
-nueve campos son los de `brand.json`; quedan fuera `_comment*` y `version`, que describen
+campos son los de `brand.json`; quedan fuera `_comment*` y `version`, que describen
 el **archivo** y no la identidad (una fila tiene sus propios `created_at`/`updated_at`).
 
 | campo | tipo | qué gobierna |
@@ -26,8 +26,9 @@ el **archivo** y no la identidad (una fila tiene sus propios `created_at`/`updat
 | `tono_visual` | `str` | tratamiento fotográfico — **lo pisa `image_style` por post** |
 | `aspect_ratio` | `str` | inerte: el aspecto real lo fija el formato del post |
 | `referencias` | `list[str]` | la dirección de arte de las secciones 6 y 7 |
+| `ritmo_carrusel` | `list[str]` | el plano de cada beat del carrusel (sección 3) — **opcional** |
 
-Dos acuerdos vivían implícitos en el código y romperlos **no dejaba rastro**. El validador
+Tres acuerdos vivían implícitos en el código y romperlos **no dejaba rastro**. El validador
 los hace explícitos:
 
 1. **`paleta` está ordenada: `[fondo, texto, acento]`.**
@@ -38,6 +39,12 @@ los hace explícitos:
    `image_overlay._color` busca un `#RRGGBB` dentro de la frase y, si no lo encuentra, cae
    a un hueso por defecto: una identidad que diga `"warm off-white"` a secas se dibuja con
    el color de **otra** marca.
+3. **`ritmo_carrusel` está ordenado por los beats del carrusel** (`prompt_architect.ROLES_BEAT`:
+   `tension`, `desarrollo`, `prueba`, `remate`). La posición **es** el beat, así que una lista
+   en otro orden no da error en ningún sitio: le da a cada slide el plano de otro. Por eso el
+   editor pinta un campo por beat en vez de un textarea de una línea por plano, y por eso los
+   huecos interiores se conservan al normalizar — vaciar el segundo tiene que caer al respaldo
+   de **ese** beat, no correr el tercero a su sitio.
 
 Los topes de longitud son presupuesto, no estética: todo esto se inyecta en el brief de
 nueve secciones, que tiene un límite duro de caracteres (`architect.json` →
@@ -45,7 +52,16 @@ nueve secciones, que tiene un límite duro de caracteres (`architect.json` →
 
 ## Qué cambia (y qué no) al cambiar de identidad
 
-Cambian **paleta, color de acento, familia tipográfica y referencias de dirección de arte**.
+Cambian **paleta, color de acento, familia tipográfica, referencias de dirección de arte** y,
+en carrusel, **el plano de cada beat** (`ritmo_carrusel`).
+
+Ese último merece su matiz, porque es donde termina la frontera. Qué **cuenta** cada slide del
+carrusel —tensión, desarrollo, prueba, remate— es estructura y es igual para todas las marcas:
+vive en `architect.json` y se recorre con `prompt_architect.roles_carrusel`. Lo que la identidad
+decide es **cómo se fotografía** cada uno de esos momentos: distancia, altura de cámara y qué
+llena el cuadro. La misma escalera recorrida con macros de textura o con naturalezas muertas
+abiertas da dos carruseles que no se parecen en nada, y esa diferencia sí es de marca. Como el
+resto, es opcional: lo que no se defina cae al respaldo de la casa **beat a beat**.
 
 **No** cambia el tratamiento fotográfico: el `image_style` que el LLM escribe para cada post
 sigue ganando sobre `tono_visual`, igual que antes de esta feature. La identidad fija lo que
@@ -98,6 +114,53 @@ contra el esquema.
   ([`api/prompts/identity_extract.json`](../api/prompts/identity_extract.json)) aporta el
   encuadre creativo — mismo reparto que en `prompt_architect`.
 
+### Se extrae con ojo de diseñador, no de notario
+
+Describir con fidelidad un set de fotos de teléfono produce una identidad de fotos de teléfono,
+y de ahí salen piezas de aficionado por muy afinado que esté el prompt de generación. El
+encuadre (v3 de `identity_extract.json`) le pide al modelo lo que hace un director de arte con
+el moodboard del cliente: **leer la intención del set y especificarla a calidad de producción**.
+
+- **Fiel** en lo que es identidad: familia de color, dirección y dureza de la luz, materiales,
+  registro. La identidad es la que el set ya tiene, no una que quede mejor.
+- **Profesional** en lo que es ejecución: los accidentes de la foto de referencia —flash
+  directo, balance de blancos mezclado, medios tonos embarrados, fondo con ruido, encuadre de
+  instantánea— no se heredan. Se nombra la identidad que las fotos están buscando, a la calidad
+  que tendría si la hubiera rodado el estudio.
+- Cada valor es una **instrucción de rodaje**, no una apreciación: se inyecta literal en el
+  prompt de imagen, así que «cálido y acogedor» no instruye nada y «sol bajo rasante desde
+  cámara izquierda, sombras largas sobre roble sin tratar» sí. El encuadre además le nombra al
+  modelo **la pieza que sus valores van a producir** (póster a sangre con capa tipográfica,
+  titular al 9-16% del alto), porque un campo que no sabe para qué se usa se escribe suelto.
+- El `criterio` del JSON dice cómo se lee **cada campo**: `paleta` son tres ROLES (el campo
+  donde se apoyan los sujetos, el neutro en que se lee el titular, el acento saturado que se
+  gana una sola palabra) y no los tres colores más frecuentes; `tipografia` es la clase de
+  familia que aguanta un titular al 9-16% del alto en caja alta —nunca una sans neutra de UI,
+  que es la que devuelve el look de «caption pegado sobre una foto»—; `tono_visual` es una
+  receta de luz repetible que **deja zonas tranquilas** donde apoyar el tipo; `referencias` son
+  linajes de dirección de arte que se pueden nombrar en un deck, no estados de ánimo.
+
+### El criterio de diseño que sí se comprueba
+
+`visual_identity.revisar_diseno` mira los hex y no el texto, porque hay tres defectos que
+valen una pieza entera y **el esquema no los ve**: el titular que no contrasta con su fondo
+(mínimo 4.5:1 WCAG — el tipo va sobre una fotografía con grano y falloff, que se come parte del
+contraste), el «acento» que es un tercer gris (mínimo 25% de saturación HSV) y el acento
+confundible con el texto o con el fondo. Este último se mide por **croma y no por contraste**:
+hueso `#EDEAE0` y lima ácido `#C9F227` contrastan 1.03:1 y nadie los confunde, así que medirlo
+con el ratio marcaría como defectuosa la identidad de la casa.
+
+Dos cosas que no son casualidad:
+
+- **No son errores de esquema.** `validar` no los mira: un reparo discutible no puede volver una
+  identidad imposible de guardar. Gastan el reintento —con el reparo como feedback, igual que
+  los errores— y, si sobreviven, salen como **aviso junto al editor** en vez de tumbar la
+  extracción. Cambiar un hex ahí son dos segundos; otra llamada al modelo, no.
+- **Los números los escribe la app en las dos puntas.** `_reglas_diseno` genera lo que se le
+  pide al modelo desde las mismas constantes que aplica el código: pedir 3:1 y comprobar 4.5:1
+  sería pedirle al modelo que falle. Un test fija que la identidad de la casa pasa su propio
+  criterio — si dejara de pasarlo, lo mal calibrado sería la regla, no `brand.json`.
+
 ### Qué proveedor lee las fotos
 
 Sirve **cualquiera de los dos**, `ANTHROPIC_API_KEY` o `PERPLEXITY_API_KEY` (Anthropic
@@ -128,15 +191,31 @@ El cambio es deliberadamente pequeño. `prompt_architect` **no se tocó**: `norm
 resolvía cada campo con `marca.get(x) or marca_def.get(x)`, así que bastó con que
 `_marca_post` le entregue la identidad en vez de solo el aspecto.
 
+- **Se elige al crear el post**, con el selector `IdentityPicker` (`identidad_visual_id` en el
+  form). `identity_store.elegida` lo resuelve en los dos flujos: **vacío = la activa del
+  perfil**, que es como se generaba antes de que el campo existiera. Y hereda la regla de
+  `activa`: **nunca lanza**. Un id que ya no existe —la identidad se borró entre que se pintó
+  el formulario y se envió— o una base caída caen a la activa en vez de tumbar la creación,
+  igual que un `modelo_imagen` desconocido cae al default.
+- En el **lote** el selector está en la UI de `/bulk`, junto a las cuentas y el dry-run, y no
+  como columna del sheet: un lote es un envío de un usuario en un momento y sus filas
+  comparten estética por diseño (ver `batch_runner.run_batch`).
 - La identidad se **congela** en `params` al crear el job (`_params_identidad`, compartido por
-  los dos flujos). Cambiar la identidad activa a mitad de una generación no puede alterar un
-  job en vuelo, y un lote entero sale con la que estaba activa al subir el sheet — no por fila.
+  los dos flujos). Cambiar la identidad activa —o el selector— a mitad de una generación no
+  puede alterar un job en vuelo, y el lote la resuelve UNA vez al subir el sheet, no por fila.
 - `_identidad(job)` la lee. **Vacío significa "lo de siempre"**, no "identidad en blanco": los
   campos vacíos no se pasan, así que caen a `brand.json` campo a campo. Un job sin identidad
   produce una `marca` idéntica —no parecida— a la de antes de la feature, y hay un test que
   compara el diccionario entero.
 - Las `referencias` viajan al **nivel de arriba** de la spec, no dentro de `marca`: ahí es
-  donde las lee `normalizar_spec`. Metidas en `marca` se perderían sin un solo error.
+  donde las lee `normalizar_spec`. Metidas en `marca` se perderían sin un solo error. El
+  `ritmo_carrusel` viaja igual y por el mismo motivo, más uno propio: es una lista y
+  `_texto_plano` la aplanaría a una frase con comas dentro de `marca`.
+- El ritmo entra dos veces, a propósito: en la cláusula determinista de la sección 3
+  (`_clausula_beat`) y en el `prompt_base` que el arquitecto le enseña al LLM
+  (`encuadre_beat`, que usa la **misma** cadena de respaldo: identidad → `brand.json` → el beat
+  de `architect.json`). Si las dos no coincidieran, el brief se contradiría a sí mismo — que es
+  exactamente el defecto que tenía la escalera de encuadres anterior.
 
 ## Migración
 
@@ -182,8 +261,17 @@ cd api && python -m migrations.run up
 4. **Esperado:** unos segundos de «Leyendo tus fotos…» y luego el editor con la paleta extraída,
    los nombres de color, la tipografía y las referencias. El nombre se rellena solo con algo del
    tipo «Ember · ink».
-5. Cambia el nombre a «Prueba» y pulsa **Guardar identidad**.
-6. **Esperado:** el modal se cierra, aparece la identidad nueva en la lista con sus muestras de
+   Mira los valores con ojo de diseñador, que es lo que se le pidió al modelo: `tono_visual`
+   tiene que ser una receta de luz (dirección, dureza, hora, caída, grano) y no un adjetivo;
+   `tipografia` una clase de familia que aguante un titular enorme en caja alta; `referencias`
+   linajes nombrables. Si sale un banner ámbar con un **reparo de diseño** —titular que no
+   contrasta con su fondo, acento que es otro gris— es correcto que la extracción haya llegado
+   igual: corrígelo ahí mismo antes de guardar.
+5. Repite con **6 fotos de teléfono mal iluminadas** (flash directo, fondo con ruido).
+   **Esperado:** la identidad conserva la familia de color y los materiales del set pero NO
+   describe el accidente: nada de «flash directo», «fondo desordenado» ni «foto de móvil».
+6. Cambia el nombre a «Prueba» y pulsa **Guardar identidad**.
+7. **Esperado:** el modal se cierra, aparece la identidad nueva en la lista con sus muestras de
    color, insignia ninguna (no está activa todavía) y botones Renombrar / Editar / Eliminar.
 
 ### 2. Rechazo de 4 y de 11 fotos (sin llamar al modelo)
@@ -234,7 +322,53 @@ Este es el que hay que mirar con calma, porque el cambio es real pero acotado.
    Eso lo sigue decidiendo el `image_style` que el LLM escribe para cada post — es la decisión
    que tomamos y está documentada arriba.
 
-### 5. Los dos flujos
+### 4b. El carrusel cuenta una historia (ritmo por beat)
+
+Es el defecto que motivó el campo: los slides mantenían la estética pero eran versiones de la
+misma imagen.
+
+1. Genera un post individual en **carrusel** con 5 slides. En la compuerta de **preview**, mira
+   los campos de «Texto de cada slide».
+   **Esperado:** cada uno lleva su etiqueta de función — `tension`, `desarrollo`, `prueba`,
+   `remate` — con la explicación debajo.
+2. En esa misma pantalla, mira los prompts de las imágenes (`GET /jobs/:id` → `images.prompts`
+   tras generar, o el log del servidor).
+   **Esperado:** en la sección 3 de cada slide aparece una línea `SHOT — …` **distinta** por
+   slide, y en la sección 5 la escala del titular cambia (11-13% en la tensión, 9-11% en el
+   medio, 12-15% en el remate). En el slide de tensión **no** aparece la instrucción de acento.
+3. Deja que genere las imágenes.
+   **Esperado:** el set comparte paleta, luz y mundo, pero las distancias son claramente
+   distintas: el primero es el plano más cerrado y el último el más abierto.
+4. Edita `ritmo_carrusel` en tu identidad (por ejemplo, todo en planos generales) y genera otro
+   carrusel.
+   **Esperado:** la escalera sigue siendo la misma —tensión, desarrollo, prueba, remate— pero
+   ejecutada con tus planos, y esos textos aparecen literales en la sección 3.
+5. Deja el ritmo **vacío** y genera otro.
+   **Esperado:** se usan los planos de la casa (`brand.json` → `ritmo_carrusel`). Ningún error,
+   ningún aviso: vacío = lo de siempre.
+6. Desde la revisión, rehaz **un** slide del medio.
+   **Esperado:** vuelve con el mismo plano y la misma escala de titular que tenía: rehacer
+   cambia la tirada del modelo, no la función del slide en el carrusel.
+
+### 5. Elegir la identidad al crear el post
+
+1. Con la identidad de prueba **activa**, ve a `/individual` y mira el campo «Identidad
+   visual» (en Configuración, bajo el set de plantillas).
+   **Esperado:** la primera opción es «Identidad activa (nombre de la activa)» y está
+   seleccionada; debajo aparecen la de la casa y las tuyas, con «· activa» en la que lo esté.
+2. Elige explícitamente **QBYK — identidad de la casa** y genera el post.
+   **Esperado:** el prompt de la portada lleva `#0B0C0E, #EDEAE0, #C9F227` aunque la activa
+   sea otra: el campo del formulario gana.
+3. Repite dejando la opción por defecto («Identidad activa»).
+   **Esperado:** sale con la paleta de la identidad activa, exactamente como antes de que el
+   campo existiera.
+4. Deja el formulario abierto, borra en `/cuenta` la identidad que tenías elegida y envía.
+   **Esperado:** el post se crea igual, con la activa. No hay error.
+5. En `/historia`, cambia el formato a **video**.
+   **Esperado:** el campo se atenúa junto a los de imagen — la identidad solo pinta imágenes.
+   (Por eso `/reel`, que siempre es video, no lo lleva.)
+
+### 6. Los dos flujos
 
 1. Con la identidad de prueba activa, sube un `.xlsx` en `/bulk` con 2–3 filas.
 2. En `/batches/:id`, abre el preview de cada fila y mira el prompt.
@@ -242,8 +376,10 @@ Este es el que hay que mirar con calma, porque el cambio es real pero acotado.
    identidad se resuelve una sola vez al subir el sheet.
 3. Con el lote a medio generar, vuelve a `/cuenta` y activa otra identidad.
    **Esperado:** el lote en curso **no** cambia — está congelado.
+4. Sube otro `.xlsx` eligiendo en el paso 3 de `/bulk` una identidad distinta de la activa.
+   **Esperado:** **todas** las filas salen con la elegida, no con la activa.
 
-### 6. Perfiles
+### 7. Perfiles
 
 1. En la barra, cambia el selector de «QBYK» a «Cliente 1».
    **Esperado:** la página recarga y `/cuenta` muestra **solo** la identidad de la casa: las que
@@ -251,7 +387,7 @@ Este es el que hay que mirar con calma, porque el cambio es real pero acotado.
 2. Crea una identidad como «Cliente 1» y vuelve a «QBYK».
    **Esperado:** no la ves.
 
-### 7. Sin base de datos
+### 8. Sin base de datos
 
 1. Comenta `MONGODB_URI` en el `.env` de la raíz y reinicia la API.
 2. Ve a `/cuenta`.
@@ -263,7 +399,7 @@ Este es el que hay que mirar con calma, porque el cambio es real pero acotado.
    **Esperado:** funciona con normalidad, con el look de la casa. La generación nunca depende
    de que haya base.
 
-### 8. Reversibilidad de la migración
+### 9. Reversibilidad de la migración
 
 ```bash
 cd api && python -m migrations.run down
