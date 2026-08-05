@@ -99,7 +99,12 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # incorporó la cláusula de plano del beat, y con el techo anterior la poda de
 # `_ajustar_longitud` se comía el anclaje concreto de las secciones creativas —justo
 # lo que evita que la imagen salga genérica— en TODOS los slides.
-_MAX_PROMPT_CHARS = 3600
+# Sube a 4300 al reponerse la cláusula de continuidad de set, que llevaba desde la
+# escalera de beats sin emitirse en ningún slide: medido con `scripts/medir_prompt.py`,
+# con el techo anterior TODOS los slides quedaban podados a 10 palabras por sección
+# creativa (el mínimo de la escalera de poda). Son ~1070 tokens de prompt, que sigue
+# siendo poco para un modelo de esta clase.
+_MAX_PROMPT_CHARS = 4300
 # Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
 # (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
 # scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado

@@ -640,7 +640,13 @@ def _clausula_set(norm: dict) -> str:
     no como un segundo brief que se coma el presupuesto de caracteres.
     """
     c = norm["contenido"]
-    if c["rol_slide"] != "contenido" or not c.get("escena_portada"):
+    # La comparación va contra `rol_base`, NUNCA contra el literal "contenido": desde
+    # la escalera de beats los slides llegan como `tension|desarrollo|prueba|remate` y
+    # ninguno es "contenido", así que esta cláusula dejó de emitirse en TODOS los
+    # slides de carrusel sin un solo error — y con ella se fue lo único que declaraba
+    # el mundo compartido. Es el fallo que produjo carruseles con cinco localizaciones
+    # distintas y, a la vez, el objeto de la portada repetido en tres piezas.
+    if rol_base(c["rol_slide"]) != "contenido" or not c.get("escena_portada"):
         return ""
     arch = _cfg_arch()
     plantilla = (arch.get("continuidad_set") or
@@ -884,7 +890,9 @@ def _mensaje_arquitecto(norm: dict) -> str:
     # En los slides, la portada entra como CONTEXTO DE SET con su prohibición al lado.
     # Sin la prohibición explícita el modelo toma la escena de la portada como el
     # sujeto a describir y los slides salen siendo la misma foto contada de nuevo.
-    if c["rol_slide"] == "contenido" and c.get("escena_portada"):
+    # Igual que en `_clausula_set`: contra `rol_base` y nunca contra el literal
+    # "contenido", porque los slides llegan con el nombre de su beat.
+    if rol_base(c["rol_slide"]) == "contenido" and c.get("escena_portada"):
         datos.append(
             "CAROUSEL COVER ALREADY SHOT (same set, same light, same palette — reuse the WORLD, "
             f"never its hero object or its framing): {c['escena_portada']}"

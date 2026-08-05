@@ -476,6 +476,40 @@ def test_el_slide_declara_el_set_compartido_y_el_objeto_distinto(sin_llm):
     assert "DIFFERENT" in comp            # y la otra mitad: otro objeto y otro encuadre
 
 
+@pytest.mark.parametrize("rol", pa.ROLES_BEAT)
+def test_todo_beat_declara_la_continuidad_del_set(sin_llm, rol):
+    """El fallo que se coló al introducir la escalera de beats.
+
+    `_clausula_set` comparaba el rol contra el literal `"contenido"`, y desde la
+    escalera los slides llegan con el nombre de su beat: la cláusula dejó de emitirse
+    en TODOS los slides de carrusel, sin un solo error. Con ella se fue lo único que
+    declaraba el mundo compartido — de ahí los carruseles con cinco localizaciones y,
+    a la vez, el objeto de la portada repetido en tres piezas.
+
+    El parametrizado va sobre `pa.ROLES_BEAT` y no sobre una lista escrita a mano: un
+    beat nuevo no puede escaparse en silencio, que es exactamente como se escapó este.
+    """
+    r = pa.construir(_spec(contenido={
+        "rol_slide": rol,
+        "escena_portada": "A studio equalizer plugin screen on a dark mixing desk",
+    }), cfg=sin_llm)
+    comp = _composicion(r.prompt)
+    assert "SET CONTINUITY" in comp
+    assert "DIFFERENT hero object" in comp
+
+
+@pytest.mark.parametrize("rol", pa.ROLES_BEAT)
+def test_todo_beat_le_cuenta_al_arquitecto_que_la_portada_ya_esta_rodada(rol):
+    # La misma comparación, en el briefing del LLM: sin esta línea el modelo toma la
+    # escena de la portada como el sujeto a describir y el slide sale siendo la misma
+    # foto contada de nuevo.
+    norm = pa.normalizar_spec(_spec(contenido={
+        "rol_slide": rol,
+        "escena_portada": "A studio equalizer plugin screen on a dark mixing desk",
+    }))
+    assert "CAROUSEL COVER ALREADY SHOT" in pa._mensaje_arquitecto(norm)
+
+
 def test_la_portada_no_lleva_clausula_de_continuidad(sin_llm):
     # La portada no continúa nada: es la que funda el set.
     r = pa.construir(_spec(contenido={"escena_portada": "A jar of coins"}), cfg=sin_llm)

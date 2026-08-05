@@ -214,11 +214,25 @@ def _largo_rechazado(spec: dict) -> int:
     return len(parch.ensamblar(completas))
 
 
+def _poda(res: parch.ResultadoPrompt | None, pedidas: int) -> int:
+    """A cuántas palabras quedó cada sección creativa (`pedidas` = sin podar).
+
+    Es el número que de verdad importa, y no salta a la vista en el total: cuando se
+    añade texto fijo, `_ajustar_longitud` compensa recortando las creativas, así que el
+    prompt puede MEDIR MENOS y ser peor — lo que se fue es el anclaje concreto del
+    sujeto, que es lo único que evita que la imagen salga genérica. Se mide sobre
+    `sujeto` porque es la única creativa a la que la app no le pega nada detrás.
+    """
+    if res is None:
+        return 0
+    return len((res.secciones.get("sujeto") or "").split()) or pedidas
+
+
 def _medir(nombre: str, identidad: dict, techo: int, max_palabras: int) -> tuple[int, str, object]:
     """Imprime la tabla de un perfil de identidad. Devuelve `(peor_largo, rol, resultado)`."""
     print(f"\nIDENTIDAD «{nombre}»")
-    print(f"{'rol':<12}{'respaldo':>10}{'LLM máx.':>10}{'margen':>10}")
-    print("-" * 42)
+    print(f"{'rol':<12}{'respaldo':>10}{'LLM máx.':>10}{'margen':>10}{'poda':>8}")
+    print("-" * 50)
 
     peor_rol, peor_largo, peor_res = "", 0, None
     for rol in ("portada",) + parch.ROLES_BEAT:
@@ -226,7 +240,8 @@ def _medir(nombre: str, identidad: dict, techo: int, max_palabras: int) -> tuple
         _, largo_resp, fallo_resp = _construir(spec)
         res, largo, fallo = _construir(spec, palabras=max_palabras)
         marca = " RECHAZADO" if (fallo or fallo_resp) else ""
-        print(f"{rol:<12}{largo_resp:>10}{largo:>10}{techo - largo:>10}{marca}")
+        poda = f"{_poda(res, max_palabras)}/{max_palabras}"
+        print(f"{rol:<12}{largo_resp:>10}{largo:>10}{techo - largo:>10}{poda:>8}{marca}")
         if largo > peor_largo:
             peor_rol, peor_largo, peor_res = rol, largo, res
     return peor_largo, peor_rol, peor_res
