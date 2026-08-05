@@ -711,10 +711,22 @@ def _marca_post(posts: dict, *, aspect: str, identidad: dict | None = None) -> d
     `image_style` sigue ganando sobre `tono_visual` a propósito: la identidad fija la
     paleta, la tipografía y las referencias —lo que hace reconocible a la marca— y el
     tratamiento fotográfico lo sigue eligiendo el LLM por post, como hasta ahora.
+
+    **Pero la LUZ ya no viaja ahí.** Son dos cosas distintas que salían del mismo
+    campo: el tratamiento fotográfico es creatividad por pieza (sección 7) y el
+    esquema de iluminación es lo que hace que las N piezas de un job parezcan del
+    mismo día, así que no puede decidirse una vez por imagen. Por eso el `tono_visual`
+    de la identidad se manda ADEMÁS como `luz_identidad`, intacto y sin que el
+    `image_style` lo pise: `prompt_architect` lo usa para el bloqueo de luz de la
+    sección 6. Los dos viajan juntos y significan cosas distintas.
     """
     base = identidad if isinstance(identidad, dict) else {}
     marca = {k: v for k, v in base.items() if k in _CAMPOS_MARCA and v}
     marca["aspect_ratio"] = aspect
+    # Antes de que `image_style` lo pise. Vacío = `normalizar_spec` cae al
+    # `tono_visual` de brand.json, que es como se generaba antes de la identidad.
+    if marca.get("tono_visual"):
+        marca["luz_identidad"] = marca["tono_visual"]
     estilo = (posts.get("image_style") or "").strip()
     if estilo:
         marca["tono_visual"] = estilo

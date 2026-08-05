@@ -103,8 +103,9 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # escalera de beats sin emitirse en ningún slide: medido con `scripts/medir_prompt.py`,
 # con el techo anterior TODOS los slides quedaban podados a 10 palabras por sección
 # creativa (el mínimo de la escalera de poda). Son ~1070 tokens de prompt, que sigue
-# siendo poco para un modelo de esta clase.
-_MAX_PROMPT_CHARS = 4300
+# siendo poco para un modelo de esta clase. Y a 4350 con el bloqueo de luz de la
+# sección 6, que son otros ~180 caracteres fijos en todos los prompts.
+_MAX_PROMPT_CHARS = 4350
 # Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
 # (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
 # scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado

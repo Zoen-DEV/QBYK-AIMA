@@ -364,6 +364,14 @@ def normalizar_spec(spec: dict) -> dict:
             "tipografia_secundaria": _texto_plano(
                 marca.get("tipografia_secundaria") or marca_def.get("tipografia_secundaria")),
             "tono_visual": _texto_plano(marca.get("tono_visual") or marca_def.get("tono_visual")),
+            # La luz viaja APARTE del tono visual aunque salgan del mismo campo, porque
+            # ya no son lo mismo: `tono_visual` lo pisa el `image_style` que el LLM
+            # escribe para ESTE post (tratamiento fotográfico, sección 7) y la luz tiene
+            # que ser la de la identidad, idéntica en las N piezas del job (sección 6).
+            # El respaldo es el de siempre, así que un job sin identidad se comporta
+            # exactamente igual que antes: la luz sale del `tono_visual` de brand.json.
+            "luz_identidad": _texto_plano(marca.get("luz_identidad")
+                                          or marca_def.get("tono_visual")),
             "aspect_ratio": aspect,
         },
         "prompt_base": str(spec.get("prompt_base") or "").strip(),
@@ -627,6 +635,48 @@ def _clausula_beat(norm: dict) -> str:
     cfg_rol = (_cfg_arch().get("roles") or {}).get(rol) or {}
     composicion = str(cfg_rol.get("composicion") or _COMPOSICION_BEAT_FALLBACK[rol]).strip()
     return " ".join(p for p in (composicion, _ritmo_beat(norm, rol)) if p)
+
+
+def _clausula_luz(norm: dict) -> str:
+    """Bloqueo de luz que la app PREFIJA siempre a la sección 6.
+
+    Es la corrección de un defecto estructural, no un refuerzo: la sección 6 la
+    escribía entera el LLM, una vez por imagen y sin conocer a sus hermanas, así que
+    un carrusel de cinco piezas salía con cinco esquemas de iluminación —y ninguna
+    temperatura de color en todo el pipeline—. El esquema de iluminación es lo que
+    hace que cinco fotos parezcan del mismo día: por definición no puede decidirse
+    cinco veces.
+
+    Matiza —no revierte— la regla de que `image_style` gana a `tono_visual`. El
+    TRATAMIENTO fotográfico sigue siendo creatividad por pieza y vive en la sección 7;
+    la luz pasa a ser propiedad de la identidad y la escribe la app. Por eso el texto
+    sale de `luz_identidad` (la identidad activa, con respaldo en `brand.json`) y
+    nunca del `image_style` del post: si saliera de ahí, volvería a cambiar por pieza.
+
+    Tiene que ser **byte a byte idéntico** en la portada y en los cuatro beats, así
+    que no depende del rol ni entra en la poda de `_ajustar_longitud`.
+    """
+    arch = _cfg_arch()
+    plantilla = (arch.get("luz_bloqueada") or
+                 "LIGHT LOCK — identical in every piece of this set: {clave} {temperatura} "
+                 "Falloff to {fondo} at the edges, no ambient fill, one visible contact shadow.")
+    clave = _recortar(norm["marca"].get("luz_identidad") or "",
+                      _entero(_validacion_cfg(), "luz_palabras", 22))
+    # `_recortar` solo pone el punto cuando recorta; sin él la frase de la marca se
+    # pega a la de la temperatura y las dos se leen como una sola instrucción rota.
+    if clave:
+        clave = clave.rstrip(" .,;:") + "."
+    temperatura = str(arch.get("luz_temperatura") or
+                      "Colour temperature fixed at 5400K neutral: no warm or cool drift "
+                      "between pieces.").strip()
+    # El fondo es el PRIMER color de la paleta (la lista está ordenada [fondo, texto,
+    # acento]): es contra él que muere la luz en los bordes.
+    fondo = (norm["marca"].get("paleta") or "").split(",")[0].strip() or "near-black"
+    try:
+        return " ".join(plantilla.format(clave=clave, temperatura=temperatura,
+                                         fondo=fondo).split())
+    except (KeyError, IndexError):
+        return ""
 
 
 def _clausula_set(norm: dict) -> str:
@@ -998,6 +1048,11 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
         # La cláusula de aire negativo la pone SIEMPRE la app: es la que garantiza
         # el hueco limpio donde va el texto, y es criterio de validación.
         completas["composicion"] = f"{completas.get('composicion', '').strip()} {_clausula_aire(norm)}".strip()
+        # El bloqueo de luz va PREFIJADO (la composición lo lleva detrás): es lo
+        # invariante del set y tiene que leerse antes que el detalle de esta escena.
+        # Al pegarse acá y no en las creativas, la poda no lo toca — que es el punto:
+        # tiene que salir byte a byte igual en las N piezas del job.
+        completas["luz"] = f"{_clausula_luz(norm)} {completas.get('luz', '').strip()}".strip()
         return ensamblar(completas), completas
 
     prompt, secciones, recortado = _ajustar_longitud(creativas, _armar)
@@ -1073,6 +1128,11 @@ def _autocritica(res: ResultadoPrompt, norm: dict, bloques: list[str], armar, cf
         # se vuelve a pegar al armar, para no duplicarla en cada iteración.
         creativas["composicion"] = nuevas.get("composicion") or creativas["composicion"].split(
             _clausula_aire(norm))[0].strip()
+        # Lo mismo con la luz, que va prefijada: se toma lo que hay DESPUÉS del bloqueo
+        # (`[-1]`, no `[0]`). Sin esto cada iteración de la auto-crítica dejaría un
+        # LIGHT LOCK más en la sección 6.
+        creativas["luz"] = nuevas.get("luz") or creativas["luz"].split(
+            _clausula_luz(norm))[-1].strip()
         creativas.update(nuevas)
         prompt, secciones, _ = _ajustar_longitud(creativas, armar)
         errores = validar(prompt, bloques=bloques, aspect_ratio=norm["marca"]["aspect_ratio"])

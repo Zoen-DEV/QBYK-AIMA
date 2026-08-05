@@ -459,6 +459,80 @@ def test_sin_marcas_se_conserva_la_eleccion_automatica(sin_llm):
     assert "One word only" in tipo
 
 
+# ── Bloqueo de luz: lo mismo en las N piezas del job ─────────────────────────
+# La sección 6 la escribía entera el LLM, una vez por imagen y sin conocer a sus
+# hermanas: en un carrusel eso son N esquemas de iluminación distintos, y en ningún
+# punto del pipeline aparecía una temperatura de color. El esquema de iluminación es
+# lo que hace que N fotos parezcan del mismo día, así que lo escribe la app.
+
+
+def _luz(prompt: str) -> str:
+    return [l for l in prompt.splitlines() if l.startswith("6.")][0]
+
+
+def _bloqueo(prompt: str) -> str:
+    """Solo el LIGHT LOCK: lo que la app escribe, sin el detalle de escena del LLM."""
+    luz = _luz(prompt)
+    i = luz.find("LIGHT LOCK")
+    return luz[i:] if i >= 0 else ""
+
+
+def test_el_bloqueo_de_luz_es_identico_en_todas_las_piezas(sin_llm):
+    """La aserción central de la fase: byte a byte, portada y los cuatro beats."""
+    bloqueos = set()
+    for rol in ("portada",) + pa.ROLES_BEAT:
+        r = pa.construir(_spec(contenido={
+            "rol_slide": rol,
+            "escena_portada": "" if rol == "portada" else "a dark mixing desk",
+        }), cfg=sin_llm)
+        bloqueos.add(_bloqueo(r.prompt))
+    assert len(bloqueos) == 1
+    assert bloqueos.pop().startswith("LIGHT LOCK")
+
+
+def test_el_bloqueo_declara_temperatura_y_el_fondo_de_la_paleta(sin_llm):
+    # La temperatura es el parámetro que frena la deriva cálida y es app-owned; el
+    # fondo es el primer color de la paleta, que es contra el que muere la luz.
+    bloqueo = _bloqueo(pa.construir(_spec(), cfg=sin_llm).prompt)
+    assert "5400K" in bloqueo
+    assert prompt_config.brand()["paleta"][0] in bloqueo
+
+
+def test_la_luz_sale_de_la_identidad_y_no_del_estilo_del_post(sin_llm):
+    """`image_style` manda en el tratamiento (sección 7) pero NO en la luz.
+
+    Es la mitad delicada de la decisión: si la luz saliera del `image_style` que el
+    LLM escribe por post, volvería a cambiar en cada pieza — que es el defecto.
+    """
+    r = pa.construir(_spec(marca={
+        "tono_visual": "harsh midday sun through a warm window",   # lo pisa image_style
+        "luz_identidad": "single cold key from camera left, deep falloff",
+    }), cfg=sin_llm)
+    bloqueo = _bloqueo(r.prompt)
+    assert "single cold key from camera left" in bloqueo
+    assert "harsh midday sun" not in bloqueo
+
+
+def test_sin_identidad_la_luz_sale_de_brand_json(sin_llm):
+    # No-regresión: un job sin identidad tiene que generar exactamente como antes.
+    bloqueo = _bloqueo(pa.construir(_spec(), cfg=sin_llm).prompt)
+    assert prompt_config.brand()["tono_visual"].split(":")[0] in bloqueo
+
+
+def test_la_autocritica_no_duplica_el_bloqueo_de_luz(monkeypatch):
+    # El bloqueo va PREFIJADO: si la reescritura no lo separase del texto del LLM,
+    # cada iteración dejaría un LIGHT LOCK más en la sección 6.
+    monkeypatch.setattr(pa.llm_json, "complete_json", _llm_fijo([
+        {"sujeto": "A cracked bench vise on a steel table.",
+         "luz": "One key raking across the jaws.", "composicion": "Centred.",
+         "estilo": "Industrial reportage.", "camara": "50mm, f/4."},
+        {"puntajes": {"anclaje": 2}, "secciones": {"luz": "Key catches the worn jaws."}},
+        {"puntajes": {"anclaje": 5}},
+    ]))
+    r = pa.construir(_spec(), cfg=_Cfg())
+    assert _luz(r.prompt).count("LIGHT LOCK") == 1
+
+
 # ── Continuidad del set (reemplaza al image-to-image) ────────────────────────
 
 def _composicion(prompt: str) -> str:

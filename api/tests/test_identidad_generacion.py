@@ -145,6 +145,22 @@ def test_el_image_style_del_post_sigue_ganando_al_tono_visual():
     assert marca["tono_visual"] == "hard raking light, deep falloff"
 
 
+def test_pero_la_luz_no_la_pisa_el_image_style():
+    """El matiz de la regla anterior. El tratamiento fotográfico es creatividad por
+    pieza; el esquema de iluminación es lo que hace que las N piezas de un job
+    parezcan del mismo día, así que sale de la identidad y viaja aparte."""
+    marca = jr._marca_post({"image_style": "hard raking light, deep falloff"},
+                           aspect="4:5", identidad=_IDENTIDAD)
+    assert marca["luz_identidad"] == "overcast daylight, flat shadows"
+
+
+def test_la_luz_de_la_identidad_llega_al_bloqueo_del_prompt():
+    prompt = _prompt(_IDENTIDAD, posts={"image_style": "hard raking light, deep falloff"})
+    luz = [l for l in prompt.splitlines() if l.startswith("6.")][0]
+    assert "LIGHT LOCK" in luz
+    assert "overcast daylight" in luz.split("LIGHT LOCK")[1]
+
+
 def test_sin_image_style_manda_el_tono_visual_de_la_identidad():
     assert jr._marca_post({}, aspect="4:5", identidad=_IDENTIDAD)["tono_visual"] \
         == "overcast daylight, flat shadows"
