@@ -885,6 +885,7 @@ def _job_snapshot(job: dict) -> dict:
             "prompts": job["images"].get("prompts", {}),
             "qa": job["images"].get("qa", {}),
             "bandas": job["images"].get("bandas", {}),
+            "qa_set": job["images"].get("qa_set", []),
             # Imágenes que la revisión puede rehacer de a una (POST /jobs/{id}/regenerate).
             # Lo decide el backend para que las dos revisiones —individual y lote— no
             # tengan que repetir las reglas de formato en el frontend.
@@ -1075,6 +1076,7 @@ async def regenerate_job_image(job_id: str, subkey: Annotated[str, Form()] = "")
         "prompts": job["images"].get("prompts", {}),
         "qa": job["images"].get("qa", {}),
         "bandas": job["images"].get("bandas", {}),
+        "qa_set": job["images"].get("qa_set", []),
     }
 
 

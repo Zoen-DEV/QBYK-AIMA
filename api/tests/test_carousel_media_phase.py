@@ -169,3 +169,53 @@ async def test_la_historia_sigue_pidiendo_9_16(mcp):
     await _run(job)
     assert [g["aspect_ratio"] for g in mcp["generations"]] == ["9:16"]
     assert Image.open(io.BytesIO(job["images"]["bytes"]["ig-story"])).size == (1080, 1920)
+
+
+# ── QA de conjunto dentro de la fase (los dos flujos lo heredan) ──────────────
+
+async def test_sin_modelo_de_vision_la_fase_termina_igual(mcp):
+    # El QA de conjunto es una llamada más: sin key no corre y nada cambia.
+    job = _job()
+    await jr._run_media_phase(job)
+    assert job["status"] == "review"
+    assert job["images"]["qa_set"] == []
+    assert len(job["_ig_media_urls"]) == 4
+
+
+async def test_el_qa_de_conjunto_rehace_el_outlier_y_lo_vuelve_a_subir(mcp, monkeypatch):
+    """El recorrido completo: veredicto → una regeneración → el juego subido de nuevo.
+
+    Es lo que hace que el QA de conjunto sirva de algo: si el outlier se rehiciera
+    DESPUÉS de subir, se publicaría la imagen vieja.
+    """
+    import image_set_qa as sqa
+
+    llamadas = {"n": 0}
+
+    def _fake(system, user, images, *, cfg, max_tokens=0):
+        llamadas["n"] += 1
+        malo = llamadas["n"] == 1                     # la segunda ronda ya está bien
+        return ({"imagenes": [
+            {"indice": i, "motivo": "otra localización" if (malo and i == 2) else "",
+             **{v: not (malo and i == 2) for v in sqa.veredictos()}}
+            for i in range(4)], "peor": 2 if malo else -1},
+            {"service": "anthropic", "model": "claude-sonnet-4-6",
+             "units": {"input_tokens": 900, "output_tokens": 100}})
+
+    # Se enciende SOLO el QA de conjunto (no la key entera): con `anthropic_api_key`
+    # puesta se despertarían también el arquitecto y el QA de texto, y este test
+    # dejaría de hablar de lo que dice hablar.
+    monkeypatch.setattr(sqa.llm_json, "complete_json_vision_multi", _fake)
+    monkeypatch.setattr(sqa, "activo", lambda cfg: True)
+    job = _job()
+
+    await jr._run_media_phase(job)
+
+    assert job["status"] == "review"
+    assert llamadas["n"] == 2                          # veredicto + comprobación tras rehacer
+    assert job["images"]["qa_set"][0]["peor"] == "ig-2"
+    assert job["images"]["qa_set"][-1]["ok"] is True
+    # 1 portada + 3 slides + 1 regeneración del outlier.
+    assert len(mcp["generations"]) == 5
+    # Y el juego se subió con el slide NUEVO: la subida corre después del QA.
+    assert len(job["_ig_media_urls"]) == 4

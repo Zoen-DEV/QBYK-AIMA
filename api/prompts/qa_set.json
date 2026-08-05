@@ -1,0 +1,20 @@
+{
+  "_comment": "QA de CONJUNTO del carrusel. Es la pieza que faltaba en la arquitectura: cada imagen se generaba, se validaba y se aceptaba AISLADA — `rubric.json` puntúa un prompt sin conocer a sus hermanos y `image_text_qa` solo ve ortografía y recorte—, así que ningún control podía detectar el defecto que el lector nota primero: que las cinco piezas no se parecen entre sí. Hace falta una llamada que las vea JUNTAS. La lógica vive en api/image_set_qa.py y no hardcodea nada de este archivo.",
+  "version": "1",
+
+  "modelo_max_tokens": 1200,
+  "max_reintentos": 1,
+
+  "_comment_veredictos": "Cuatro veredictos BINARIOS con motivo, no puntuaciones. Una nota del 1 al 5 sobre 'coherencia' no se puede accionar: no dice qué slide rehacer ni por qué. Un binario por slide sí, y la acción que le corresponde —rehacer esa imagen— ya existe en las dos compuertas de revisión. El orden importa: `mismo_mundo` es el que más pesa (localización, superficies y atrezzo compartidos), y `sin_marco_ni_bandas` duplica a propósito lo que ya mira el detector de Pillow — el detector ve el escalón de píxeles, el modelo ve el passe-partout que un degradado suave le esconde.",
+  "veredictos": [
+    "mismo_mundo",
+    "mismo_sistema_tipografico",
+    "mismo_grade",
+    "sin_marco_ni_bandas"
+  ],
+
+  "sistema": "You are the art director signing off a carousel before it ships. You are looking at the finished pieces of ONE set, in order: image 1 is the cover, the rest are its content slides. Your only job is to say whether they read as a system. You are not judging whether each piece is good on its own — that has already been checked. You judge them AGAINST EACH OTHER. Be strict about what a reader notices in half a second and forgiving about what only a designer would see. Answer with JSON only.",
+
+  "_comment_instruccion": "El {n} y la lista de veredictos los inyecta la app desde `veredictos`, para que el JSON pedido y el JSON leído no puedan separarse. Las definiciones son deliberadamente concretas —'la misma localización', 'una sola familia'— porque un criterio vago devuelve un 'sí' de cortesía en todo.",
+  "instruccion": "These {n} images are one carousel, in order. Image 1 is the cover.\n\nFor EVERY image, return four binary verdicts about how it sits with the others, plus a short reason for each `false`. Judge each image against the SET, not against an ideal.\n\n- `mismo_mundo`: same location, same surfaces and same kind of props as the rest. A different hero object is CORRECT and expected — a different room, a different era or a different material world is not. The cover restaged (same hero object, new crop) is also a failure here: say so in the reason.\n- `mismo_sistema_tipografico`: one type family, one case and one hierarchy across the whole set. A second family, a slide in lower case when the rest are caps, or a headline at a visibly different size tier is a failure.\n- `mismo_grade`: same colour temperature, same contrast and same exposure feel as the rest. Warm here and cool there is a failure even when both are attractive.\n- `sin_marco_ni_bandas`: the photograph reaches all four edges. Any border, matte, letterbox or strip of flat colour is a failure.\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"imagenes\": [{\"indice\": 0, {claves}, \"motivo\": \"...\"}], \"peor\": 0}\n\nOne entry per image, `indice` starting at 0 and in the given order. `motivo` is one short sentence naming what breaks the set, or \"\" when all four are true. `peor` is the index of the single image that most breaks the set, or -1 if none does. Write `motivo` in Spanish: a person reads it."
+}

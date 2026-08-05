@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import AvisoBandas, { type Bandas } from "./AvisoBandas";
+import AvisoConjunto, { type QaSet } from "./AvisoConjunto";
 import { RegenerateButton, conVersion, etiquetaSubkey } from "./RegenerateImage";
 
 interface RowResult {
@@ -37,6 +38,8 @@ interface RowPreviewData {
     regenerables?: string[];
     // Veredicto del detector de passe-partout/letterbox sobre la imagen cruda.
     bandas?: Bandas;
+    // Veredicto del QA de conjunto: las N piezas vistas juntas.
+    qa_set?: QaSet;
     blotato_urls: { linkedin?: string; instagram?: string[]; facebook?: string };
   };
   // Avisos sobre los prompts de esta fila (mismo lint que el preview individual).
@@ -785,6 +788,7 @@ function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
           <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
         )}
       </div>
+      {row.status === "ready" && <AvisoConjunto qaSet={p.images.qa_set} compact />}
       {row.status === "ready" && <AvisoBandas bandas={p.images.bandas} compact />}
       {regenerables.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2">

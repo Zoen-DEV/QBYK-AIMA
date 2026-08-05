@@ -22,6 +22,7 @@ import lang_detect as ld
 import prompt_architect as parch
 import prompt_config
 import image_text_qa as iqa
+import image_set_qa as sqa
 
 try:
     import image_overlay as ov
@@ -121,7 +122,7 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         # el origen de cada subkey (respaldo de subida) y el job_id de la portada que
         # los slides usan como referencia visual. Sobreviven a la fase de imágenes
         # porque la regeneración crea su propio provider y no hereda sus locales.
-        "images": {"bytes": {}, "raw_urls": {}, "reference": "", "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": "", "text_overlay": _text_in_prompt(cfg), "text_in_prompt": _text_in_prompt(cfg), "prompts": {}, "qa": {}, "bandas": {}},
+        "images": {"bytes": {}, "raw_urls": {}, "reference": "", "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": "", "text_overlay": _text_in_prompt(cfg), "text_in_prompt": _text_in_prompt(cfg), "prompts": {}, "qa": {}, "bandas": {}, "qa_set": []},
         "video": {"url": "", "provider": "", "notice": "", "cost": None},
         "result": {},
         "error_msg": None,
@@ -932,6 +933,64 @@ async def _verificar_bandas(job: dict, q: asyncio.Queue, cfg, *, subkey: str, sr
     if registro:
         job["images"]["bandas"][subkey] = registro
     return src
+
+
+async def _verificar_conjunto(job: dict, q: asyncio.Queue, cfg, *, claves: list[str],
+                              rehacer) -> None:
+    """QA de conjunto: ¿las N piezas del carrusel se leen como un set?
+
+    Corre **después** del bucle de slides y **antes** de subir, sobre los bytes que se
+    van a publicar (overlay y grade ya aplicados): es lo que va a ver el lector.
+
+    Los slides marcados como outlier se rehacen por el camino que ya existe, **una
+    sola ronda**: regenerar cuesta créditos por imagen y el veredicto es una opinión,
+    no una medida — encadenar rondas convierte un carrusel caro en uno carísimo sin
+    garantía de que la segunda tirada se parezca más al set.
+
+    Best-effort de punta a punta. Nunca interrumpe la generación.
+    """
+    if not sqa.activo(cfg):
+        return
+    image_bytes: dict[str, bytes] = job["images"]["bytes"]
+    presentes = [k for k in claves if k in image_bytes]
+    if len(presentes) < 3:
+        return
+
+    registro: list[dict] = []
+    rondas = sqa.max_reintentos()
+    ronda = 0
+    while True:
+        res = await _run(sqa.revisar, [image_bytes[k] for k in presentes], cfg=cfg)
+        registro.append({
+            "ronda": ronda + 1, "ok": res.ok, "verificado": res.verificado,
+            "motivo": res.motivo,
+            "peor": presentes[res.peor] if 0 <= res.peor < len(presentes) else "",
+            "piezas": [{"subkey": presentes[p.indice], "ok": p.ok, "fallos": p.fallos,
+                        "motivo": p.motivo}
+                       for p in res.piezas if 0 <= p.indice < len(presentes)],
+        })
+        print(f"   [QA conjunto] ronda {ronda + 1}: "
+              f"{'ok' if res.ok else 'ROMPE EL SET'} — {res.motivo}")
+        if res.uso:
+            await _track(job, service=res.uso["service"], operation="image_set_qa",
+                         units=res.uso["units"], model=res.uso.get("model"))
+        if res.ok or not res.verificado:
+            break
+        if ronda >= rondas or not (0 <= res.peor < len(presentes)):
+            await _push(q, {"step": "images", "status": "warn",
+                            "msg": f"El carrusel no se lee como un set: {res.motivo}"})
+            break
+        ronda += 1
+        outlier = presentes[res.peor]
+        await _push(q, {"step": "images", "status": "running",
+                        "msg": f"{outlier} rompe el set — rehaciéndolo..."})
+        try:
+            if not await rehacer(outlier):
+                break
+        except Exception as e:
+            print(f"   [aviso] Rehacer {outlier} por el QA de conjunto falló: {e}")
+            break
+    job["images"]["qa_set"] = registro
 
 
 def _segment_prompt(beat: str, style: str) -> str:
@@ -2072,6 +2131,12 @@ async def _run_media_phase(job: dict):
                     _save_image(job["id"], key, png_base)
                 await _push(q, {"step": "images", "status": "done", "subkey": key})
 
+        # Cómo rehacer CADA slide, por subkey. Se va llenando en el bucle de abajo y lo
+        # consume el QA de conjunto, que corre cuando el bucle ya terminó y no puede
+        # alcanzar sus locales. Cada entrada regenera, vuelve a recortar/igualar y deja
+        # el resultado en `image_bytes` — es decir, hace lo mismo que el bucle.
+        rehacedores: dict[str, Any] = {}
+
         if is_carousel:
             # Carousel slides 1..n-1: (n_info) info slides, el último incluido.
             for i, fname in enumerate(f"ig-{s + 1}" for s in range(n_info)):
@@ -2115,15 +2180,52 @@ async def _run_media_phase(job: dict):
                         rehacer=lambda _r=_rehacer_slide: _r(_sangrado=True))
                     image_warnings.extend(provider.pop_warnings())
                     raw_urls[fname] = slide_url
-                    if _HAS_OVERLAY:
-                        png = await _render_imagen(slide_url, cfg=cfg, texto=texto_slide,
+
+                    async def _colocar(src: str, _key=fname, _texto=texto_slide) -> None:
+                        """Recorte + grade + guardado de un slide ya generado."""
+                        raw_urls[_key] = src
+                        if not _HAS_OVERLAY:
+                            return
+                        png = await _render_imagen(src, cfg=cfg, texto=_texto,
                                                    rol="contenido", identidad=_identidad(job))
                         png = await _match_cover_grade(png, image_bytes.get("ig-0"), cfg)
-                        image_bytes[fname] = png
-                        _save_image(job["id"], fname, png)
+                        image_bytes[_key] = png
+                        _save_image(job["id"], _key, png)
+
+                    await _colocar(slide_url)
+
+                    async def _rehacer_para_el_set(_r=_rehacer_slide, _c=_colocar) -> bool:
+                        # Sin refuerzos: el slide no está mal escrito ni tiene banda —
+                        # rompe el SET, y eso se corrige con otra tirada del mismo brief.
+                        nuevo = await _r()
+                        if not nuevo:
+                            return False
+                        await _c(nuevo)
+                        return True
+
+                    rehacedores[fname] = _rehacer_para_el_set
                     await _push(q, {"step": "images", "status": "done", "subkey": fname})
                 except Exception as e:
                     await _push(q, {"step": "images", "status": "warn", "subkey": fname, "msg": str(e)})
+
+            # ── QA de conjunto: las N piezas, juntas ──────────────────────────
+            # Ningún QA por imagen puede ver que cinco piezas no se parecen entre sí.
+            # Corre acá —después del bucle y ANTES de subir— sobre los bytes que se van
+            # a publicar. La portada NO se rehace aunque salga marcada: funda el set y
+            # es la referencia de los slides ya generados, así que rehacerla dejaría a
+            # los demás persiguiendo una imagen que ya no existe.
+            async def _rehacer_outlier(subkey: str) -> bool:
+                fn = rehacedores.get(subkey)
+                if fn is None:
+                    await _push(q, {"step": "images", "status": "warn", "subkey": subkey,
+                                    "msg": "Esta pieza rompe el set pero no se rehace sola "
+                                           "(la portada funda el set): rehazla desde la revisión."})
+                    return False
+                return await fn()
+
+            await _verificar_conjunto(job, q, cfg,
+                                      claves=[f"ig-{i}" for i in range(n_slides)],
+                                      rehacer=_rehacer_outlier)
 
         # Catch-all: warn any expected subkey that never received a status event
         for key in expected_subkeys:

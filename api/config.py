@@ -88,6 +88,12 @@ class Config:
     # su tasa de acierto con esto encendido, se apaga. La exactitud del texto vale
     # más que la elegancia del corte.
     image_line_breaks: bool = True
+    # QA de CONJUNTO (api/image_set_qa.py): una llamada de visión que ve las N piezas
+    # del carrusel JUNTAS y dice cuáles rompen el set. Es la única comprobación capaz
+    # de detectar que cinco imágenes no se parecen entre sí — ningún QA por imagen
+    # puede—, y por tanto la única que evita que la calidad del set se degrade sin que
+    # nadie se entere. Cuesta una llamada de visión por carrusel: por eso es un flag.
+    image_set_qa: bool = True
     # Coherencia del carrusel.
     #   - image_reference_slides: pasa la PORTADA en `medias` al generar cada slide.
     #     APAGADO por defecto, y no es una preferencia estética: en el catálogo en vivo
@@ -199,6 +205,8 @@ def load_config() -> Config:
         image_band_qa=(os.environ.get("IMAGE_BAND_QA", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         image_line_breaks=(os.environ.get("IMAGE_LINE_BREAKS", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_set_qa=(os.environ.get("IMAGE_SET_QA", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         # Apagado por defecto: con los modelos actuales `medias` es image-to-image y
         # clona la portada en cada slide (ver el comentario del dataclass).
