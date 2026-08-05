@@ -90,6 +90,38 @@ MAX_RITMO_ITEM = 160
 MAX_NOMBRE_COLOR = 40
 NOMBRE_MIN, NOMBRE_MAX = 1, 60  # la única regla del mínimo es "no vacío"
 
+# ── Contratos que el brief de imagen impone a la identidad ────────────────────
+#
+# Los tres de arriba (orden de la paleta, hex de los colores, orden del ritmo) son
+# contratos con el CÓDIGO. Estos dos son contratos con el BRIEF: cosas que el prompt
+# de generación ya dice, y con las que una identidad puede contradecirse. Una
+# contradicción dentro del mismo brief no da error en ningún sitio — el modelo la
+# resuelve por su cuenta, y siempre en contra de lo que la identidad quería.
+
+# El arquitecto dice, en su instrucción y en sus negativos, `No people as the main
+# subject`. Un `ritmo_carrusel` que pide un personaje es esa contradicción: el modelo
+# la resuelve descartando el plano entero, así que el carrusel sale sin escalera de
+# planos y sin un solo error en el log. Es inoperante, no discutible: va en `validar`.
+PALABRAS_PERSONA: tuple[str, ...] = (
+    "character", "person", "people", "face", "portrait", "torso", "figure",
+    "model", "hands", "human",
+)
+
+# Una identidad tiene que sostener un titular al 9-16% del alto del cuadro. Una sans
+# neutra de UI a ese cuerpo devuelve el look de "caption pegado sobre una foto", que es
+# justo lo que el propio prompt de extracción advierte que no hay que devolver: que
+# pasara era un agujero del validador.
+FAMILIAS_UI_PROHIBIDAS: tuple[str, ...] = (
+    "inter", "helvetica", "arial", "roboto", "system ui", "ui sans", "neutral sans",
+)
+# Marcas de que la familia SÍ es de display. Su ausencia es un reparo (discutible),
+# no un error: hay familias de titular que se describen sin ninguna de estas palabras.
+MARCAS_DISPLAY: tuple[str, ...] = (
+    "display", "condensed", "grotesque", "grotesk", "extended", "caps", "poster",
+)
+# En la secundaria (el kicker), la señal de amateur más fuerte del set auditado.
+SECUNDARIA_DEBIL: tuple[str, ...] = ("regular weight", "mixed case")
+
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 _HEX_EN_TEXTO = re.compile(r"#[0-9a-fA-F]{6}")
 _HEX_SUELTO = re.compile(r"^[0-9a-fA-F]{6}$")
@@ -264,8 +296,41 @@ def validar(identidad: Any) -> list[str]:
         )
     if any(len(r) > MAX_RITMO_ITEM for r in ritmo):
         errores.append(f"hay planos de `ritmo_carrusel` de más de {MAX_RITMO_ITEM} caracteres")
+    for i, plano in enumerate(ritmo):
+        palabra = _palabra_en(plano, PALABRAS_PERSONA)
+        if palabra:
+            beat = ROLES_RITMO[i] if i < len(ROLES_RITMO) else f"posición {i + 1}"
+            errores.append(
+                f"el plano de `{beat}` habla de «{palabra}»: el héroe de cada pieza es un "
+                f"OBJETO, y el brief de imagen prohíbe a las personas como sujeto principal. "
+                f"El modelo resuelve esa contradicción descartando el plano entero, así que el "
+                f"carrusel saldría sin escalera de planos. Descríbelo por distancia, altura de "
+                f"cámara y qué llena el cuadro."
+            )
+
+    tipografia = ident.get("tipografia") or ""
+    familia = _palabra_en(tipografia, FAMILIAS_UI_PROHIBIDAS)
+    if familia:
+        errores.append(
+            f"`tipografia` nombra «{familia}», una sans neutra de interfaz: a un titular del "
+            f"9-16% del alto del cuadro devuelve el look de «caption pegado sobre una foto». "
+            f"Describe una clase de display (peso, ancho, caja, tracking)."
+        )
 
     return errores
+
+
+def _palabra_en(texto: str, palabras: tuple[str, ...]) -> str:
+    """La primera de `palabras` presente en `texto`, o `""`.
+
+    Por palabra completa: `"figure"` no puede saltar dentro de `"figurative"`, y
+    `"bar"`-tipo de falso positivo es exactamente lo que volvería inservible un aviso.
+    """
+    bajo = (texto or "").lower()
+    for p in palabras:
+        if re.search(rf"\b{re.escape(p)}\b", bajo):
+            return p
+    return ""
 
 
 # ── Criterio de diseño ────────────────────────────────────────────────────────
@@ -347,11 +412,34 @@ def revisar_diseno(identidad: Any) -> list[str]:
     con qué valores**, porque son a la vez el feedback del reintento del extractor y lo
     que lee el usuario en el editor.
     """
-    paleta = (identidad if isinstance(identidad, dict) else {}).get("paleta") or []
-    if len(paleta) < 3:
-        return []  # el esquema ya se está quejando de eso: no se duplica el ruido
-    fondo, texto, acento = paleta[0], paleta[1], paleta[2]
+    ident = identidad if isinstance(identidad, dict) else {}
     reparos: list[str] = []
+
+    # Tipografía: el reparo es que la familia no se declare de display, y que la
+    # secundaria pida peso regular o caja mixta — el kicker en regular y caja mixta es
+    # la señal de amateur más fuerte del set auditado. Reparo y no error a propósito:
+    # una secundaria en caja mixta puede ser una decisión legítima, y el usuario tiene
+    # que poder verla sin quedarse sin poder guardar.
+    tipografia = ident.get("tipografia") or ""
+    if tipografia and not _palabra_en(tipografia, MARCAS_DISPLAY):
+        reparos.append(
+            f"`tipografia` («{tipografia}») no se declara de display: sin peso, ancho o caja "
+            f"declarados, el modelo compone el titular a cuerpo de pie de foto. Nombra la "
+            f"clase ({', '.join(MARCAS_DISPLAY[:4])}...)"
+        )
+    secundaria = ident.get("tipografia_secundaria") or ""
+    debil = _palabra_en(secundaria, SECUNDARIA_DEBIL)
+    if debil:
+        reparos.append(
+            f"`tipografia_secundaria` pide «{debil}»: el kicker en peso regular y caja mixta "
+            f"es lo que hace que la pieza se lea como una foto con caption. Usa la misma "
+            f"familia en un peso que aguante."
+        )
+
+    paleta = ident.get("paleta") or []
+    if len(paleta) < 3:
+        return reparos  # del resto ya se queja el esquema: no se duplica el ruido
+    fondo, texto, acento = paleta[0], paleta[1], paleta[2]
 
     ratio = contraste(texto, fondo)
     if ratio and ratio < CONTRASTE_MIN:

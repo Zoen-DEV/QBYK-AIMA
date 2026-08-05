@@ -194,7 +194,10 @@ def _reglas_esquema() -> str:
         "the hex of the THIRD, written inside the phrase — e.g. "
         '"bone white (#EDEAE0) on the near-black" and "acid lime (#C9F227)".',
         "4. `tipografia` / `tipografia_secundaria`: describe a type family CLASS "
-        "(weight, width, case, tracking), never a specific licensed font name.",
+        "(weight, width, case, tracking), never a specific licensed font name. NEVER "
+        "name a neutral interface sans (" + ", ".join(vi.FAMILIAS_UI_PROHIBIDAS) + "): "
+        "at 9-16% of the frame height those give the 'caption pasted on a photo' look "
+        "and the response is rejected.",
         "5. `tono_visual`: the photographic treatment ONLY — light, contrast, depth, "
         "texture, surround. Do NOT name any colour here: the palette already has its "
         "own fields and two palettes in one prompt fight each other.",
@@ -209,7 +212,11 @@ def _reglas_esquema() -> str:
         f"{vi.MAX_RITMO_ITEM} characters and names ONLY shot distance, camera height and "
         "what fills the frame (the palette and the light already have their own fields). "
         "The four must be genuinely different distances: the tension is the tightest shot "
-        "of the set, the payoff the widest and deepest.",
+        "of the set, the payoff the widest and deepest. The hero of every piece is an "
+        "OBJECT: never write a person into a shot (" + ", ".join(vi.PALABRAS_PERSONA)
+        + "). The image brief forbids people as the main subject, so a shot that asks for "
+        "one is a contradiction the model resolves by dropping that shot entirely — and "
+        "the carousel loses its shot ladder.",
         f"9. Every text field is at most {vi.MAX_TEXTO} characters — around "
         f"{vi.MAX_TEXTO // 7} words. Spend that budget on concrete facts: dense, not long.",
         "10. Write every value in English: these strings are injected verbatim into an "
@@ -236,6 +243,13 @@ def _reglas_diseno() -> str:
         "not an accent.",
         "C. The accent must read as a different colour from BOTH the background and the "
         "type colour — by hue and chroma, not only by lightness.",
+        "D. `tipografia` must declare that it is a DISPLAY class — name at least one of: "
+        + ", ".join(vi.MARCAS_DISPLAY) + ". Without weight, width or case declared the "
+        "model sets the headline at caption size.",
+        "E. `tipografia_secundaria` must not ask for "
+        + " or ".join(f'"{s}"' for s in vi.SECUNDARIA_DEBIL)
+        + ": a kicker in regular weight and mixed case is what makes the piece read as a "
+        "photo with a caption instead of a poster.",
     ])
 
 

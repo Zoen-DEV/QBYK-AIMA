@@ -50,6 +50,36 @@ Los topes de longitud son presupuesto, no estética: todo esto se inyecta en el 
 nueve secciones, que tiene un límite duro de caracteres (`architect.json` →
 `validacion.max_caracteres`).
 
+### Y dos contratos con el BRIEF (agosto 2026)
+
+Los tres de arriba son contratos con el **código**. Estos dos son contradicciones con lo que
+el propio brief de generación ya dice: no dan error en ningún sitio porque el modelo las
+resuelve por su cuenta, y siempre en contra de lo que la identidad quería.
+
+4. **`ritmo_carrusel` no puede pedir personas** (`visual_identity.PALABRAS_PERSONA`). El
+   arquitecto dice, en su instrucción y en sus negativos, `No people as the main subject`. Un
+   plano escrito alrededor de un personaje es una contradicción dentro del mismo brief, y el
+   modelo la resuelve **descartando el plano entero**: el carrusel sale sin escalera de planos,
+   con los cuatro slides a la misma distancia, y no hay un solo error. Es **error** y no reparo
+   por la misma razón que una paleta desordenada: no es discutible, es inoperante.
+5. **`tipografia` no puede nombrar una sans neutra de interfaz**
+   (`visual_identity.FAMILIAS_UI_PROHIBIDAS`). Una identidad tiene que sostener un titular al
+   9-16% del alto del cuadro; a ese cuerpo, una familia de UI devuelve el look de «caption
+   pegado sobre una foto» — que es exactamente lo que el prompt de extracción ya advertía y el
+   validador dejaba pasar.
+
+Aparte, dos **reparos** (avisan, no bloquean, ver más abajo): una `tipografia` que no se declare
+de display (`MARCAS_DISPLAY`) y una `tipografia_secundaria` que pida `regular weight` o
+`mixed case`. El kicker en peso regular y caja mixta fue la señal de amateur más fuerte del
+carrusel auditado, pero puede ser una decisión legítima: el usuario tiene que **verla**, no
+quedarse sin poder guardar.
+
+> **Las identidades ya guardadas no se revalidan al leerlas.** `validar` corre al crear y al
+> editar, no al generar — a propósito: una identidad guardada nunca puede tumbar una generación
+> en curso. El efecto secundario es que una identidad anterior a estas puertas **sigue generando
+> mal hasta que alguien la abra en `/cuenta` y la guarde**. Si un carrusel sale sin escalera de
+> planos o con el titular a cuerpo de caption, ese es el primer sitio donde mirar.
+
 ## Qué cambia (y qué no) al cambiar de identidad
 
 Cambian **paleta, color de acento, familia tipográfica, referencias de dirección de arte** y,
@@ -243,6 +273,31 @@ Arranca los dos servidores como siempre (`python -m uvicorn app:app --reload` de
 ```bash
 cd api && python -m migrations.run up
 ```
+
+### 0-bis. Sanear las identidades guardadas antes de las puertas nuevas (paso único)
+
+Las identidades creadas antes de agosto de 2026 **no pasaron** las dos puertas nuevas y
+`validar` no corre al leerlas, así que siguen generando mal hasta que se abran y se guarden.
+Hay que hacerlo una vez por identidad guardada, en `/cuenta` → **Editar**:
+
+1. **`ritmo_carrusel`**: reemplaza cualquier plano escrito alrededor de un personaje por una
+   escalera **de objeto**, tensión → desarrollo → prueba → remate, conservando el abanico de
+   distancias que la identidad ya quería (del plano más cerrado al más abierto). Al guardar, la
+   puerta te dirá qué beat y qué palabra sobran.
+2. **`tipografia`**: nombra la clase display (peso, ancho, caja, tracking) y **sin** vocabulario
+   de layout — nada de `band`, `panel`, `field`. Ese vocabulario ya no llega al prompt (lo filtra
+   `prompt_architect.sin_layout`), pero escribirlo ahí sigue siendo una identidad diciendo dónde
+   va el tipo en vez de cómo es.
+3. **`tipografia_secundaria`**: la misma familia en un peso que aguante. Fuera
+   `regular weight` y `mixed case`.
+4. **`color_texto` / `color_acento`**: nombre + hex y nada más. Lo que venga detrás (`over the
+   dark field`) ya no llega al prompt, pero es lo que fabricaba el letterbox y no tiene por qué
+   seguir guardado.
+5. **`referencias`**: revisa que no arrastren una lineage de otro género. Una referencia de *key
+   art* de personaje con HUD aplicada a un bodegón técnico tira hacia ahí en una pieza de cada
+   cinco, y eso se lee como incoherencia del set, no como variedad.
+6. **Esperado:** al guardar, cero errores. Los reparos de diseño que queden salen como aviso
+   junto al editor y son informativos: se puede guardar igual.
 
 ### 0. Nada cambió (regresión) — con la identidad de la casa
 

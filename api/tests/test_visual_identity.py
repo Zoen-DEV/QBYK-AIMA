@@ -322,3 +322,68 @@ def test_el_orden_de_los_beats_no_se_copia_a_mano():
     import prompt_architect as pa
 
     assert vi.ROLES_RITMO is pa.ROLES_BEAT
+
+
+# ── Contratos con el BRIEF de imagen ──────────────────────────────────────────
+#
+# Los de arriba son contratos con el CÓDIGO (orden de la paleta, hex, orden del
+# ritmo). Estos dos son contradicciones con lo que el propio brief de generación ya
+# dice, y no dan error en ningún sitio: el modelo las resuelve por su cuenta y siempre
+# en contra de lo que la identidad quería.
+
+
+@pytest.mark.parametrize("palabra", vi.PALABRAS_PERSONA)
+def test_un_ritmo_con_personas_es_un_error(palabra):
+    """El arquitecto dice `No people as the main subject`.
+
+    Un plano que pide un personaje es esa contradicción dentro del mismo brief, y el
+    modelo la resuelve descartando el plano ENTERO: el carrusel sale sin escalera de
+    planos y sin un solo error. Es inoperante, no discutible, así que va en `validar`.
+    """
+    errores = vi.validar(_con(ritmo_carrusel=[f"Tight shot of a {palabra} against the wall."]))
+    assert any(palabra in e for e in errores)
+
+
+def test_un_ritmo_de_objeto_no_da_error():
+    assert vi.validar(_con(ritmo_carrusel=_RITMO)) == []
+
+
+def test_el_aviso_del_ritmo_nombra_el_beat_y_la_palabra():
+    # Es el feedback del reintento del extractor: tiene que decir QUÉ está mal y DÓNDE.
+    errores = vi.validar(_con(ritmo_carrusel=[
+        _RITMO[0], "Mid shot of a person at the bench.", _RITMO[2], _RITMO[3]]))
+    assert any("desarrollo" in e and "person" in e for e in errores)
+
+
+def test_una_palabra_de_persona_dentro_de_otra_no_cuenta():
+    # Por palabra completa: "figure" no puede saltar dentro de "figurative".
+    assert vi.validar(_con(ritmo_carrusel=["Figurative ceramic tile filling the frame."])) == []
+
+
+@pytest.mark.parametrize("familia", vi.FAMILIAS_UI_PROHIBIDAS)
+def test_una_tipografia_de_interfaz_es_un_error(familia):
+    # Lo que el propio prompt de extracción ya advertía y el validador dejaba pasar.
+    errores = vi.validar(_con(tipografia=f"{familia} bold, ALL CAPS, tight tracking"))
+    assert any(familia in e for e in errores)
+
+
+def test_una_tipografia_sin_marca_de_display_es_reparo_y_no_error():
+    ident = _con(tipografia="a clean sans, medium weight")
+    assert vi.validar(ident) == []                    # se puede guardar
+    assert any("display" in r for r in vi.revisar_diseno(ident))
+
+
+@pytest.mark.parametrize("debil", vi.SECUNDARIA_DEBIL)
+def test_una_secundaria_debil_es_un_reparo(debil):
+    # El kicker en peso regular y caja mixta es la señal de amateur más fuerte del set
+    # auditado. Reparo y no error: puede ser una decisión legítima.
+    ident = _con(tipografia_secundaria=f"same face, {debil}")
+    assert vi.validar(ident) == []
+    assert any(debil in r for r in vi.revisar_diseno(ident))
+
+
+def test_los_reparos_tipograficos_salen_aunque_la_paleta_este_incompleta():
+    # La paleta corta cortaba la revisión entera antes de llegar a la tipografía.
+    ident = vi.normalizar({**_VALIDA, "paleta": ["#000000"],
+                           "tipografia": "a clean sans, medium weight"})
+    assert any("display" in r for r in vi.revisar_diseno(ident))

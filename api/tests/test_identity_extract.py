@@ -281,6 +281,28 @@ def test_las_reglas_de_diseno_llevan_los_numeros_que_aplica_el_codigo():
     assert str(round(vi.SATURACION_ACENTO_MIN * 100)) in reglas
 
 
+def test_el_prompt_prohibe_las_personas_en_el_ritmo_con_las_palabras_que_se_validan():
+    """Mismo anti-drift: la lista que se le pide al modelo es la que aplica `validar`,
+    así que su reintento puede corregirse solo en vez de volver a fallar igual."""
+    reglas = ie._reglas_esquema()
+    for palabra in vi.PALABRAS_PERSONA:
+        assert palabra in reglas
+
+
+def test_el_prompt_prohibe_las_familias_de_interfaz_que_se_validan():
+    reglas = ie._reglas_esquema()
+    for familia in vi.FAMILIAS_UI_PROHIBIDAS:
+        assert familia in reglas
+
+
+def test_las_reglas_de_diseno_piden_las_mismas_marcas_de_display_que_se_revisan():
+    reglas = ie._reglas_diseno()
+    for marca in vi.MARCAS_DISPLAY:
+        assert marca in reglas
+    for debil in vi.SECUNDARIA_DEBIL:
+        assert debil in reglas
+
+
 def test_el_sistema_lleva_el_encuadre_del_archivo_y_las_reglas_de_la_app():
     """El reparto del módulo, hecho comprobable: el JSON aporta el criterio creativo y
     la app pega detrás lo que no se delega."""
