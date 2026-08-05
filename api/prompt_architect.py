@@ -436,6 +436,87 @@ def _bloques(texto: str) -> list[str]:
     return [b for b in (titular, kicker) if b]
 
 
+def pide_caja_alta(tipografia: str) -> bool:
+    """¿La familia de la identidad se compone en caja alta?
+
+    Tanto `brand.json` como las identidades extraídas lo declaran con las mismas dos
+    palabras ("ALL CAPS", "in caps"), que es también una de las `MARCAS_DISPLAY` que
+    pide la puerta tipográfica. Si lo dice, el texto se cita ya en mayúsculas: pedirle
+    al modelo una caja y darle la contraria en el mismo brief es la clase de
+    contradicción que resuelve como quiere, y de ahí salía el slide en caja baja.
+    """
+    return bool(re.search(r"\bcaps\b", str(tipografia or ""), re.I))
+
+
+# Una línea final de una sola palabra corta es una VIUDA: en la portada auditada
+# dejaba "EN" solo en la tercera línea, al 14% del alto del cuadro. No es un detalle
+# de tipógrafo — a ese cuerpo, una palabra suelta ocupa un tercio de la pieza.
+_VIUDA_MAX = 3
+
+
+# A cuerpo de titular (13-16% del alto, 84% del ancho) caben ~20 caracteres por línea.
+# Por debajo de dos líneas de eso el titular entra en dos; por encima, en tres. Más de
+# tres a ese cuerpo ya no es un titular, es un párrafo.
+_LINEA_CARACTERES = 21
+# Cuánto vale un corte detrás de una pausa, medido en la misma unidad que el
+# desequilibrio (caracteres²). Inclina el reparto sin poder imponerlo: con 30, una
+# pausa gana a un corte ~5 caracteres mejor equilibrado —que es cuando de verdad lee
+# mejor— y pierde ante un reparto claramente desigual, que a cuerpo de póster se nota
+# más que el sintagma partido.
+_PREMIO_PAUSA = 30.0
+_PAUSAS = (",", ".", ":", ";", "—", "–")
+
+
+def lineas_titular(titular: str, max_lineas: int = 3) -> list[str]:
+    """Reparte el titular en líneas, equilibradas y sin viuda al final.
+
+    El modelo rompe el titular por su cuenta y decide dónde según lo que le quepa, no
+    según lo que la frase dice. Acá se decide una vez, con criterio, y se le dicta.
+
+    El reparto es una **partición equilibrada**, no un llenado greedy: greedy llena la
+    primera línea hasta el tope y deja lo que sobre al final, que es justo como sale
+    "…EN LA / LIGA". Con pocas palabras y como mucho tres líneas el espacio de cortes
+    es diminuto, así que se prueban todos y gana el de menor desequilibrio, con una
+    rebaja si la línea termina en pausa (el mismo criterio de `dividir_texto`).
+
+    Después, la regla de la viuda: la última línea nunca queda con una sola palabra de
+    `_VIUDA_MAX` caracteres o menos. Es el defecto "EN" de la portada auditada — a ese
+    cuerpo, una palabra suelta ocupa un tercio de la pieza.
+    """
+    palabras = " ".join(str(titular or "").split()).split()
+    tope = max(1, int(max_lineas or 1))
+    if len(palabras) <= 1 or tope == 1:
+        return [" ".join(palabras)] if palabras else []
+
+    total = sum(len(p) for p in palabras) + len(palabras) - 1
+    n = min(tope, len(palabras), 2 if total <= _LINEA_CARACTERES * 2 else 3)
+    objetivo = total / n
+
+    def _coste(corte: tuple[int, ...]) -> float:
+        limites = (0,) + corte + (len(palabras),)
+        c = 0.0
+        for k in range(n):
+            trozo = palabras[limites[k]:limites[k + 1]]
+            largo = sum(len(p) for p in trozo) + len(trozo) - 1
+            c += (largo - objetivo) ** 2
+            if k < n - 1 and trozo[-1][-1:] in _PAUSAS:
+                c -= _PREMIO_PAUSA
+        return c
+
+    from itertools import combinations
+    mejor = min(combinations(range(1, len(palabras)), n - 1), key=_coste)
+    lineas = [palabras[a:b] for a, b in zip((0,) + mejor, mejor + (len(palabras),))]
+
+    # La viuda: se le baja una palabra de la línea anterior, salvo que eso la dejara
+    # vacía (ahí se funden las dos, que es preferible a una línea sola).
+    if len(lineas) > 1 and len(lineas[-1]) == 1 and len(lineas[-1][0]) <= _VIUDA_MAX:
+        if len(lineas[-2]) > 1:
+            lineas[-1].insert(0, lineas[-2].pop())
+        else:
+            lineas[-2].extend(lineas.pop())
+    return [" ".join(l) for l in lineas]
+
+
 # ── Secciones deterministas (las que la app nunca delega) ─────────────────────
 
 def _seccion_pieza(norm: dict, *, refuerzo_sangrado: bool = False) -> str:
@@ -482,7 +563,8 @@ def _tiene_acentos(texto: str) -> bool:
     return bool(re.search(r"[áéíóúüñÁÉÍÓÚÜÑàèìòùâêîôûçÇ]", texto))
 
 
-def _seccion_texto(norm: dict, bloques: list[str], *, refuerzo: bool = False) -> str:
+def _seccion_texto(norm: dict, bloques: list[str], *, refuerzo: bool = False,
+                   cortes: list[str] | None = None) -> str:
     """Sección 4: el bloque de texto. Es la razón de ser del módulo — se arma a mano."""
     cfg_txt = _cfg_arch().get("texto") or {}
     z = _zona(norm)
@@ -517,6 +599,15 @@ def _seccion_texto(norm: dict, bloques: list[str], *, refuerzo: bool = False) ->
         partes.append((cfg_txt.get("detalle_kicker") or
                        "The second line locks into {zona_kicker}, {alineacion}, inside the same safe "
                        "area.").format(**z))
+    # Cortes de línea dictados: el modelo los decide según lo que le quepa, no según lo
+    # que la frase dice, y de ahí salen las viudas ("EN" solo en la tercera línea, al
+    # 14% del alto). Las etiquetas son instrucción, nunca contenido — hay que decirlo o
+    # el modelo imprime "line 1".
+    if cortes and len(cortes) > 1:
+        citadas = ", ".join(f'line {i + 1} "{l}"' for i, l in enumerate(cortes))
+        partes.append((cfg_txt.get("cortes") or
+                       "Break the headline over exactly these lines: {lineas}. These line "
+                       "labels are instructions, never printed.").format(lineas=citadas))
     if refuerzo:
         partes.append(cfg_txt.get("refuerzo") or
                       "TEXT ACCURACY IS THE PRIMARY REQUIREMENT: spell the quoted string character by "
@@ -1085,9 +1176,25 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
     if len(bloques) > 1:
         avisos.append("el texto se dividió en titular + subtítulo por longitud")
 
+    # Caja alta: si la identidad la declara, el texto se cita YA en mayúsculas. Se
+    # transforma acá, en el único punto por el que pasan las tres cosas que tienen que
+    # decir lo mismo —lo que se cita en la sección 4, lo que el validador exige que
+    # esté en el prompt y lo que se devuelve en `ResultadoPrompt.bloques`—. Pedirle una
+    # caja al modelo y darle la contraria entre comillas es la contradicción de la que
+    # salía el slide en caja baja.
+    if pide_caja_alta(norm["marca"]["tipografia"]):
+        bloques = [b.upper() for b in bloques]
+        # El acento se busca dentro del titular, así que tiene que ir en la misma caja.
+        norm["contenido"]["acento"] = norm["contenido"]["acento"].upper()
+
+    # Cortes de línea: se calculan una sola vez, sobre el titular ya en su caja final.
+    cortes: list[str] = []
+    if bloques and getattr(cfg, "image_line_breaks", True):
+        cortes = lineas_titular(bloques[0])
+
     fijas = {
         "pieza": _seccion_pieza(norm, refuerzo_sangrado=refuerzo_sangrado),
-        "texto": _seccion_texto(norm, bloques, refuerzo=refuerzo_texto),
+        "texto": _seccion_texto(norm, bloques, refuerzo=refuerzo_texto, cortes=cortes),
         "tipografia": _seccion_tipografia(norm, bloques),
         "negativos": _seccion_negativos(norm),
     }

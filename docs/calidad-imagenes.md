@@ -56,6 +56,45 @@ Dos cosas que la medición dejó claras y no eran obvias:
    las secciones fijas**. El validador rechaza, y esa imagen se genera con el prompt base: **sin
    bloque de texto**. No es hipotético: `visual_identity.validar` acepta exactamente esa identidad.
 
+#### Cómo quedó el presupuesto tras las fases
+
+Cada fase que añade texto fijo se midió y pagó su techo. La barra que se fijó —y donde se para—
+es el **escalón de poda de 18 palabras** por sección creativa: por debajo, la sección deja de
+describir un objeto concreto y la imagen sale genérica; por encima, cada escalón cuesta ~250
+caracteres de prompt sin que nadie haya demostrado que se noten.
+
+| tras la fase | qué añadió | techo | peor caso | poda |
+|---|---|---|---|---|
+| 0 · línea base | — | 3550 | 3469 | 14/26 |
+| 1 · continuidad del set | `SET CONTINUITY` en todos los slides (~200) | 4250 | 4215 | 22/26 |
+| 2 · bloqueo de luz | `LIGHT LOCK` en todas las piezas (~180) | 4300 | 4288 | 18/26 |
+| 3 · bandas | sangrado en positivo en la sección 1 (~110) | 4400 | 4398 | 18/26 |
+| 5 · cortes de línea | cortes dictados en la sección 4 (~140) | 4650 | 4623 | 18/26 |
+| 7 · atrezzo y cultura | contexto cultural + negativo de moneda | 4800 | 4744 | 18/26 |
+
+`higgsfield_mcp._MAX_PROMPT_CHARS` va siempre 50 por encima, para que un prompt válido nunca
+llegue a truncarse. **Si una fase futura vuelve a necesitar techo, el sitio donde mirar no es
+este número sino las secciones fijas**: el brief fijo ya ronda los 3400 caracteres y la poda está
+activa incluso en un caso realista, no solo en el peor.
+
+#### Pendiente: el A/B de los cortes de línea (fase 5)
+
+Los cortes de línea dictados van tras `IMAGE_LINE_BREAKS` (encendido) porque tocan la sección 4,
+que es la que sostiene el QA de texto. **La validación A/B no se ha corrido**: necesita
+generaciones reales contra Higgsfield (créditos y sesión OAuth). Cómo hacerla:
+
+1. Genera un carrusel de 5 slides con `IMAGE_LINE_BREAKS=1`, y otro del **mismo contenido** con
+   `IMAGE_LINE_BREAKS=0`.
+2. Compara `job["images"]["qa"]` de los dos: cuántas imágenes pasaron el QA de texto en el primer
+   intento, y cuántas necesitaron reintento.
+3. **Si el flag empeora la precisión del texto, se apaga por defecto** (`image_line_breaks: bool =
+   False` en `config.py`) y se anota aquí por qué. La exactitud del texto vale más que la
+   elegancia del corte: un titular bien partido que dice otra cosa no sirve de nada.
+
+Lo que sí está comprobado sin generar: `image_text_qa.coincide` normaliza mayúsculas y
+puntuación, así que ni la caja alta ni el reparto en líneas pueden hacer fallar la comparación
+por sí mismos. El riesgo que queda es de **render**, no de comparación.
+
 ### Paso 12 — cada slide con su función: la escalera de beats
 
 Síntoma reportado (05/08/2026): en imagen única la identidad visual funciona bien, pero **en el

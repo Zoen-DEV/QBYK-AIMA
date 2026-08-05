@@ -81,6 +81,13 @@ class Config:
     # dos veces. UN solo reintento (no dos como el de texto): el defecto es binario y
     # regenerar cuesta créditos de verdad.
     image_band_qa: bool = True
+    # Cortes de línea dictados: la sección 4 le dice al modelo por dónde partir el
+    # titular en vez de dejar que lo decida por lo que le quepa (de ahí las viudas —
+    # "EN" solo en la tercera línea, al 14% del alto del cuadro). Va tras un flag
+    # porque toca la sección que sostiene el QA de texto: si `image_text_qa` empeora
+    # su tasa de acierto con esto encendido, se apaga. La exactitud del texto vale
+    # más que la elegancia del corte.
+    image_line_breaks: bool = True
     # Coherencia del carrusel.
     #   - image_reference_slides: pasa la PORTADA en `medias` al generar cada slide.
     #     APAGADO por defecto, y no es una preferencia estética: en el catálogo en vivo
@@ -190,6 +197,8 @@ def load_config() -> Config:
         image_text_qa=(os.environ.get("IMAGE_TEXT_QA", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         image_band_qa=(os.environ.get("IMAGE_BAND_QA", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_line_breaks=(os.environ.get("IMAGE_LINE_BREAKS", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         # Apagado por defecto: con los modelos actuales `medias` es image-to-image y
         # clona la portada en cada slide (ver el comentario del dataclass).

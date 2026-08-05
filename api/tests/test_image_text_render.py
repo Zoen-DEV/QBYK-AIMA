@@ -127,9 +127,11 @@ async def test_la_portada_lleva_el_hook_literal(mcp, vision):
     await jr._run_media_phase(job)
     prompt = _prompt(job, "cover")
     # 9 palabras: se reparte en titular + kicker, y las dos partes van entrecomilladas.
+    # En la caja que declara la identidad (`brand.json` pide ALL CAPS): el texto no
+    # cambia ni un carácter, solo se cita en la caja en la que se va a imprimir.
     titular, kicker = parch.dividir_texto(_HOOK)
-    assert f'render this exact headline: "{titular}"' in prompt
-    assert f'"{kicker}"' in prompt
+    assert f'render this exact headline: "{titular.upper()}"' in prompt
+    assert f'"{kicker.upper()}"' in prompt
     assert f"{titular} {kicker}" == _HOOK
     # El kicker va anclado al pie, no debajo del titular: es el lockup de póster.
     assert "bottom band" in prompt
@@ -138,15 +140,15 @@ async def test_la_portada_lleva_el_hook_literal(mcp, vision):
 async def test_cada_slide_lleva_su_propia_idea(mcp, vision):
     job = _job()
     await jr._run_media_phase(job)
-    assert 'render this exact text: "Modelos abiertos"' in _prompt(job, "ig-1")
-    assert 'render this exact text: "Costes a la baja"' in _prompt(job, "ig-2")
+    assert 'render this exact text: "MODELOS ABIERTOS"' in _prompt(job, "ig-1")
+    assert 'render this exact text: "COSTES A LA BAJA"' in _prompt(job, "ig-2")
 
 
 async def test_el_ultimo_slide_es_informativo_y_no_lleva_creditos(mcp, vision):
     job = _job()
     await jr._run_media_phase(job)
     ultimo = _prompt(job, "ig-3")
-    assert 'render this exact text: "Talento que vuelve"' in ultimo
+    assert 'render this exact text: "TALENTO QUE VUELVE"' in ultimo
     # Ni atribución del canal ni pieza de cierre: es un slide de contenido más.
     assert "Canal QBYK" not in ultimo
     assert "closing slide" not in ultimo
@@ -271,7 +273,7 @@ async def test_imagen_unica_tambien_lleva_el_texto_en_el_prompt(mcp, vision):
     assert len(mcp["generations"]) == 1
     prompt = _prompt(job, "cover")
     assert _secciones_completas(prompt)
-    assert parch.dividir_texto(_HOOK)[0] in prompt
+    assert parch.dividir_texto(_HOOK)[0].upper() in prompt
 
 
 async def test_la_historia_vertical_tambien(mcp, vision):
@@ -281,4 +283,4 @@ async def test_la_historia_vertical_tambien(mcp, vision):
     prompt = _prompt(job, "ig-story")
     assert _secciones_completas(prompt)
     assert "9:16" in prompt.splitlines()[0]
-    assert parch.dividir_texto(_HOOK)[0] in prompt
+    assert parch.dividir_texto(_HOOK)[0].upper() in prompt

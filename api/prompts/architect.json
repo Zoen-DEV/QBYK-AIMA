@@ -87,8 +87,10 @@
   "texto": {
     "instruccion": "render this exact text: \"{titular}\"",
     "instruccion_con_kicker": "render this exact headline: \"{titular}\", plus this exact second line at ~40% of its size: \"{kicker}\"",
-    "detalle": "Language: {idioma}; {acentos}. Copy it character by character — never translate, abbreviate, hyphenate or re-wrap. Largest element in the frame, {alineacion} in the reserved clear zone: {zona}, {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside {margen} — nothing touches or is cut by a frame edge. These are the ONLY words in the image.",
+    "detalle": "Language: {idioma}; {acentos}. Copy it character by character — never translate, abbreviate or hyphenate, and set every glyph in the case supplied: never change the case of a word. Largest element in the frame, {alineacion} in the reserved clear zone: {zona}, {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside {margen} — nothing touches or is cut by a frame edge. These are the ONLY words in the image.",
     "detalle_kicker": "The second line locks into {zona_kicker}, same alignment and safe area.",
+    "_comment_cortes": "Cortes de línea dictados (flag IMAGE_LINE_BREAKS). El modelo rompe el titular por donde le cabe, no por donde la frase lo pide, y de ahí salen las viudas: en la portada auditada quedó «EN» solo en la tercera línea, al 14% del alto del cuadro — a ese cuerpo, una palabra suelta ocupa un tercio de la pieza. `prompt_architect.lineas_titular` decide el reparto una vez (equilibrado por longitud, prefiriendo cortar detrás de una pausa y sin viudas) y la sección 4 lo dicta. La segunda frase no es opcional: sin ella el modelo imprime «line 1» dentro de la imagen. Reemplazó a «never re-wrap», que pedía no re-partir sin decir nunca cuál era la partición buena.",
+    "cortes": "Break the headline over exactly these lines: {lineas}. These line labels are instructions, never printed.",
     "detalle_acentos": "keep every accent and diacritic exactly as written",
     "detalle_sin_acentos": "no accented characters in this string",
     "refuerzo": "TEXT ACCURACY AND FRAMING ARE THE PRIMARY REQUIREMENT of this render: spell the quoted string character by character, keep every accent, fit it whole inside the safe area with nothing cropped, and print no other glyph anywhere."
@@ -157,7 +159,8 @@
     "min_caracteres": 400,
     "_comment_v6": "El bloqueo de luz de la sección 6 (`luz_bloqueada`) añade ~180 caracteres FIJOS a todos los prompts y bajaba el peor caso al escalón de poda de 14 palabras. Sube a 4300 para sostener el escalón de 18, que es la barra que se fija de aquí en adelante: por debajo de 18 palabras la sección creativa deja de describir un objeto concreto y la imagen sale genérica. Perseguir 22 con cada fase nueva convertiría el techo en una escalera sin fin; 18 es donde se para.",
     "_comment_v7": "Declarar el sangrado EN POSITIVO en la sección 1 (`piezas`) cuesta ~110 caracteres fijos más. Es el segundo de los tres frentes contra el passe-partout, y va en la sección 1 porque es la más autoritativa del brief: el negativo por sí solo ya se demostró insuficiente dos veces. Sube a 4400 para sostener el escalón de 18 palabras fijado en la v6. Se pagó una parte con el saneo de la sección 5 (`tinta` recorta `color_texto`/`color_acento` a nombre + hex).",
-    "max_caracteres": 4400,
+    "_comment_v8": "Los cortes de línea dictados de la sección 4 (flag IMAGE_LINE_BREAKS) añaden ~140 caracteres. Sube a 4650 para sostener el escalón de 18 palabras, que sigue siendo la barra. Nota de contexto, medida con `scripts/medir_prompt.py`: a estas alturas el brief FIJO ronda los 3400 caracteres y la poda está activa incluso en un caso realista, no solo en el peor. Si una fase futura vuelve a necesitar techo, el sitio correcto donde buscar no es este número sino las secciones fijas: 18 palabras por sección creativa es una frase densa de verdad y el histórico del proyecto funcionaba con 10-14. Perseguir 22 costaría otros ~250 caracteres por escalón sin que nadie haya demostrado que se noten.",
+    "max_caracteres": 4650,
     "max_palabras_bloque": 8,
     "max_palabras_seccion": 26,
     "continuidad_set_palabras": 10,

@@ -104,9 +104,9 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # con el techo anterior TODOS los slides quedaban podados a 10 palabras por sección
 # creativa (el mínimo de la escalera de poda). Son ~1070 tokens de prompt, que sigue
 # siendo poco para un modelo de esta clase. Y a 4350 con el bloqueo de luz de la
-# sección 6, que son otros ~180 caracteres fijos en todos los prompts. Y a 4450 con el
-# sangrado declarado en positivo en la sección 1.
-_MAX_PROMPT_CHARS = 4450
+# sección 6, que son otros ~180 caracteres fijos en todos los prompts. Y a 4700 con el
+# sangrado declarado en positivo en la sección 1 y los cortes de línea de la sección 4.
+_MAX_PROMPT_CHARS = 4700
 # Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
 # (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
 # scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado

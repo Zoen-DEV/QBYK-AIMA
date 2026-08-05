@@ -56,9 +56,12 @@ def test_el_prompt_es_valido_de_punta_a_punta(sin_llm):
 
 
 def test_el_texto_viaja_literal_y_entrecomillado(sin_llm):
+    # En la caja que declara la identidad: `brand.json` pide ALL CAPS, así que el
+    # bloque se cita ya en mayúsculas (ver `pide_caja_alta`). Lo que no puede cambiar
+    # es ni un carácter del texto.
     r = pa.construir(_spec(contenido={"texto_exacto_a_renderizar": _CORTO}), cfg=sin_llm)
-    assert f'render this exact text: "{_CORTO}"' in r.prompt
-    assert r.bloques == [_CORTO]
+    assert f'render this exact text: "{_CORTO.upper()}"' in r.prompt
+    assert r.bloques == [_CORTO.upper()]
 
 
 def test_declara_idioma_acentos_y_posicion(sin_llm):
@@ -440,7 +443,8 @@ def test_el_acento_marcado_manda_sobre_la_eleccion_automatica(sin_llm):
     r = pa.construir(_spec(contenido={
         "texto_exacto_a_renderizar": "El factor Q **cambia** el ancho"}), cfg=sin_llm)
     tipo = [l for l in r.prompt.splitlines() if l.startswith("5.")][0]
-    assert '"cambia"' in tipo
+    # El acento va en la misma caja que el titular, o no se encontraría dentro de él.
+    assert '"CAMBIA"' in tipo
     assert "One word only" not in tipo            # ya no elige el modelo
 
 
@@ -448,7 +452,7 @@ def test_las_marcas_de_acento_no_llegan_al_prompt(sin_llm):
     r = pa.construir(_spec(contenido={
         "texto_exacto_a_renderizar": "El factor Q **cambia** el ancho"}), cfg=sin_llm)
     assert "**" not in r.prompt
-    assert "El factor Q cambia el ancho" in r.prompt
+    assert "EL FACTOR Q CAMBIA EL ANCHO" in r.prompt
     # Y el validador sigue conforme: los bloques que compara son los ya limpios.
     assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
 
@@ -457,6 +461,111 @@ def test_sin_marcas_se_conserva_la_eleccion_automatica(sin_llm):
     tipo = [l for l in pa.construir(_spec(), cfg=sin_llm).prompt.splitlines()
             if l.startswith("5.")][0]
     assert "One word only" in tipo
+
+
+# ── Caja y cortes de línea (flag IMAGE_LINE_BREAKS) ──────────────────────────
+#
+# Los dos defectos que ataca: un slide en caja baja cuando la identidad dice `all
+# caps` (el brief se contradecía: pedía una caja en la sección 5 y citaba la contraria
+# en la 4), y la viuda tipográfica —"EN" solo en la tercera línea, al 14% del alto—.
+
+
+def _texto_seccion(prompt: str) -> str:
+    return [l for l in prompt.splitlines() if l.startswith("4.")][0]
+
+
+@pytest.mark.parametrize("familia, alta", [
+    ("ultra-condensed heavy display grotesque, ALL CAPS, tight tracking", True),
+    ("wide slab serif in caps", True),
+    ("humanist sans, sentence case, open tracking", False),
+    ("", False),
+])
+def test_pide_caja_alta_lee_la_familia_de_la_identidad(familia, alta):
+    assert pa.pide_caja_alta(familia) is alta
+
+
+def test_con_caja_alta_el_texto_se_cita_en_mayusculas(sin_llm):
+    r = pa.construir(_spec(contenido={"texto_exacto_a_renderizar": _CORTO}), cfg=sin_llm)
+    assert f'"{_CORTO.upper()}"' in r.prompt
+    # Y el validador sigue conforme: compara contra los bloques ya transformados.
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+def test_sin_caja_alta_el_texto_se_cita_como_viene(sin_llm):
+    r = pa.construir(_spec(contenido={"texto_exacto_a_renderizar": _CORTO},
+                           marca={"tipografia": "humanist sans, sentence case"}), cfg=sin_llm)
+    assert f'"{_CORTO}"' in r.prompt
+    assert r.bloques == [_CORTO]
+
+
+def test_la_seccion_4_prohibe_cambiar_la_caja(sin_llm):
+    assert "never change the case of a word" in _texto_seccion(
+        pa.construir(_spec(), cfg=sin_llm).prompt)
+
+
+# ── Cortes de línea ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("titular", [
+    "LA IA YA NO ES UN LUJO EN",          # el caso auditado: "EN" quedaba sola
+    "TODO CAMBIA SI LO MIDES DE",
+    "UN MODELO ESCAPO DE PRUEBAS EN",
+])
+def test_la_ultima_linea_nunca_es_una_viuda(titular):
+    lineas = pa.lineas_titular(titular)
+    ultima = lineas[-1].split()
+    assert not (len(ultima) == 1 and len(ultima[0]) <= pa._VIUDA_MAX), lineas
+
+
+@pytest.mark.parametrize("max_lineas", [2, 3])
+def test_nunca_se_pasa_del_maximo_de_lineas(max_lineas):
+    largo = "UN ECUALIZADOR CORRIGE EL EQUILIBRIO DE CADA SONIDO GRABADO"
+    assert len(pa.lineas_titular(largo, max_lineas=max_lineas)) <= max_lineas
+
+
+def test_las_lineas_conservan_el_titular_entero_y_en_orden():
+    titular = "CONTROLA TU CATALOGO EN ALTISIMA CALIDAD"
+    assert " ".join(pa.lineas_titular(titular)) == titular
+
+
+def test_el_reparto_es_equilibrado_y_no_greedy():
+    # Greedy llena la primera línea y deja el resto colgando: "CHINA ENTRA / EN LA /
+    # LIGA". La partición equilibrada es la que produce un titular de póster.
+    assert pa.lineas_titular("CHINA ENTRA EN LA LIGA") == ["CHINA ENTRA", "EN LA LIGA"]
+
+
+def test_el_corte_prefiere_caer_detras_de_una_pausa():
+    # El reparto perfectamente equilibrado sería "NO ES MAGIA, ES / PURA INGENIERIA"
+    # (15/15), que parte el sintagma. La pausa gana por poco, que es lo que se quiere.
+    assert pa.lineas_titular("NO ES MAGIA, ES PURA INGENIERIA") == \
+        ["NO ES MAGIA,", "ES PURA INGENIERIA"]
+
+
+def test_pero_la_pausa_no_puede_imponer_un_reparto_desigual():
+    # A cuerpo de póster, una línea del doble que la otra se nota más que el sintagma
+    # partido: la pausa inclina el reparto, no lo decide.
+    assert pa.lineas_titular("SIN DATOS, TODO ES UNA OPINION") == \
+        ["SIN DATOS, TODO", "ES UNA OPINION"]
+
+
+def test_un_titular_de_una_palabra_no_se_parte():
+    assert pa.lineas_titular("IRREVERSIBLE") == ["IRREVERSIBLE"]
+    assert pa.lineas_titular("") == []
+
+
+def test_los_cortes_llegan_a_la_seccion_4_y_se_marcan_como_instruccion(sin_llm):
+    seccion = _texto_seccion(pa.construir(_spec(), cfg=sin_llm).prompt)
+    assert "Break the headline over exactly these lines" in seccion
+    # Sin esta frase el modelo imprime "line 1" DENTRO de la imagen.
+    assert "never printed" in seccion
+
+
+def test_con_el_flag_apagado_no_se_dictan_cortes():
+    class _Sin(_Cfg):
+        image_line_breaks = False
+
+    r = pa.construir(_spec(), cfg=_Sin(con_llm=False))
+    assert "Break the headline" not in r.prompt
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
 
 
 # ── La identidad no puede escribir LAYOUT en la capa dura ────────────────────
@@ -707,7 +816,7 @@ def test_la_raya_parte_el_texto_aunque_sea_corto():
 def test_la_raya_no_se_imprime():
     r = pa.construir(_spec(contenido={"texto_exacto_a_renderizar": "Ecualiza el bajo — todo cambia"}),
                      cfg=_Cfg(con_llm=False))
-    assert r.bloques == ["Ecualiza el bajo", "todo cambia"]
+    assert r.bloques == ["ECUALIZA EL BAJO", "TODO CAMBIA"]
     assert "—" not in " ".join(r.bloques)
     assert all(f'"{b}"' in r.prompt for b in r.bloques)
     assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
@@ -822,7 +931,7 @@ def test_un_acento_marcado_a_mano_manda_incluso_en_el_beat_que_lo_calla(sin_llm)
     r = pa.construir(_spec(contenido={"rol_slide": "tension",
                                       "texto_exacto_a_renderizar": "El factor Q **cambia** todo"}),
                      cfg=sin_llm)
-    assert '"cambia"' in _tipografia(r.prompt)
+    assert '"CAMBIA"' in _tipografia(r.prompt)
 
 
 def test_el_esqueleto_del_lockup_es_el_mismo_en_todos_los_beats(sin_llm):
