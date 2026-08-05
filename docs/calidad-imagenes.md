@@ -21,7 +21,7 @@ otro traje.
 | 10 · El passe-partout: unos slides a sangre y otros con banda de color | **Hecho** — ver más abajo |
 | 11 · La plantilla de respaldo salía muda | **Hecho** — ver más abajo |
 | 12 · Los slides del carrusel eran versiones de la misma imagen | **Hecho** — ver más abajo |
-| 13 · Calidad profesional del carrusel (continuidad, luz, bandas, QA de conjunto) | **En curso** — ver más abajo |
+| 13 · Calidad profesional del carrusel (continuidad, luz, bandas, QA de conjunto) | **Hecho** en código — falta el recorrido manual y el A/B de los cortes; ver más abajo |
 
 ### Paso 13 — calidad profesional del carrusel
 
@@ -135,6 +135,29 @@ por sí mismos. El riesgo que queda es de **render**, no de comparación.
 | C7 | No existía QA de conjunto: cada imagen se validaba aislada | `image_set_qa`: una llamada de visión que ve las N piezas juntas, cuatro veredictos binarios con motivo, una sola ronda de regeneración | `image_set_qa`, `job_runner._verificar_conjunto` |
 | C8 | El sujeto pedía desorden y cada objeto secundario era una superficie más donde escribir pseudo-texto | Máximo 2 secundarios y ninguno rotulable; HARD RULE de plausibilidad física | `architect.json` (`llm.instruccion`) |
 | C9 | El idioma llegaba solo a la sección de texto: props por defecto estadounidenses | `CULTURAL CONTEXT` en el briefing + negativo de moneda cuando el contenido no es inglés | `prompt_architect._mensaje_arquitecto`, `_seccion_negativos` |
+
+#### Verificación — qué está comprobado y qué no
+
+Comprobado sin gastar créditos (batería completa en verde, 829 tests, y una construcción
+determinista del brief de un carrusel de 5 con identidad de usuario):
+
+- [x] Las 5 piezas declaran el **mismo** `LIGHT LOCK`, byte a byte.
+- [x] Los 4 slides llevan `SET CONTINUITY` con la escena de la portada.
+- [x] La sección 5 no arrastra el vocabulario de layout de la identidad.
+- [x] Las 5 declaran el sangrado en la sección 1.
+- [x] Escalera de planos real: `TENSION`, `DEVELOPMENT`, `EVIDENCE`, `PAYOFF`.
+- [x] Ningún titular con línea huérfana; una sola familia y una sola caja en las 5.
+- [x] Negativo de moneda estadounidense presente con contenido en español.
+- [x] **Regresión sin identidad**: un job sin identidad produce el prompt *idéntico* al de la
+      identidad de la casa (`test_sin_identidad_el_prompt_es_el_mismo_que_con_la_identidad_de_la_casa`).
+
+Pendiente, porque necesita generaciones reales (créditos y sesión OAuth):
+
+- [ ] Recorrido manual del flujo **individual** (carrusel de 5, las dos compuertas) y del
+      **bulk** (`.xlsx` de 3 filas con una `fecha_hora`), con `dry_run`.
+- [ ] Lo que solo se ve en el píxel: cero pseudo-texto legible, props concordes con el idioma,
+      y que los avisos nuevos (bandas, conjunto, lint) se vean en el editor del lote.
+- [ ] El **A/B de los cortes de línea** descrito arriba.
 
 #### Los tres controles automáticos, y por qué son tres
 

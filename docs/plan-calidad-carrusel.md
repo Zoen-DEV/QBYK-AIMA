@@ -3,7 +3,21 @@
 > **Documento de ejecución.** Está escrito para arrancarse en frío, en una sesión nueva, sin
 > el contexto de la conversación que lo originó. Todo lo que hace falta saber está acá.
 >
-> Estado: **pendiente de ejecución**. Marcar cada fase al completarla.
+> Estado: **ejecutado** (agosto 2026), rama `fix/calidad-carrusel`, un commit por fase.
+> Las fases 0–8 están completas y la batería está verde (829 tests). Lo que quedó fuera,
+> porque necesita generaciones reales contra Higgsfield (créditos + sesión OAuth) y no se
+> puede hacer desde el código:
+>
+> - **El A/B de la fase 5** (cortes de línea contra la tasa de acierto del QA de texto).
+>   Procedimiento y criterio de decisión en [`calidad-imagenes.md`](calidad-imagenes.md).
+>   El flag `IMAGE_LINE_BREAKS` queda encendido mientras tanto.
+> - **La fase 9, puntos 2 a 4** (recorrido manual de los dos flujos y del dry-run).
+> - **El paso manual de la fase 4.3**: sanear en `/cuenta` las identidades guardadas
+>   antes de las puertas nuevas. Checklist en
+>   [`identidades-visuales.md`](identidades-visuales.md), sección «0-bis».
+>
+> El resultado de cada fase, con lo que se midió y lo que se decidió, está en
+> [`calidad-imagenes.md`](calidad-imagenes.md) → paso 13.
 
 ---
 
