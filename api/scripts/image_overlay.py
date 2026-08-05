@@ -418,6 +418,150 @@ def render_story(src: str, texto: dict | None = None) -> bytes:
     return _to_png_bytes(img)
 
 
+# ── Detector de bandas planas y marcos ─────────────────────────────────────────
+#
+# El passe-partout y el letterbox se atacan en tres frentes porque el defecto tiene
+# tres orígenes y ya volvió dos veces por atacar solo uno. Los otros dos son prompt
+# —el sangrado declarado en positivo en las secciones 1 y 3, y el saneo de lo que la
+# identidad escribe en la sección 5—; este es el único que convierte la regla en algo
+# COMPROBABLE. El prompt ya falló dos veces; una comprobación sobre el píxel, no.
+#
+# La idea que hace que esto funcione y no genere falsos positivos: **un letterbox no
+# es "una zona oscura", es un ESCALÓN**. Una escena nocturna legítima tiene una banda
+# alta oscura y de baja varianza —y es correcta, es justo el aire donde se apoya el
+# titular—. Lo que delata a la banda pintada es que termina de golpe: hasta la fila k
+# no pasa nada y en la k+1 aparece la fotografía entera. Sin escalón no hay banda.
+
+# Varianza por fila/columna por debajo de la cual la línea se considera PLANA. Se
+# calibró contra las imágenes reales de `api/outputs/` (carruseles y portadas ya
+# generados, con y sin passe-partout): las líneas de una fotografía real —incluso un
+# cielo nocturno o un fondo desenfocado— quedan muy por encima, porque siempre traen
+# grano y viñeteo.
+_VARIANZA_PLANA = 12.0
+# Salto de media (de 255) contra la línea anterior que marca el borde de la banda.
+_SALTO_MIN = 14.0
+# ...o un salto de varianza: una barra negra sobre una escena nocturna puede no mover
+# la media y sí disparar la textura. Es el caso que la media sola no ve.
+_SALTO_VARIANZA = 8.0
+# Hasta dónde se busca la banda: el primer 25% del lado. Más adentro ya no es un
+# marco, es composición.
+_FRANJA = 0.25
+# Una banda tiene que ser un elemento de diseño, no dos píxeles de compresión.
+_BANDA_MIN = 0.015
+# Diferencia de medias por debajo de la cual los cuatro bordes son "el mismo color",
+# que es lo que distingue un marco de cuatro casualidades.
+_TOLERANCIA_MARCO = 12.0
+
+_BORDES = ("arriba", "abajo", "izquierda", "derecha")
+
+
+def _lineas(img: "Image.Image", *, vertical: bool) -> tuple[list[float], list[float]]:
+    """Medias y varianzas por fila (`vertical=True`) o por columna.
+
+    Se reduce la imagen a una tira de 1 px de ancho/alto usando el propio remuestreo de
+    Pillow para las medias, y se calcula la varianza sobre una miniatura: es O(píxeles)
+    una sola vez y evita traer numpy solo para esto.
+    """
+    gris = img.convert("L")
+    if vertical:
+        largo = gris.height
+        lado = min(gris.width, 128)
+        chico = gris.resize((lado, largo), Image.BILINEAR)
+    else:
+        largo = gris.width
+        lado = min(gris.height, 128)
+        chico = gris.resize((largo, lado), Image.BILINEAR)
+    # `tobytes()` sobre una imagen "L" ya devuelve los píxeles en orden de filas, y a
+    # diferencia de `getdata()` no está deprecado.
+    px = chico.tobytes()
+    medias: list[float] = []
+    varianzas: list[float] = []
+    for i in range(largo):
+        if vertical:
+            linea = px[i * lado:(i + 1) * lado]
+        else:
+            linea = px[i::largo]
+        n = len(linea) or 1
+        media = sum(linea) / n
+        medias.append(media)
+        varianzas.append(sum((v - media) ** 2 for v in linea) / n)
+    return medias, varianzas
+
+
+def _banda(medias: list[float], varianzas: list[float], *, desde_el_final: bool) -> float:
+    """Media de la banda plana de ese borde, o `-1.0` si no hay banda.
+
+    Devuelve la media (y no un booleano) porque el marco necesita comparar los cuatro
+    bordes entre sí: cuatro bandas del mismo color son un passe-partout; cuatro bandas
+    de colores distintos son cuatro escenas que casualmente empiezan planas.
+    """
+    n = len(medias)
+    if n < 8:
+        return -1.0
+    orden = range(n - 1, -1, -1) if desde_el_final else range(n)
+    idx = list(orden)
+    limite = max(2, int(n * _FRANJA))
+    corrido = 0
+    while corrido < limite and varianzas[idx[corrido]] < _VARIANZA_PLANA:
+        corrido += 1
+    if corrido < max(2, int(n * _BANDA_MIN)) or corrido >= limite:
+        # Sin banda, o plana hasta tan adentro que ya no es un borde: en los dos casos
+        # falta el escalón, que es lo único que distingue una banda pintada de una
+        # zona tranquila legítima de la fotografía.
+        return -1.0
+    dentro, ultima = idx[corrido], idx[corrido - 1]
+    salto_media = abs(medias[dentro] - medias[ultima])
+    salto_var = varianzas[dentro] > _VARIANZA_PLANA * _SALTO_VARIANZA
+    if salto_media < _SALTO_MIN and not salto_var:
+        return -1.0
+    return sum(medias[i] for i in idx[:corrido]) / corrido
+
+
+def bytes_crudos(src: str) -> bytes:
+    """Los bytes tal como los devolvió el proveedor (o la plantilla local).
+
+    Sin recorte, sin overlay y sin grade: es lo que hace falta para juzgar lo que hizo
+    el MODELO. `render_feed` no sirve para esto — recorta al 4:5 y puede dibujar texto.
+    """
+    if _is_local_path(src):
+        return Path(src).read_bytes()
+    req = urllib.request.Request(src, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as r:
+        return r.read()
+
+
+def bordes_planos(png: bytes) -> list[str]:
+    """Qué bordes de la imagen son una banda de color plano.
+
+    Devuelve `["arriba", "abajo"]` (letterbox), `["marco"]` (passe-partout en los
+    cuatro lados) o `[]`. Se mide sobre la imagen **cruda del proveedor**, antes del
+    overlay y del grade: así se juzga lo que hizo el modelo, no lo que hizo Pillow.
+
+    Best-effort: cualquier problema devuelve `[]`. Este detector no puede interrumpir
+    una generación — como mucho deja de avisar.
+    """
+    try:
+        img = Image.open(io.BytesIO(png))
+        medias_v, var_v = _lineas(img, vertical=True)
+        medias_h, var_h = _lineas(img, vertical=False)
+        bandas = {
+            "arriba": _banda(medias_v, var_v, desde_el_final=False),
+            "abajo": _banda(medias_v, var_v, desde_el_final=True),
+            "izquierda": _banda(medias_h, var_h, desde_el_final=False),
+            "derecha": _banda(medias_h, var_h, desde_el_final=True),
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"   [aviso] No se pudo revisar los bordes de la imagen: {e}")
+        return []
+
+    presentes = [b for b in _BORDES if bandas[b] >= 0]
+    if len(presentes) == 4:
+        valores = [bandas[b] for b in _BORDES]
+        if max(valores) - min(valores) <= _TOLERANCIA_MARCO:
+            return ["marco"]
+    return presentes
+
+
 # ── Grade común del carrusel ───────────────────────────────────────────────────
 #
 # Red de seguridad estética: aunque los slides se generen con la portada como

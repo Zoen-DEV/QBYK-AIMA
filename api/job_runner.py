@@ -121,7 +121,7 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
         # el origen de cada subkey (respaldo de subida) y el job_id de la portada que
         # los slides usan como referencia visual. Sobreviven a la fase de imágenes
         # porque la regeneración crea su propio provider y no hereda sus locales.
-        "images": {"bytes": {}, "raw_urls": {}, "reference": "", "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": "", "text_overlay": _text_in_prompt(cfg), "text_in_prompt": _text_in_prompt(cfg), "prompts": {}, "qa": {}},
+        "images": {"bytes": {}, "raw_urls": {}, "reference": "", "blotato_urls": {"linkedin": "", "instagram": [], "facebook": "", "tiktok": ""}, "base_urls": {"linkedin": [], "instagram": [], "facebook": []}, "provider": "", "notice": "", "text_overlay": _text_in_prompt(cfg), "text_in_prompt": _text_in_prompt(cfg), "prompts": {}, "qa": {}, "bandas": {}},
         "video": {"url": "", "provider": "", "notice": "", "cost": None},
         "result": {},
         "error_msg": None,
@@ -735,7 +735,7 @@ def _marca_post(posts: dict, *, aspect: str, identidad: dict | None = None) -> d
 
 def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: str,
                    rol: str, aspect: str, lang: str = "es", refuerzo: bool = False,
-                   identidad: dict | None = None):
+                   refuerzo_sangrado: bool = False, identidad: dict | None = None):
     """Prompt final de UNA imagen. Devuelve `(prompt, resultado_del_arquitecto|None)`.
 
     Sin texto que renderizar —o con la capa de arquitectura apagada— devuelve el
@@ -779,7 +779,7 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
         res = parch.construir(
             spec, cfg=cfg,
             autocritica=bool(getattr(cfg, "prompt_architect_critique", True)),
-            refuerzo_texto=refuerzo,
+            refuerzo_texto=refuerzo, refuerzo_sangrado=refuerzo_sangrado,
         )
         return res.prompt, res
     except Exception as e:
@@ -789,7 +789,7 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
 
 async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: dict,
                        content: dict, texto: str, rol: str, aspect: str, lang: str = "es",
-                       refuerzo: bool = False) -> str:
+                       refuerzo: bool = False, refuerzo_sangrado: bool = False) -> str:
     """`_prompt_imagen` + traza: guarda el prompt final en el job, lo loguea y cobra el LLM.
 
     El prompt de cada imagen queda en `job["images"]["prompts"][subkey]` (lo sirve
@@ -799,7 +799,7 @@ async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: 
     prompt, res = await _run(
         _prompt_imagen, cfg, prompt_base=prompt_base, posts=posts, content=content,
         texto=texto, rol=rol, aspect=aspect, lang=lang, refuerzo=refuerzo,
-        identidad=_identidad(job),
+        refuerzo_sangrado=refuerzo_sangrado, identidad=_identidad(job),
     )
     job["images"]["prompts"][subkey] = prompt
     print(f"   [prompt {subkey}]\n{prompt}")
@@ -866,6 +866,71 @@ async def _verificar_texto(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src
             break
         src = nuevo
     job["images"]["qa"][subkey] = registro
+    return src
+
+
+# Un solo reintento, a diferencia del QA de texto (que permite dos): el defecto es
+# binario —o hay banda o no la hay— y regenerar cuesta créditos de verdad.
+_BANDAS_REINTENTOS = 1
+
+
+async def _verificar_bandas(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src: str,
+                            rehacer) -> str:
+    """QA post-generación: ¿el modelo pintó un passe-partout o un letterbox?
+
+    Es el tercer frente contra ese defecto y el único que no es prompt. Los otros dos
+    —el sangrado declarado en positivo en las secciones 1 y 3, y el saneo de lo que la
+    identidad escribe en la 5— ya fallaron dos veces; una comprobación sobre el píxel
+    no depende de cómo el modelo resuelva una ambigüedad.
+
+    Se mide sobre la imagen **cruda del proveedor**: antes del recorte, del texto de
+    la plantilla y del `match_grade`. Así se juzga lo que hizo el modelo y no lo que
+    hizo Pillow — que además dibuja sus propias bandas oscuras sobre las plantillas de
+    respaldo y daría positivo siempre.
+
+    Best-effort: sin Pillow, con plantilla local o ante cualquier fallo se devuelve la
+    imagen que ya había. Nunca interrumpe la generación.
+    """
+    if not src or not _HAS_OVERLAY or not getattr(cfg, "image_band_qa", True):
+        return src
+    # Una plantilla local no la pintó ningún modelo: reintentarla daría exactamente la
+    # misma imagen y el aviso no tendría acción posible detrás.
+    if improv.es_plantilla(src):
+        return src
+
+    registro: list[dict] = []
+    intento = 0
+    while True:
+        try:
+            crudo = await _run(ov.bytes_crudos, src)
+            bordes = await _run(ov.bordes_planos, crudo)
+        except Exception as e:
+            print(f"   [aviso] QA de bandas de {subkey} no ejecutado: {e}")
+            break
+        registro.append({"intento": intento + 1, "bordes": bordes})
+        print(f"   [QA bandas {subkey}] intento {intento + 1}: "
+              f"{'ok' if not bordes else 'BANDA ' + ', '.join(bordes)}")
+        if not bordes:
+            break
+        if intento >= _BANDAS_REINTENTOS:
+            await _push(q, {"step": "images", "status": "warn", "subkey": subkey,
+                            "msg": f"La imagen sigue saliendo con banda de color liso "
+                                   f"({', '.join(bordes)}) tras {_BANDAS_REINTENTOS + 1} intentos."})
+            break
+        intento += 1
+        await _push(q, {"step": "images", "status": "running",
+                        "msg": f"Banda de color liso en {subkey} — reintento con el "
+                               f"sangrado reforzado..."})
+        try:
+            nuevo = await rehacer()
+        except Exception as e:
+            print(f"   [aviso] Reintento por bandas de {subkey} falló: {e}")
+            break
+        if not nuevo:
+            break
+        src = nuevo
+    if registro:
+        job["images"]["bandas"][subkey] = registro
     return src
 
 
@@ -1901,16 +1966,21 @@ async def _run_media_phase(job: dict):
             con_texto_portada = bool(cover_text) and texto_en_prompt
             base_scene = _cover_image_prompt(posts, content, con_texto=con_texto_portada)
 
-            async def _prompt_portada(refuerzo: bool = False) -> str:
+            async def _prompt_portada(refuerzo: bool = False, sangrado: bool = False) -> str:
                 return await _prompt_para(job, cfg, subkey="cover", prompt_base=base_scene,
                                           posts=posts, content=content, texto=cover_text,
                                           rol="portada", aspect=aspect_feed, lang=lang,
-                                          refuerzo=refuerzo)
+                                          refuerzo=refuerzo, refuerzo_sangrado=sangrado)
 
             async def _rehacer_portada() -> str:
                 # Se regenera con `generate_base` (no `generate_one`) a propósito: así el
                 # job_id de referencia que heredan los slides es el de la portada BUENA.
                 return await _run(provider.generate_base, await _prompt_portada(True),
+                                  aspect_ratio=hfmcp.FEED_IMAGE_ASPECT)
+
+            async def _rehacer_portada_sangrado() -> str:
+                return await _run(provider.generate_base,
+                                  await _prompt_portada(sangrado=True),
                                   aspect_ratio=hfmcp.FEED_IMAGE_ASPECT)
 
             try:
@@ -1922,6 +1992,10 @@ async def _run_media_phase(job: dict):
             if base_url:
                 base_url = await _verificar_texto(job, q, cfg, subkey="cover", src=base_url,
                                                   texto=cover_text, rehacer=_rehacer_portada)
+                # Después del QA de texto: si el texto se tuvo que rehacer, lo que hay
+                # que revisar por bandas es la imagen FINAL, no la descartada.
+                base_url = await _verificar_bandas(job, q, cfg, subkey="cover", src=base_url,
+                                                   rehacer=_rehacer_portada_sangrado)
                 image_warnings.extend(provider.pop_warnings())
             # Referencia visual de la portada (su job_id en el MCP). Se guarda en el
             # job porque rehacer un slide desde la revisión crea su propio provider y
@@ -2011,24 +2085,35 @@ async def _run_media_phase(job: dict):
                     # generar solo este (mismo aspecto y misma referencia a la portada),
                     # con la instrucción de texto reforzada.
                     texto_slide = extra_texts[i] if i < len(extra_texts) else ""
+                    # El prompt base del slide se resuelve fuera del `if`: el QA de
+                    # bandas también necesita poder rehacerlo, y ese corre lleve o no
+                    # texto impreso la pieza.
+                    base_slide = _slide_image_prompts(
+                        posts, content, n_info, con_texto=bool(texto_slide),
+                        identidad=_identidad(job))[i]
+
+                    async def _rehacer_slide(_base=base_slide, _texto=texto_slide,
+                                             _key=fname, _rol=_rol_slide(i, n_info),
+                                             _texto_ok: bool = False,
+                                             _sangrado: bool = False) -> str:
+                        prompt = await _prompt_para(
+                            job, cfg, subkey=_key, prompt_base=_base, posts=posts,
+                            content=content, texto=_texto, rol=_rol, aspect=aspect_feed,
+                            lang=lang, refuerzo=_texto_ok, refuerzo_sangrado=_sangrado,
+                        )
+                        return await _run(provider.generate_one, prompt,
+                                          aspect_ratio=hfmcp.FEED_IMAGE_ASPECT,
+                                          reference=reference)
+
                     if texto_slide:
-                        base_slide = _slide_image_prompts(posts, content, n_info, con_texto=True,
-                                                          identidad=_identidad(job))[i]
-
-                        async def _rehacer_slide(_i=i, _base=base_slide, _texto=texto_slide,
-                                                 _key=fname, _rol=_rol_slide(i, n_info)) -> str:
-                            prompt = await _prompt_para(
-                                job, cfg, subkey=_key, prompt_base=_base, posts=posts,
-                                content=content, texto=_texto, rol=_rol, aspect=aspect_feed,
-                                lang=lang, refuerzo=True,
-                            )
-                            return await _run(provider.generate_one, prompt,
-                                              aspect_ratio=hfmcp.FEED_IMAGE_ASPECT,
-                                              reference=reference)
-
-                        slide_url = await _verificar_texto(job, q, cfg, subkey=fname, src=slide_url,
-                                                           texto=texto_slide, rehacer=_rehacer_slide)
+                        slide_url = await _verificar_texto(
+                            job, q, cfg, subkey=fname, src=slide_url, texto=texto_slide,
+                            rehacer=lambda _r=_rehacer_slide: _r(_texto_ok=True))
                         image_warnings.extend(provider.pop_warnings())
+                    slide_url = await _verificar_bandas(
+                        job, q, cfg, subkey=fname, src=slide_url,
+                        rehacer=lambda _r=_rehacer_slide: _r(_sangrado=True))
+                    image_warnings.extend(provider.pop_warnings())
                     raw_urls[fname] = slide_url
                     if _HAS_OVERLAY:
                         png = await _render_imagen(slide_url, cfg=cfg, texto=texto_slide,
@@ -2294,31 +2379,36 @@ async def regenerate_image(job: dict, subkey: str) -> dict:
         # solo puede cambiar la tirada del modelo, nunca su función en el carrusel.
         rol = _rol_slide(i, n_info)
 
-    async def _prompt(refuerzo: bool = False) -> str:
+    async def _prompt(refuerzo: bool = False, sangrado: bool = False) -> str:
         return await _prompt_para(job, cfg, subkey=subkey, prompt_base=base_prompt,
                                   posts=posts, content=content, texto=texto, rol=rol,
-                                  aspect=aspect, lang=lang, refuerzo=refuerzo)
+                                  aspect=aspect, lang=lang, refuerzo=refuerzo,
+                                  refuerzo_sangrado=sangrado)
 
     referencia = job["images"].get("reference", "") if cfg.image_reference_slides else ""
 
     if es_portada or es_historia:
         # `generate_base` (no `generate_one`) a propósito: el job_id de la portada
         # nueva es el que van a heredar como referencia los slides que se rehagan.
-        async def _rehacer() -> str:
-            return await _run(provider.generate_base, await _prompt(True), aspect_ratio=pedido)
+        async def _rehacer(refuerzo: bool = True, sangrado: bool = False) -> str:
+            return await _run(provider.generate_base, await _prompt(refuerzo, sangrado),
+                              aspect_ratio=pedido)
 
         src = await _run(provider.generate_base, await _prompt(), aspect_ratio=pedido)
     else:
-        async def _rehacer() -> str:
-            return await _run(provider.generate_one, await _prompt(True),
+        async def _rehacer(refuerzo: bool = True, sangrado: bool = False) -> str:
+            return await _run(provider.generate_one, await _prompt(refuerzo, sangrado),
                               aspect_ratio=pedido, reference=referencia)
 
         src = await _run(provider.generate_one, await _prompt(),
                          aspect_ratio=pedido, reference=referencia)
 
-    # Mismo QA de texto que en la generación normal (lee lo impreso y el recorte).
+    # Mismos QA que en la generación normal: primero el texto impreso y su recorte,
+    # después las bandas sobre la imagen que haya quedado.
     src = await _verificar_texto(job, q, cfg, subkey=subkey, src=src, texto=texto,
                                  rehacer=_rehacer)
+    src = await _verificar_bandas(job, q, cfg, subkey=subkey, src=src,
+                                  rehacer=lambda: _rehacer(refuerzo=False, sangrado=True))
     avisos = provider.pop_warnings()
     if (es_portada or es_historia) and getattr(provider, "base_reference", ""):
         job["images"]["reference"] = provider.base_reference

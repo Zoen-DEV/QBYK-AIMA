@@ -438,12 +438,21 @@ def _bloques(texto: str) -> list[str]:
 
 # ── Secciones deterministas (las que la app nunca delega) ─────────────────────
 
-def _seccion_pieza(norm: dict) -> str:
+def _seccion_pieza(norm: dict, *, refuerzo_sangrado: bool = False) -> str:
     piezas = _cfg_arch().get("piezas") or {}
     rol = norm["contenido"]["rol_slide"]
     plantilla = (piezas.get(rol) or piezas.get(rol_base(rol))
                  or "Editorial social image, {aspect}, print-quality single still.")
-    return plantilla.format(aspect=norm["marca"]["aspect_ratio"])
+    seccion = plantilla.format(aspect=norm["marca"]["aspect_ratio"])
+    # El reintento del detector de bandas: la tirada anterior salió con passe-partout
+    # o letterbox. Va en la sección 1 —la más autoritativa del brief— por el mismo
+    # motivo por el que ahí se declara el sangrado: el negativo solo no alcanzó nunca.
+    if refuerzo_sangrado:
+        seccion += " " + (piezas.get("refuerzo_sangrado") or
+                          "THE PREVIOUS RENDER CAME BACK WITH A FLAT COLOUR BAND AT THE EDGE. The "
+                          "photograph must reach every one of the four canvas edges: no letterbox, "
+                          "no border, no matte, no strip of flat colour anywhere.")
+    return seccion
 
 
 def _zona(norm: dict) -> dict:
@@ -515,6 +524,69 @@ def _seccion_texto(norm: dict, bloques: list[str], *, refuerzo: bool = False) ->
     return " ".join(partes)
 
 
+# ── Saneo de lo que la identidad escribe en la capa dura ──────────────────────
+#
+# La sección 5 pega `tipografia`, `tipografia_secundaria`, `color_texto` y
+# `color_acento` VERBATIM. Eso convierte a la identidad en coautora de una sección
+# determinista, y ahí está el problema: si esos strings traen vocabulario de LAYOUT,
+# la identidad está escribiendo layout sin permiso y sin que nadie lo revise. El caso
+# real: una identidad con `tipografia` = "…headline band" y `color_texto` = "…over the
+# dark field" fabricó el letterbox del carrusel auditado — cuando la escena no era
+# oscura, el modelo pintaba el "dark field" como un rectángulo.
+#
+# Corolario general, que vale para cualquier campo que se añada mañana: **una
+# identidad puede escribir layout sin querer si sus campos entran verbatim en una
+# sección determinista.** El fondo lo declaran las secciones 1, 3 y 6; la 5 habla solo
+# de la TINTA.
+
+_HEX_EN_TEXTO = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def tinta(valor: str) -> str:
+    """`"Soft bone white (#F5F3EE) for all caps over the dark field."` → `"Soft bone white (#F5F3EE)"`.
+
+    El nombre del color y su hex, y nada más. Se recorta EN el hex porque el validador
+    de `visual_identity` ya garantiza que está; sin hex se devuelve el valor tal cual
+    (degradar, nunca romper: `brand.json` no pasa por ese validador).
+    """
+    v = " ".join(str(valor or "").split())
+    m = _HEX_EN_TEXTO.search(v)
+    if not m:
+        return v
+    fin = m.end()
+    # El hex casi siempre viene entre paréntesis: cortar justo detrás dejaría uno
+    # abierto, que para el modelo es ruido.
+    if v[fin:fin + 1] == ")":
+        fin += 1
+    return v[:fin].strip()
+
+
+def _palabras_layout() -> tuple[str, ...]:
+    palabras = _cfg_arch().get("palabras_layout_prohibidas")
+    if isinstance(palabras, list) and palabras:
+        return tuple(str(p).strip().lower() for p in palabras if str(p).strip())
+    return ("band", "panel", "block", "frame", "matte", "letterbox", "bar", "box",
+            "backdrop", "background", "field")
+
+
+def sin_layout(valor: str) -> str:
+    """Quita de un campo de identidad los sintagmas que hablan de layout.
+
+    Se elimina el **sintagma**, no la cadena entera: una tipografía se escribe por
+    cláusulas separadas por comas ("condensed grotesque, ALL CAPS, tight tracking in a
+    headline band") y solo una de ellas sobra. Si el filtro dejara el campo vacío se
+    devuelve el original: quedarse sin familia tipográfica es peor que arrastrar la
+    palabra, y el aviso del lint ya avisa de esto en la compuerta previa.
+    """
+    v = " ".join(str(valor or "").split())
+    if not v:
+        return v
+    prohibidas = _palabras_layout()
+    patron = re.compile(r"\b(" + "|".join(re.escape(p) for p in prohibidas) + r")\b", re.I)
+    limpios = [t.strip() for t in v.split(",") if t.strip() and not patron.search(t)]
+    return ", ".join(limpios) if limpios else v
+
+
 def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
     """Sección 5: la tipografía, escrita por la app.
 
@@ -551,11 +623,13 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
             acento = (cfg_tip.get("acento") or
                       "Exactly one span — the single most load-bearing word of the quoted string — in "
                       "{color_acento}; every other word stays in the headline color.").format(
-                color_acento=m["color_acento"])
+                color_acento=tinta(m["color_acento"]))
     datos = {
-        "display": m["tipografia"] or "ultra-condensed heavy display grotesque in ALL CAPS",
+        # La familia pasa por el filtro de layout y el color se reduce a TINTA: esta
+        # sección habla del tipo, no de sobre qué se apoya (ver el bloque de arriba).
+        "display": sin_layout(m["tipografia"]) or "ultra-condensed heavy display grotesque in ALL CAPS",
         "escala": escala,
-        "color": m["color_texto"] or "light type over the dark areas of the frame",
+        "color": tinta(m["color_texto"]) or "light type over the dark areas of the frame",
         "acento": acento,
     }
     plantilla = (cfg_tip.get("plantilla") or
@@ -568,7 +642,7 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
     # La familia de la segunda línea solo se declara si hay segunda línea.
     if len(bloques) > 1 and m["tipografia_secundaria"]:
         seccion += " " + (cfg_tip.get("secundaria") or "Second line: {secundaria}.").format(
-            secundaria=m["tipografia_secundaria"])
+            secundaria=sin_layout(m["tipografia_secundaria"]))
     return " ".join(seccion.split())
 
 
@@ -992,13 +1066,14 @@ def _secciones_desde_llm(data: dict, norm: dict) -> dict[str, str]:
 # ── Construcción ──────────────────────────────────────────────────────────────
 
 def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool = True,
-              refuerzo_texto: bool = False) -> ResultadoPrompt:
+              refuerzo_texto: bool = False, refuerzo_sangrado: bool = False) -> ResultadoPrompt:
     """Construye el prompt final estructurado a partir de la spec.
 
     `cfg` es el Config del proyecto (para las keys del LLM); sin él —o sin keys—
     todo se resuelve con los respaldos deterministas y el prompt sale igual de
     válido. `refuerzo_texto` añade la instrucción de refuerzo del bloque de texto
-    (la usa el reintento del QA de visión cuando el render salió mal escrito).
+    (la usa el reintento del QA de visión cuando el render salió mal escrito) y
+    `refuerzo_sangrado` la del sangrado en la sección 1 (la del detector de bandas).
 
     Lanza `PromptInvalido` solo si ni siquiera el camino determinista produce un
     prompt válido (config rota) o si falta el texto a renderizar.
@@ -1011,7 +1086,7 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
         avisos.append("el texto se dividió en titular + subtítulo por longitud")
 
     fijas = {
-        "pieza": _seccion_pieza(norm),
+        "pieza": _seccion_pieza(norm, refuerzo_sangrado=refuerzo_sangrado),
         "texto": _seccion_texto(norm, bloques, refuerzo=refuerzo_texto),
         "tipografia": _seccion_tipografia(norm, bloques),
         "negativos": _seccion_negativos(norm),

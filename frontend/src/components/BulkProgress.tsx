@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import AvisoBandas, { type Bandas } from "./AvisoBandas";
 import { RegenerateButton, conVersion, etiquetaSubkey } from "./RegenerateImage";
 
 interface RowResult {
@@ -34,6 +35,8 @@ interface RowPreviewData {
     ig_slides: string[];
     // Imágenes que se pueden rehacer de a una desde la revisión del lote.
     regenerables?: string[];
+    // Veredicto del detector de passe-partout/letterbox sobre la imagen cruda.
+    bandas?: Bandas;
     blotato_urls: { linkedin?: string; instagram?: string[]; facebook?: string };
   };
   // Avisos sobre los prompts de esta fila (mismo lint que el preview individual).
@@ -782,6 +785,7 @@ function RowPreview({ row, apiUrl }: { row: Row; apiUrl: string }) {
           <NetworkPreview logo={<FacebookLogo />} name="Facebook" text={p.posts.facebook_text || ""} images={fbImages} videoUrl={videoUrl || undefined} verticalMedia={isVertical} />
         )}
       </div>
+      {row.status === "ready" && <AvisoBandas bandas={p.images.bandas} compact />}
       {regenerables.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-[11px] text-gray-500">Rehacer imagen:</span>

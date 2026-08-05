@@ -459,6 +459,70 @@ def test_sin_marcas_se_conserva_la_eleccion_automatica(sin_llm):
     assert "One word only" in tipo
 
 
+# ── La identidad no puede escribir LAYOUT en la capa dura ────────────────────
+# La sección 5 pega cuatro campos de la identidad verbatim. Si esos strings traen
+# vocabulario de layout, la identidad está escribiendo layout sin permiso: es lo que
+# fabricó el letterbox del carrusel auditado ("headline band" + "over the dark field").
+
+
+def test_tinta_deja_solo_el_nombre_y_el_hex():
+    assert pa.tinta("Soft bone white (#F5F3EE) for all caps headline over the dark field.") \
+        == "Soft bone white (#F5F3EE)"
+    assert pa.tinta("bone white #EDEAE0 on the near-black") == "bone white #EDEAE0"
+
+
+def test_tinta_sin_hex_no_rompe_nada():
+    # `brand.json` no pasa por el validador de identidades: degradar, nunca romper.
+    assert pa.tinta("warm off-white") == "warm off-white"
+    assert pa.tinta("") == ""
+
+
+@pytest.mark.parametrize("palabra", ["band", "panel", "frame", "matte", "letterbox",
+                                     "backdrop", "field"])
+def test_sin_layout_quita_el_sintagma_y_conserva_el_resto(palabra):
+    valor = f"condensed grotesque, ALL CAPS, tight tracking in a headline {palabra}"
+    limpio = pa.sin_layout(valor)
+    assert palabra not in limpio
+    assert "condensed grotesque" in limpio and "ALL CAPS" in limpio
+
+
+def test_sin_layout_devuelve_el_original_si_lo_dejaria_vacio():
+    # Quedarse sin familia tipográfica es peor que arrastrar la palabra.
+    assert pa.sin_layout("headline band") == "headline band"
+
+
+def test_el_dark_field_de_la_identidad_no_llega_a_la_tipografia(sin_llm):
+    r = pa.construir(_spec(marca={
+        "color_texto": "Soft bone white (#F5F3EE) for all caps body over the dark field",
+        "tipografia": "grotesque-inspired sans, ALL CAPS, set inside a headline band",
+    }), cfg=sin_llm)
+    tipo = _tipografia(r.prompt)
+    assert "#F5F3EE" in tipo                      # la tinta sí, entera
+    assert "dark field" not in tipo               # el fondo no: lo declaran 1, 3 y 6
+    assert "headline band" not in tipo
+    assert "grotesque-inspired sans" in tipo      # y la familia se conserva
+
+
+@pytest.mark.parametrize("rol", ("portada",) + pa.ROLES_BEAT)
+def test_la_seccion_1_declara_el_sangrado_en_positivo(sin_llm, rol):
+    # El negativo por sí solo se demostró insuficiente dos veces; la sección 1 es la
+    # más autoritativa del brief.
+    r = pa.construir(_spec(contenido={"rol_slide": rol}), cfg=sin_llm)
+    pieza = [l for l in r.prompt.splitlines() if l.startswith("1.")][0]
+    assert "bleeds past all four edges" in pieza
+
+
+def test_el_refuerzo_de_sangrado_entra_en_la_seccion_1(sin_llm):
+    r = pa.construir(_spec(), cfg=sin_llm, refuerzo_sangrado=True)
+    pieza = [l for l in r.prompt.splitlines() if l.startswith("1.")][0]
+    assert "FLAT COLOUR BAND" in pieza
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+def test_sin_refuerzo_de_sangrado_no_aparece(sin_llm):
+    assert "FLAT COLOUR BAND" not in pa.construir(_spec(), cfg=sin_llm).prompt
+
+
 # ── Bloqueo de luz: lo mismo en las N piezas del job ─────────────────────────
 # La sección 6 la escribía entera el LLM, una vez por imagen y sin conocer a sus
 # hermanas: en un carrusel eso son N esquemas de iluminación distintos, y en ningún

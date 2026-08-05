@@ -73,6 +73,14 @@ class Config:
     # QA de visión post-generación: comprueba que el texto impreso coincide con el
     # esperado (acentos incluidos) y reintenta reforzando la instrucción.
     image_text_qa: bool = True
+    # QA de bandas: mira la imagen CRUDA del proveedor (antes del overlay y del grade)
+    # y detecta el passe-partout y el letterbox — la banda de color liso que el modelo
+    # pinta cuando resuelve mal la ambigüedad del aire negativo. No usa modelo ni
+    # créditos: es Pillow (`image_overlay.bordes_planos`). Es el único de los tres
+    # frentes contra ese defecto que no es prompt, y por eso existe: el prompt ya falló
+    # dos veces. UN solo reintento (no dos como el de texto): el defecto es binario y
+    # regenerar cuesta créditos de verdad.
+    image_band_qa: bool = True
     # Coherencia del carrusel.
     #   - image_reference_slides: pasa la PORTADA en `medias` al generar cada slide.
     #     APAGADO por defecto, y no es una preferencia estética: en el catálogo en vivo
@@ -180,6 +188,8 @@ def load_config() -> Config:
         prompt_architect_critique=(os.environ.get("PROMPT_ARCHITECT_CRITIQUE", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         image_text_qa=(os.environ.get("IMAGE_TEXT_QA", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_band_qa=(os.environ.get("IMAGE_BAND_QA", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         # Apagado por defecto: con los modelos actuales `medias` es image-to-image y
         # clona la portada en cada slide (ver el comentario del dataclass).

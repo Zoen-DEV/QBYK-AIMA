@@ -879,9 +879,12 @@ def _job_snapshot(job: dict) -> dict:
             # modelo desde el prompt (hoy) o Pillow por encima (respaldo).
             "text_overlay": job["images"].get("text_overlay", True),
             "text_in_prompt": job["images"].get("text_in_prompt", True),
-            # Traza de la generación: prompt final y QA del texto por imagen.
+            # Traza de la generación: prompt final, QA del texto y QA de bandas por
+            # imagen. `bandas` es el veredicto del detector de passe-partout/letterbox
+            # sobre la imagen cruda del proveedor; lo pintan las DOS revisiones.
             "prompts": job["images"].get("prompts", {}),
             "qa": job["images"].get("qa", {}),
+            "bandas": job["images"].get("bandas", {}),
             # Imágenes que la revisión puede rehacer de a una (POST /jobs/{id}/regenerate).
             # Lo decide el backend para que las dos revisiones —individual y lote— no
             # tengan que repetir las reglas de formato en el frontend.
@@ -1071,6 +1074,7 @@ async def regenerate_job_image(job_id: str, subkey: Annotated[str, Form()] = "")
         "aviso": res["aviso"],
         "prompts": job["images"].get("prompts", {}),
         "qa": job["images"].get("qa", {}),
+        "bandas": job["images"].get("bandas", {}),
     }
 
 

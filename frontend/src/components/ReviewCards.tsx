@@ -1,5 +1,6 @@
 import { useState } from "react";
 import PublishBar from "./PublishBar";
+import AvisoBandas, { type Bandas } from "./AvisoBandas";
 import { RegenerateButton, conVersion } from "./RegenerateImage";
 
 interface Props {
@@ -15,6 +16,8 @@ interface Props {
     ig_slides: string[];
     // Imágenes que se pueden rehacer de a una; lo decide el backend (formato + redes).
     regenerables?: string[];
+    // Veredicto del detector de passe-partout/letterbox sobre la imagen cruda.
+    bandas?: Bandas;
     blotato_urls: { linkedin: string; instagram: string[]; facebook: string };
   };
   video?: { url?: string; provider?: string; notice?: string; cost?: { credits?: number; usd?: number; segments?: number; seconds?: number; voice?: boolean } | null };
@@ -385,6 +388,7 @@ export default function ReviewCards({
 
   return (
     <div className="space-y-6">
+      <AvisoBandas bandas={images.bandas} />
       {videoUrl && videoCost && (videoCost.credits ?? 0) > 0 && (
         <div className="rounded-xl border border-gray-800 bg-gray-900/60 px-4 py-3 text-sm text-gray-300 flex items-center gap-2">
           <svg className="w-4 h-4 flex-shrink-0 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
