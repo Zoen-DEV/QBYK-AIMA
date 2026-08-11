@@ -21,6 +21,18 @@ export type IdentityJson = {
   aspect_ratio: string;
   referencias: string[];
   /**
+   * Los sitios donde fotografía esta marca. NO es una lista ordenada: es un
+   * repertorio, y cada post elige uno y lo usa en todas sus imágenes. Opcional:
+   * vacío = los mundos de la casa.
+   */
+  escenarios: string[];
+  /**
+   * Cuántos NIVELES de texto imprimen los slides de esta marca. Repertorio, como
+   * `escenarios`: el job congela uno, así que dos carruseles seguidos no salen con
+   * la misma estructura de textos. Opcional: vacío = los sistemas de la casa.
+   */
+  sistemas_texto: string[];
+  /**
    * ORDENADA por los beats del carrusel: [tensión, desarrollo, prueba, remate]. La
    * posición ES el beat. Opcional: lo que falte cae al respaldo de la casa.
    */
@@ -46,6 +58,9 @@ export type Limites = {
   min_colores: number;
   max_colores: number;
   max_referencias: number;
+  min_escenarios: number;
+  max_escenarios: number;
+  sistemas_texto: { nombre: string; descripcion: string; sistema: string }[];
   nombre_max: number;
 };
 
@@ -169,6 +184,8 @@ export function identidadVacia(): IdentityJson {
     tono_visual: "",
     aspect_ratio: "4:5",
     referencias: [],
+    escenarios: [],
+    sistemas_texto: [],
     ritmo_carrusel: [],
   };
 }

@@ -26,7 +26,9 @@ el **archivo** y no la identidad (una fila tiene sus propios `created_at`/`updat
 | `tono_visual` | `str` | tratamiento fotográfico — **lo pisa `image_style` por post** |
 | `aspect_ratio` | `str` | inerte: el aspecto real lo fija el formato del post |
 | `referencias` | `list[str]` | la dirección de arte de las secciones 6 y 7 |
+| `escenarios` | `list[str]` | los 2-4 mundos donde fotografía esta marca (sección 2) — **opcional** |
 | `ritmo_carrusel` | `list[str]` | el plano de cada beat del carrusel (sección 3) — **opcional** |
+| `sistemas_texto` | `list[str]` | cuántos NIVELES de texto imprimen los slides (secciones 4 y 5) — **opcional** |
 
 Tres acuerdos vivían implícitos en el código y romperlos **no dejaba rastro**. El validador
 los hace explícitos:
@@ -67,6 +69,17 @@ resuelve por su cuenta, y siempre en contra de lo que la identidad quería.
    9-16% del alto del cuadro; a ese cuerpo, una familia de UI devuelve el look de «caption
    pegado sobre una foto» — que es exactamente lo que el prompt de extracción ya advertía y el
    validador dejaba pasar.
+6. **`escenarios` tampoco puede pedir personas**, por lo mismo que `ritmo_carrusel`, y tiene
+   que ser un **repertorio**: 2-4 mundos o ninguno. Uno solo no es una excepción tolerable —
+   el job elige uno y lo congela, así que con un único mundo todos los posts de ese perfil
+   salen del mismo sitio. Y hay un **reparo** (no error) cuando el repertorio entero son
+   variantes de una mesa: ahí el campo está puesto y el defecto que vino a corregir sigue,
+   porque da igual cuál de los cuatro elija el job. El bodegón de estudio es una marca
+   defendible, así que se avisa y se deja guardar.
+7. **`sistemas_texto` solo admite nombres del catálogo** de `architect.json`. La lista se
+   **importa** (`SISTEMAS_TEXTO = prompt_architect.sistemas_disponibles()`), nunca se copia —
+   mismo criterio que `ROLES_RITMO`. Un nombre inventado caería al sistema base en silencio y
+   la marca creería estar publicando carruseles con cuerpo de texto cuando no lo hace.
 
 Aparte, dos **reparos** (avisan, no bloquean, ver más abajo): una `tipografia` que no se declare
 de display (`MARCAS_DISPLAY`) y una `tipografia_secundaria` que pida `regular weight` o
@@ -82,10 +95,30 @@ quedarse sin poder guardar.
 
 ## Qué cambia (y qué no) al cambiar de identidad
 
-Cambian **paleta, color de acento, familia tipográfica, referencias de dirección de arte** y,
-en carrusel, **el plano de cada beat** (`ritmo_carrusel`).
+Cambian **paleta, color de acento, familia tipográfica, referencias de dirección de arte**, el
+**mundo** donde se fotografía (`escenarios`) y, en carrusel, **el plano de cada beat**
+(`ritmo_carrusel`) y **cuántos niveles de texto lleva cada slide** (`sistemas_texto`).
 
-Ese último merece su matiz, porque es donde termina la frontera. Qué **cuenta** cada slide del
+`sistemas_texto` es hermano de `escenarios` en todo: repertorio (1-3), el job congela uno en
+`params.sistema_texto` y se aplica a las N piezas. Elige entre `titular` (un titular grande y
+nada más, el de siempre), `titular_cuerpo` (un párrafo bajo el titular) y
+`etiqueta_titular_cuerpo` (un rótulo arriba y el cuerpo al pie). La frontera es la misma que la
+de `ritmo_carrusel`: **qué bloques existen y dónde van es layout** y vive en `architect.json`
+igual para todas las marcas; **cuáles usa esta marca** es identidad. La **portada no lo usa
+nunca** — siempre lleva titular + apoyo, porque es la pieza que funda el set. Y el `cuerpo`
+nunca se pasa a caja alta aunque la tipografía sea de caja alta: `pide_caja_alta` mira la
+familia de display, y un párrafo de 30 palabras al 5% del alto en mayúsculas es ilegible.
+
+`escenarios` es el que más se nota, y existe porque su ausencia era un defecto visible: hasta
+que se añadió, la identidad decidía **cómo** se fotografía pero nunca **dónde**, y el dónde lo
+acababa poniendo el vocabulario compartido del brief — que decía "apoyado en una superficie" en
+seis sitios distintos. El resultado era que dos identidades con paleta y tipografía
+completamente distintas producían la misma foto: un objeto sobre una mesa. Es un **repertorio**
+y no un mundo único a propósito: cada post elige uno y lo congela, así que la marca se reconoce
+igual en los cuatro y dos posts seguidos no salen del mismo sitio. Se emite como `WORLD LOCK`,
+byte a byte idéntico en todas las imágenes de ese post.
+
+`ritmo_carrusel` merece su matiz, porque es donde termina la frontera. Qué **cuenta** cada slide del
 carrusel —tensión, desarrollo, prueba, remate— es estructura y es igual para todas las marcas:
 vive en `architect.json` y se recorre con `prompt_architect.roles_carrusel`. Lo que la identidad
 decide es **cómo se fotografía** cada uno de esos momentos: distancia, altura de cámara y qué
@@ -241,6 +274,12 @@ resolvía cada campo con `marca.get(x) or marca_def.get(x)`, así que bastó con
   donde las lee `normalizar_spec`. Metidas en `marca` se perderían sin un solo error. El
   `ritmo_carrusel` viaja igual y por el mismo motivo, más uno propio: es una lista y
   `_texto_plano` la aplanaría a una frase con comas dentro de `marca`.
+- `escenarios` **no viaja**: lo que viaja es el mundo YA ELEGIDO. `make_job` resuelve el
+  repertorio contra la identidad congelada, se queda con uno y lo guarda en
+  `params.escenario_visual`; de ahí en adelante el pipeline solo ve ese string. Es la
+  diferencia entre un repertorio (de la marca) y una decisión (de este post), y tiene que
+  tomarse en `make_job` porque es el único punto que corre UNA vez por job: resolverlo donde se
+  construye cada prompt daría un mundo por imagen, que es exactamente el defecto que corrige.
 - El ritmo entra dos veces, a propósito: en la cláusula determinista de la sección 3
   (`_clausula_beat`) y en el `prompt_base` que el arquitecto le enseña al LLM
   (`encuadre_beat`, que usa la **misma** cadena de respaldo: identidad → `brand.json` → el beat
@@ -404,6 +443,35 @@ misma imagen.
 6. Desde la revisión, rehaz **un** slide del medio.
    **Esperado:** vuelve con el mismo plano y la misma escala de titular que tenía: rehacer
    cambia la tirada del modelo, no la función del slide en el carrusel.
+
+### El mundo de la marca (`escenarios`) y el arco del carrusel
+
+Es el defecto que motivó el campo: identidades visuales distintas producían la misma foto —un
+objeto sobre una mesa— y las N imágenes de un carrusel no contaban nada juntas.
+
+1. Genera un carrusel con la identidad **de la casa**. En la compuerta de **preview**, mira la
+   caja gris sobre los campos de texto.
+   **Esperado:** dice el **arco** (con su explicación) y el **mundo**. No son editables.
+2. Deja que genere y mira las imágenes.
+   **Esperado:** las N piezas ocurren en el MISMO sitio y ese sitio no tiene por qué ser una
+   mesa. Según el arco, o el mismo objeto vuelve cambiado (`transformacion`, `cadena`) o cada
+   slide toma otra cosa del mismo lugar (`recorrido`, `escala`).
+3. Genera **otro** post con la misma identidad.
+   **Esperado:** el arco y el mundo son distintos. Es lo que impide que todos los posts de un
+   perfil se vean iguales.
+4. Crea una identidad con `escenarios` propios (por ejemplo, exteriores) y genera con ella.
+   **Esperado:** las piezas salen de tus mundos, no de los de la casa. Comparado con el punto 2,
+   las dos tandas tienen que verse de sitios distintos — esa es la prueba de la feature.
+5. Deja `escenarios` **vacío** y genera otro.
+   **Esperado:** se usan los mundos de la casa (`brand.json` → `escenarios`). Ningún error,
+   ningún aviso: vacío = lo de siempre.
+6. Pon en `escenarios` cuatro variantes de una mesa y guarda.
+   **Esperado:** se guarda (es una decisión defendible) pero sale un **reparo** diciendo que el
+   repertorio entero es una mesa, y ese mismo reparo reaparece en la compuerta previa de los
+   posts que uses con esa identidad.
+7. Desde la revisión, rehaz **un** slide.
+   **Esperado:** vuelve con el mismo mundo y el mismo arco. Rehacer no puede recolocar el
+   carrusel ni cambiar su historia.
 
 ### 5. Elegir la identidad al crear el post
 

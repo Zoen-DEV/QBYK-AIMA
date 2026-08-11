@@ -11,6 +11,15 @@ Reglas de comparación: se ignoran mayúsculas, espacios y puntuación (el dise�
 poner el titular en caja alta), pero **NO los acentos** — "IA" y "Iá" son cosas
 distintas y el fallo típico del modelo es justo ese.
 
+**La exigencia va POR NIVEL**, y no es una concesión sino la diferencia entre un QA
+útil y uno que quema créditos. Un titular son 3-6 palabras a tamaño de póster: ahí una
+letra mal es un defecto que se ve desde el otro lado de la sala, y se exige exacto. Un
+cuerpo son 30 palabras al 5% del alto: ningún generador las clava carácter a carácter,
+y exigirle lo mismo convertiría cada errata en una regeneración pagada de la imagen
+entera. Por eso el cuerpo se mide por SIMILITUD (`similitud_cuerpo` en
+`prompts/qa_vision.json`) — lo que se persigue ahí es que diga lo que tenía que decir,
+no que lo diga letra por letra.
+
 El otro fallo que se veía en producción no es de ortografía sino de encuadre: el
 titular sale bien escrito pero **cortado por el borde**. La comparación de strings no
 lo detecta (el modelo de visión lee la palabra igual aunque le falte la mitad de
@@ -22,6 +31,7 @@ llamada falla, se devuelve "no verificado" y el pipeline sigue. Nunca lanza.
 
 from __future__ import annotations
 
+import difflib
 import io
 import re
 import unicodedata
@@ -97,6 +107,48 @@ def coincide(esperado: str, visto: str) -> bool:
     return bool(e) and e in v
 
 
+# Bloques que se miden por similitud en vez de por coincidencia exacta. Es la lista
+# de los que se imprimen a tamaño de LECTURA: a 30 palabras y al 5% del alto, ningún
+# generador clava el string, y exigirlo convierte cada errata en una regeneración
+# pagada. Los de display (etiqueta, titular, apoyo) siguen siendo exactos.
+_BLOQUES_APROXIMADOS = ("cuerpo",)
+_SIMILITUD_CUERPO = 0.90
+
+
+def similitud(esperado: str, visto: str) -> float:
+    """Parecido [0,1] del bloque esperado con lo mejor que se le parezca en lo leído.
+
+    Se busca el mejor tramo dentro de lo visto y no se comparan las dos cadenas
+    enteras: el modelo de visión devuelve TODO el texto de la imagen —titular
+    incluido—, así que comparar contra el conjunto castigaría a un cuerpo correcto.
+    """
+    e, v = _normalizar(esperado), _normalizar(visto)
+    if not e:
+        return 1.0
+    if not v:
+        return 0.0
+    if e in v:
+        return 1.0
+    m = difflib.SequenceMatcher(None, e, v).find_longest_match(0, len(e), 0, len(v))
+    tramo = v[max(0, m.b - m.a):][:len(e) + 8]
+    return difflib.SequenceMatcher(None, e, tramo).ratio()
+
+
+def _revisar_bloques(bloques: list[tuple[str, str]], visto: str, umbral: float) -> str:
+    """`""` si todos los bloques están bien; si no, el motivo del primero que falla."""
+    for clave, esperado in bloques:
+        if not esperado:
+            continue
+        if clave in _BLOQUES_APROXIMADOS:
+            ratio = similitud(esperado, visto)
+            if ratio < umbral:
+                return (f'el {clave} no coincide ({int(ratio * 100)}% de parecido): '
+                        f'esperaba "{esperado}"')
+        elif not coincide(esperado, visto):
+            return f'el {clave} no coincide: esperaba "{esperado}"'
+    return ""
+
+
 # ── Descarga y preparación de la imagen ───────────────────────────────────────
 
 def _es_local(src: str) -> bool:
@@ -161,9 +213,17 @@ def _texto_leido(data: dict) -> str:
     return " ".join(p.strip() for p in partes if p and p.strip())
 
 
-def verificar(src: str, esperado: str, *, cfg) -> ResultadoQA:
-    """Lee el texto impreso en `src` y lo compara con `esperado`. Nunca lanza."""
-    esperado = (esperado or "").strip()
+def verificar(src: str, esperado, *, cfg) -> ResultadoQA:
+    """Lee el texto impreso en `src` y lo compara con `esperado`. Nunca lanza.
+
+    `esperado` es un string (contrato de siempre) o una lista `[(clave, texto)]` con
+    los bloques de la pieza: la clave decide con qué exigencia se mide cada uno.
+    """
+    bloques = ([(str(c), " ".join(str(t).split())) for c, t in esperado]
+               if isinstance(esperado, (list, tuple))
+               else [("texto", " ".join(str(esperado or "").split()))])
+    bloques = [(c, t) for c, t in bloques if t]
+    esperado = " ".join(t for _, t in bloques)
     if not esperado:
         return ResultadoQA(ok=True, motivo="sin texto esperado")
     if not src:
@@ -201,10 +261,18 @@ def verificar(src: str, esperado: str, *, cfg) -> ResultadoQA:
     if data.get("recortado") is True:
         return ResultadoQA(ok=False, verificado=True, texto_visto=visto, recortado=True,
                            motivo=f'el borde del cuadro corta el texto ("{visto or "?"}")', uso=uso)
-    if coincide(esperado, visto):
+    fallo = _revisar_bloques(bloques, visto, _umbral_cuerpo())
+    if not fallo:
         return ResultadoQA(ok=True, verificado=True, texto_visto=visto,
                            motivo="texto correcto", uso=uso)
     return ResultadoQA(
         ok=False, verificado=True, texto_visto=visto,
-        motivo=f'esperaba "{esperado}" y la imagen dice "{visto or "(nada)"}"', uso=uso,
+        motivo=f'{fallo} y la imagen dice "{visto or "(nada)"}"', uso=uso,
     )
+
+
+def _umbral_cuerpo() -> float:
+    try:
+        return float(_cfg().get("similitud_cuerpo", _SIMILITUD_CUERPO))
+    except (TypeError, ValueError):
+        return _SIMILITUD_CUERPO

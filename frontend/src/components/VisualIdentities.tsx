@@ -138,9 +138,17 @@ export function VisualIdentities() {
                       sin esta línea no habría forma de saber, desde la lista, si un
                       carrusel de esta identidad sale con sus planos o con los de la casa. */}
                   <p className="mt-1 text-[11px] text-gray-600">
+                    {ident.identity_json.escenarios?.length
+                      ? `${ident.identity_json.escenarios.length} mundos propios`
+                      : "Mundos de la casa"}
+                    {" · "}
+                    {ident.identity_json.sistemas_texto?.length
+                      ? `${ident.identity_json.sistemas_texto.length} estructura(s) de texto`
+                      : "texto de la casa"}
+                    {" · "}
                     {ident.identity_json.ritmo_carrusel?.length
-                      ? "Carrusel con ritmo propio"
-                      : "Carrusel con el ritmo de la casa"}
+                      ? "ritmo propio"
+                      : "ritmo de la casa"}
                   </p>
                 </div>
 

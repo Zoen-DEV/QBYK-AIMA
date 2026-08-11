@@ -513,6 +513,65 @@ function Editor({
         />
       </Campo>
 
+      <Campo
+        etiqueta="Mundos"
+        ayuda={`Uno por línea, de ${limites.min_escenarios} a ${limites.max_escenarios}. Los sitios donde fotografía esta marca: el lugar, sus superficies y sus materiales — no una escena ni un objeto. Cada post elige uno y lo usa en TODAS sus imágenes, así que con uno solo todos los posts salen del mismo sitio, y si todos son una mesa las piezas vuelven a ser un objeto sobre una superficie. Vacío = los mundos de la casa.`}
+      >
+        <textarea
+          value={(json.escenarios ?? []).join("\n")}
+          onChange={(e) =>
+            set("escenarios", e.target.value.split("\n").map((l) => l.trim()).filter(Boolean))
+          }
+          disabled={deshabilitado}
+          rows={4}
+          className={ENTRADA}
+        />
+      </Campo>
+
+      {/* Cuántos niveles de texto imprimen los slides. Se pinta desde el catálogo que
+          sirve el backend y no desde una lista propia: los nombres válidos los decide
+          `architect.json`, y una lista duplicada acá se desincronizaría en silencio. */}
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-300">
+          Estructura de texto de los slides
+        </label>
+        <p className="mb-2.5 text-xs text-gray-500">
+          Cuántos niveles de texto lleva cada slide del carrusel. Marca los que le sirven a esta
+          marca: cada post elige UNO, así que con varios marcados dos carruseles seguidos no
+          salen con la misma estructura. Sin nada marcado se usan los de la casa. La portada no
+          cambia — siempre lleva titular y apoyo.
+        </p>
+        <div className="space-y-2">
+          {(limites.sistemas_texto ?? []).map((s) => {
+            const marcado = (json.sistemas_texto ?? []).includes(s.sistema);
+            return (
+              <label key={s.sistema} className="flex items-start gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={marcado}
+                  disabled={deshabilitado}
+                  onChange={() =>
+                    set(
+                      "sistemas_texto",
+                      marcado
+                        ? (json.sistemas_texto ?? []).filter((x) => x !== s.sistema)
+                        : [...(json.sistemas_texto ?? []), s.sistema],
+                    )
+                  }
+                  className="mt-1"
+                />
+                <span>
+                  {s.nombre || s.sistema}
+                  {s.descripcion && (
+                    <span className="block text-[11px] text-gray-500">{s.descripcion}</span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
       <div>
         <label className="mb-1 block text-sm font-medium text-gray-300">Ritmo del carrusel</label>
         <p className="mb-2.5 text-xs text-gray-500">

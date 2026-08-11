@@ -196,8 +196,8 @@ def _reglas_esquema() -> str:
         "4. `tipografia` / `tipografia_secundaria`: describe a type family CLASS "
         "(weight, width, case, tracking), never a specific licensed font name. NEVER "
         "name a neutral interface sans (" + ", ".join(vi.FAMILIAS_UI_PROHIBIDAS) + "): "
-        "at 9-16% of the frame height those give the 'caption pasted on a photo' look "
-        "and the response is rejected.",
+        "at poster scale those give the 'caption pasted on a photo' look and the "
+        "response is rejected. The case is part of the class you choose, not a default.",
         "5. `tono_visual`: the photographic treatment ONLY — light, contrast, depth, "
         "texture, surround. Do NOT name any colour here: the palette already has its "
         "own fields and two palettes in one prompt fight each other.",
@@ -217,9 +217,30 @@ def _reglas_esquema() -> str:
         + "). The image brief forbids people as the main subject, so a shot that asks for "
         "one is a contradiction the model resolves by dropping that shot entirely — and "
         "the carousel loses its shot ladder.",
-        f"9. Every text field is at most {vi.MAX_TEXTO} characters — around "
+        f"9. `escenarios`: {vi.MIN_ESCENARIOS}-{vi.MAX_ESCENARIOS} LOCATIONS this brand shoots "
+        f"in — never more, never one. Each is at most {vi.MAX_ESCENARIO_PALABRAS} words and "
+        "names the place, its surfaces and its materials: a location, not a scene and not a "
+        "subject. One piece of the set is generated per job from ONE of these, held identical "
+        "across every image of that job, so a repertoire of one makes every post of this brand "
+        "come out of the same room. They must be genuinely different places, and NOT all "
+        "variants of a table (" + ", ".join(vi.PALABRAS_MESA[:4]) + "): a tabletop still life "
+        "is one legitimate world, but a repertoire made only of tabletops is how every brand "
+        "ends up producing the same photograph. Never write a person into a location ("
+        + ", ".join(vi.PALABRAS_PERSONA[:4]) + "), and never restate the palette or the light — "
+        "they have their own fields.",
+        f"10. `sistemas_texto`: {vi.MIN_SISTEMAS}-{vi.MAX_SISTEMAS} names, chosen ONLY from "
+        f"this list: {', '.join(vi.SISTEMAS_TEXTO)}. This is how many TEXT LEVELS the content "
+        "slides of this brand print — `titular` is one big headline per slide, "
+        "`titular_cuerpo` adds a paragraph of body copy under it, and "
+        "`etiqueta_titular_cuerpo` adds a small label above and moves the body to the foot. "
+        "Pick from what the reference set actually does: a moodboard of bold single "
+        "statements is `titular`; one where the pieces explain something, with small text "
+        "under the headline, wants a body. Each job freezes ONE of them, so two of the "
+        "brand's carousels do not come out with the same text structure. A name outside "
+        "that list is rejected.",
+        f"11. Every text field is at most {vi.MAX_TEXTO} characters — around "
         f"{vi.MAX_TEXTO // 7} words. Spend that budget on concrete facts: dense, not long.",
-        "10. Write every value in English: these strings are injected verbatim into an "
+        "12. Write every value in English: these strings are injected verbatim into an "
         "image-generation prompt that is written in English.",
     ])
 
@@ -265,8 +286,8 @@ _SISTEMA_POR_DEFECTO = (
 _CRITERIO_POR_DEFECTO = (
     "paleta: three ROLES, not the three most frequent colours — the field the subjects "
     "sit on, the near-neutral the headline is read in, the one saturated accent.",
-    "tipografia: the class of face that holds a headline at 9-16% of the frame height "
-    "in caps; never a neutral UI sans.",
+    "tipografia: the class of face that holds a headline at poster scale — name the "
+    "class, its weight, width and CASE; never a neutral UI sans, never caps by default.",
     "tono_visual: a repeatable lighting recipe that leaves quiet areas for the type.",
 )
 _PROHIBICIONES_POR_DEFECTO = (

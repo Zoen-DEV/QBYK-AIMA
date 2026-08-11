@@ -19,6 +19,13 @@ Qué es "el peor caso" acá:
     cláusula de banda baja),
   - `escena_portada` larga (se recorta, pero paga el recorte).
 
+Y se mide con los TRES sistemas de texto, porque el que más ocupa no es el que más
+bloques tiene sino el que más CONTENIDO imprime, y eso no se adivina: cada bloque se
+rellena a su tope de palabras con castellano de verdad. Ojo con la tentación de usar
+vocabulario largo de dirección de arte como en las secciones creativas: a un titular se
+le piden 6 palabras de texto impreso, no 6 tecnicismos de 15 caracteres, y medir así
+infla el techo por un caso que el redactor no puede producir.
+
 Y se mide con DOS identidades, porque no miden lo mismo:
 
   - **casa** — los valores reales de `brand.json`. Es lo que se genera hoy en
@@ -116,6 +123,10 @@ def _identidad_maxima() -> dict:
         "aspect_ratio": "4:5",
         "referencias": ["r" * vi.MAX_REFERENCIA] * vi.MAX_REFERENCIAS,
         "ritmo_carrusel": ["s" * vi.MAX_RITMO_ITEM] * vi.MAX_RITMO,
+        # El peor mundo que `validar` acepta: su tope de caracteres, repartido en palabras
+        # largas para que el recorte por PALABRAS de `prompt_architect` tampoco lo salve.
+        "escenarios": [(" ".join(["weather-beaten"] * vi.MAX_ESCENARIO_PALABRAS))[:vi.MAX_ESCENARIO]
+                       ] * vi.MAX_ESCENARIOS,
     })
 
 
@@ -123,6 +134,25 @@ def _identidad_maxima() -> dict:
 # titular + kicker y el brief paga las DOS cláusulas de banda.
 _TEXTO = ("La latencia del modelo se paga en atención perdida y en confianza del "
           "equipo que ya no espera")
+
+# Vocabulario del que se rellena cada bloque hasta su tope. Castellano corriente y con
+# tildes: es lo que el redactor produce y lo que paga el prompt (una tilde son dos bytes
+# pero un carácter, y el techo se mide en caracteres).
+_PALABRAS_PIEZA = (
+    "El coste por tarea sube más rápido que la promesa del modelo, y cada salto de "
+    "contexto multiplica el gasto aunque la calidad mejore un poco en la versión nueva"
+).split()
+
+
+def _texto_bloque(palabras: int) -> str:
+    """Contenido realista de exactamente `palabras` palabras."""
+    return " ".join(_PALABRAS_PIEZA[i % len(_PALABRAS_PIEZA)] for i in range(max(0, palabras)))
+
+
+def _bloques_al_tope(sistema: str) -> dict:
+    """Cada bloque del sistema en su tope de palabras: el peor caso que el redactor puede dar."""
+    return {b["clave"]: _texto_bloque(parch._entero_lista(b.get("palabras"), 1, 8))
+            for b in parch.bloques_sistema(sistema)}
 _ESCENA_PORTADA = (
     "A scuffed rack-mount server chassis pulled half out of its cabinet on a cold "
     "concrete floor, dust on the fan grilles, one amber status light still burning, "
@@ -130,7 +160,15 @@ _ESCENA_PORTADA = (
 )
 
 
-def _spec(rol: str, identidad: dict) -> dict:
+def _arco_mas_largo() -> str:
+    """El arco cuya cláusula de enlace pesa más. El peor caso no es un arco cualquiera."""
+    return max(parch.arcos_disponibles(),
+               key=lambda a: len(parch._clausula_arco(
+                   {"contenido": {"rol_slide": "desarrollo"}, "arco_carrusel": a})),
+               default="")
+
+
+def _spec(rol: str, identidad: dict, sistema: str = "") -> dict:
     """La spec del peor caso para ese rol, tal como la arma `job_runner._prompt_imagen`."""
     es_slide = parch.rol_base(rol) == "contenido"
     marca = {k: v for k, v in identidad.items()
@@ -143,13 +181,21 @@ def _spec(rol: str, identidad: dict) -> dict:
             "angulo": "" if es_slide else _ESCENA_PORTADA,
             "escena_portada": _ESCENA_PORTADA if es_slide else "",
             "texto_exacto_a_renderizar": _TEXTO,
+            # Con sistema, los bloques al tope; sin él, el reparto por longitud de
+            # siempre (que es lo que hace la portada, y la portada no lleva sistema).
+            **({"bloques": _bloques_al_tope(sistema)} if sistema else {}),
             "rol_slide": rol,
             "idioma": "es",
         },
+        "sistema_texto": sistema,
         "marca": marca,
         "prompt_base": _ESCENA_PORTADA,
         "referencias": list(identidad["referencias"]),
         "ritmo_carrusel": list(identidad["ritmo_carrusel"]),
+        # El arco más caro de los cuatro y el mundo más largo del repertorio: los dos se
+        # recortan a su tope, pero el peor caso es el que llega recortado, no el corto.
+        "arco_carrusel": _arco_mas_largo(),
+        "escenario": max(parch.escenarios_de(identidad), key=len, default=""),
     }
 
 
@@ -199,7 +245,7 @@ def _construir(spec: dict, *, palabras: int = 0) -> tuple[parch.ResultadoPrompt 
 def _largo_rechazado(spec: dict) -> int:
     """Cuánto medía el prompt que el validador tiró (para poder reportar el exceso)."""
     norm = parch.normalizar_spec(spec)
-    bloques = parch._bloques(norm["contenido"]["texto_exacto_a_renderizar"])
+    bloques = [(c, t) for c, t in norm["contenido"]["bloques"].items() if t]
     fijas = {
         "pieza": parch._seccion_pieza(norm),
         "texto": parch._seccion_texto(norm, bloques),
@@ -220,31 +266,43 @@ def _poda(res: parch.ResultadoPrompt | None, pedidas: int) -> int:
     Es el número que de verdad importa, y no salta a la vista en el total: cuando se
     añade texto fijo, `_ajustar_longitud` compensa recortando las creativas, así que el
     prompt puede MEDIR MENOS y ser peor — lo que se fue es el anclaje concreto del
-    sujeto, que es lo único que evita que la imagen salga genérica. Se mide sobre
-    `sujeto` porque es la única creativa a la que la app no le pega nada detrás.
+    sujeto, que es lo único que evita que la imagen salga genérica.
+
+    Se mide sobre `camara`, que es la única creativa a la que la app no le pega nada.
+    Antes se medía sobre `sujeto` por ese mismo motivo, hasta que el bloqueo de mundo
+    pasó a prefijarse ahí: la cifra saltó a 61 «palabras» de un tope de 26 —contando
+    texto que la poda no toca— y el indicador con el que se decide el presupuesto se
+    volvió ruido. Todas las creativas se podan al mismo escalón, así que cualquiera de
+    las intactas sirve; lo que no sirve es una que la app decore.
     """
     if res is None:
         return 0
-    return len((res.secciones.get("sujeto") or "").split()) or pedidas
+    return len((res.secciones.get("camara") or "").split()) or pedidas
 
 
 def _medir(nombre: str, identidad: dict, techo: int, max_palabras: int) -> tuple[int, str, object]:
-    """Imprime la tabla de un perfil de identidad. Devuelve `(peor_largo, rol, resultado)`."""
-    print(f"\nIDENTIDAD «{nombre}»")
-    print(f"{'rol':<12}{'respaldo':>10}{'LLM máx.':>10}{'margen':>10}{'poda':>8}")
-    print("-" * 50)
+    """Imprime la tabla de un perfil de identidad. Devuelve `(peor_largo, caso, resultado)`.
 
-    peor_rol, peor_largo, peor_res = "", 0, None
-    for rol in ("portada",) + parch.ROLES_BEAT:
-        spec = _spec(rol, identidad)
+    Una fila por (sistema de texto, rol). La portada va aparte y sin sistema: siempre
+    lleva el lockup de siempre, decida lo que decida la identidad.
+    """
+    print(f"\nIDENTIDAD «{nombre}»")
+    print(f"{'sistema':<26}{'rol':<12}{'respaldo':>10}{'LLM máx.':>10}{'margen':>9}{'poda':>8}")
+    print("-" * 75)
+
+    peor_caso, peor_largo, peor_res = "", 0, None
+    casos = [("—", "portada", "")]
+    casos += [(s, rol, s) for s in parch.sistemas_disponibles() for rol in parch.ROLES_BEAT]
+    for etiqueta, rol, sistema in casos:
+        spec = _spec(rol, identidad, sistema)
         _, largo_resp, fallo_resp = _construir(spec)
         res, largo, fallo = _construir(spec, palabras=max_palabras)
         marca = " RECHAZADO" if (fallo or fallo_resp) else ""
         poda = f"{_poda(res, max_palabras)}/{max_palabras}"
-        print(f"{rol:<12}{largo_resp:>10}{largo:>10}{techo - largo:>10}{poda:>8}{marca}")
+        print(f"{etiqueta:<26}{rol:<12}{largo_resp:>10}{largo:>10}{techo - largo:>9}{poda:>8}{marca}")
         if largo > peor_largo:
-            peor_rol, peor_largo, peor_res = rol, largo, res
-    return peor_largo, peor_rol, peor_res
+            peor_caso, peor_largo, peor_res = f"{etiqueta}/{rol}", largo, res
+    return peor_largo, peor_caso, peor_res
 
 
 def main() -> int:

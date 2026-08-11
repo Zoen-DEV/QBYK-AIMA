@@ -411,3 +411,107 @@ def test_dos_identidades_producen_prompts_distintos():
     assert _prompt(_IDENTIDAD) != _prompt(otra)
     assert "#0055FF" in _prompt(otra)
     assert "#0055FF" not in _prompt(_IDENTIDAD)
+
+
+# ── El arco y el mundo: los otros dos ejes que se congelan al crear el job ────
+#
+# Mismo patrón que la identidad y por el mismo motivo: son invariantes del SET, así que
+# elegirlos donde se construye cada prompt sería elegirlos una vez por imagen. Se eligen
+# en `make_job`, que es el único sitio donde se arma el shape del job — y por eso los
+# dos flujos los heredan sin que ninguno de los dos tenga que acordarse.
+
+
+def test_make_job_congela_el_arco_y_el_mundo():
+    job = jr.make_job(_Cfg(), {"source_type": "manual"})
+    assert job["params"]["arco_carrusel"] in pa.arcos_disponibles()
+    assert job["params"]["escenario_visual"] in pa.escenarios_de()
+
+
+def test_el_mundo_congelado_sale_del_repertorio_de_la_identidad():
+    propios = ["A flooded quarry at dawn, granite and standing water.",
+               "A tiled municipal pool, drained, ladders and lane markings."]
+    job = jr.make_job(_Cfg(), {"identidad_visual": {**_IDENTIDAD, "escenarios": propios}})
+    assert job["params"]["escenario_visual"] in propios
+
+
+def test_dos_jobs_seguidos_no_cuentan_la_misma_historia():
+    """La razón de ser de la rotación: «no siempre lo mismo» tiene que ser verdad.
+
+    Se mira sobre muchos jobs porque la elección es determinista por id, no alterna: lo
+    que se exige es que el repertorio se recorra, no que dos consecutivos difieran.
+    """
+    jobs = [jr.make_job(_Cfg(), {}) for _ in range(200)]
+    assert {j["params"]["arco_carrusel"] for j in jobs} == set(pa.arcos_disponibles())
+    assert {j["params"]["escenario_visual"] for j in jobs} == set(pa.escenarios_de())
+
+
+def test_el_arco_y_el_mundo_congelados_llegan_al_prompt():
+    job = jr.make_job(_Cfg(), {"arco_carrusel": "transformacion",
+                               "escenario_visual": "A workshop floor, concrete and steel racking."})
+    prompt, _ = jr._prompt_imagen(
+        _Cfg(), prompt_base="A coiled cable.", posts={}, content={"title": "x"},
+        texto=_TEXTO, rol="desarrollo", aspect="4:5",
+        arco=jr._arco(job), escenario=jr._escenario(job),
+    )
+    assert "WORLD LOCK" in prompt and "steel racking" in prompt
+    assert "SET ARC — TRANSFORMATION" in prompt
+
+
+def test_rehacer_un_slide_reusa_el_mismo_arco_y_el_mismo_mundo():
+    """Rehacer una imagen no puede cambiar la historia del carrusel ni su localización.
+
+    Los lectores salen de `params`, así que esto se sostiene solo mientras nadie vuelva
+    a elegir en el camino de la regeneración — que es justo el error que se evita
+    congelando.
+    """
+    job = jr.make_job(_Cfg(), {})
+    antes = (jr._arco(job), jr._escenario(job))
+    job["status"] = "review"
+    assert (jr._arco(job), jr._escenario(job)) == antes
+
+
+def test_un_job_sin_arco_ni_mundo_genera_como_antes():
+    """«Vacío significa lo de siempre»: un job creado antes de esta versión.
+
+    No es teórico: los jobs viven en memoria y un despliegue con jobs en vuelo deja
+    exactamente esto. Sin mundo no hay bloqueo, y sin arco vuelve la instrucción de
+    objeto distinto que era constante antes de los arcos.
+    """
+    prompt, _ = jr._prompt_imagen(
+        _Cfg(), prompt_base="A coiled cable.", posts={}, content={"title": "x"},
+        texto=_TEXTO, rol="desarrollo", aspect="4:5",
+    )
+    assert "WORLD LOCK" not in prompt
+    assert "DIFFERENT hero object" in prompt
+
+
+def test_cada_fila_del_lote_congela_su_propio_arco_y_su_propio_mundo(monkeypatch):
+    """El lote comparte identidad —eso se resolvió una vez al subir el sheet— pero cada
+    fila es un post distinto, así que cada una cuenta su propia historia."""
+    creados: list[dict] = []
+    real_make_job = jr.make_job
+
+    def _espia(cfg, params, **kw):
+        job = real_make_job(cfg, params, **kw)
+        creados.append(job["params"])
+        return job
+
+    monkeypatch.setattr(br, "make_job", _espia)
+
+    async def _run_pipeline(job):
+        job["status"] = "preview"
+
+    monkeypatch.setattr(br, "run_pipeline", _run_pipeline)
+    batch = {
+        "id": "b1", "_cfg": _Cfg(), "account_params": {}, "dry_run": True,
+        "identidad_params": {"identidad_visual": vi.normalizar(_IDENTIDAD)},
+        "rows": [{"_spec": {"params": {"source_type": "manual"},
+                            "upload_bytes": b"", "upload_filename": ""}, "status": "pending"}
+                 for _ in range(3)],
+        "status": "running",
+    }
+    asyncio.run(br.run_batch(batch, {}))
+    assert len(creados) == 3
+    assert all(p["arco_carrusel"] in pa.arcos_disponibles() for p in creados)
+    # La identidad de la prueba no trae `escenarios`, así que el mundo cae al de la casa.
+    assert all(p["escenario_visual"] in pa.escenarios_de() for p in creados)

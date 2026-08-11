@@ -60,8 +60,9 @@ def test_el_texto_viaja_literal_y_entrecomillado(sin_llm):
     # bloque se cita ya en mayúsculas (ver `pide_caja_alta`). Lo que no puede cambiar
     # es ni un carácter del texto.
     r = pa.construir(_spec(contenido={"texto_exacto_a_renderizar": _CORTO}), cfg=sin_llm)
-    assert f'render this exact text: "{_CORTO.upper()}"' in r.prompt
+    assert f'HEADLINE "{_CORTO.upper()}"' in r.prompt
     assert r.bloques == [_CORTO.upper()]
+    assert r.bloques_por_clave == {"titular": _CORTO.upper()}
 
 
 def test_declara_idioma_acentos_y_posicion(sin_llm):
@@ -94,23 +95,33 @@ def test_el_validador_exige_el_area_segura(sin_llm):
     assert any("área segura" in e for e in errores)
 
 
+def _escala_pct(prompt: str) -> int:
+    """El primer porcentaje de alto que declara la sección 5 (el cuerpo del titular)."""
+    return int(re.search(r"(\d+)-\d+% of frame height", _tipografia(prompt)).group(1))
+
+
 def test_el_rol_del_slide_cambia_la_pieza_y_la_escala(sin_llm):
     portada = pa.construir(_spec(contenido={"rol_slide": "portada"}), cfg=sin_llm).prompt
     contenido = pa.construir(_spec(contenido={"rol_slide": "contenido"}), cfg=sin_llm).prompt
     assert "cover" in portada and "content slide" in contenido
     # El esqueleto (banda alta para el titular, banda baja para la segunda línea) es
-    # COMPARTIDO —es lo que hace que el set se lea como un sistema— y lo que baja un
-    # escalón en los slides es la escala del titular.
+    # COMPARTIDO: es lo que hace que el set se lea como un sistema.
     assert "upper band" in portada and "upper band" in contenido
-    assert "13-16% of the frame height" in portada
-    assert "9-12% of the frame height" in contenido
+    # Lo que cambia es la JERARQUÍA dentro de ese esqueleto, y va en este sentido: una
+    # portada engancha con una imagen, un slide de contenido transmite y lo que
+    # transmite es el texto. Se comprueba como propiedad y no contra cifras fijas
+    # porque el defecto que blinda es exactamente ese —durante mucho tiempo el slide
+    # tuvo el titular MÁS PEQUEÑO del set— y volvería a colarse sin un solo error.
+    assert _escala_pct(contenido) > _escala_pct(portada)
+    assert "TYPE-LED" in contenido and "TYPE-LED" not in portada
 
 
 def test_el_kicker_se_ancla_a_la_banda_baja(sin_llm):
     # Debajo del titular leería como caption; anclado al pie es un lockup de póster.
     r = pa.construir(_spec(), cfg=sin_llm)
     assert len(r.bloques) == 2
-    assert "The second line locks into the bottom band" in r.prompt
+    assert "SECOND LINE" in r.prompt
+    assert "flush left in the bottom band" in r.prompt
 
 
 def test_un_texto_de_un_bloque_no_declara_segunda_linea(sin_llm):
@@ -178,7 +189,7 @@ def test_los_dos_bloques_llegan_al_prompt(sin_llm):
     r = pa.construir(_spec(), cfg=sin_llm)
     assert len(r.bloques) == 2
     assert all(f'"{b}"' in r.prompt for b in r.bloques)
-    assert "headline" in r.prompt and "second line" in r.prompt
+    assert "HEADLINE" in r.prompt and "SECOND LINE" in r.prompt
 
 
 def test_el_corte_prefiere_caer_tras_una_pausa():
@@ -297,7 +308,7 @@ def test_la_tipografia_declara_escala_color_y_un_solo_acento(sin_llm):
     # ser UN span: sin el límite el modelo pinta media frase de color.
     tipo = [l for l in pa.construir(_spec(), cfg=sin_llm).prompt.splitlines()
             if l.startswith("5.")][0]
-    assert "% of the frame height" in tipo
+    assert "% of frame height" in tipo
     assert "#EDEAE0" in tipo                     # color del titular (marca)
     assert "#C9F227" in tipo                     # acento (marca)
     assert "One word only" in tipo
@@ -706,6 +717,168 @@ def test_la_autocritica_no_duplica_el_bloqueo_de_luz(monkeypatch):
     assert _luz(r.prompt).count("LIGHT LOCK") == 1
 
 
+# ── Sistemas de texto: cuántos niveles imprime un slide ─────────────────────
+# Un slide solo sabía imprimir un titular, así que un carrusel de cuatro tenía ~56
+# palabras para contar un video entero: con ese presupuesto no se narra, solo se titula.
+
+
+def _texto_sec(prompt: str) -> str:
+    return [l for l in prompt.splitlines() if l.startswith("4.")][0]
+
+
+def test_el_sistema_dicta_que_bloques_se_imprimen(sin_llm):
+    r = pa.construir(_spec(
+        contenido={"rol_slide": "desarrollo",
+                   "bloques": {"titular": "El coste sube",
+                               "cuerpo": "Cada salto de contexto multiplica el gasto por token."}},
+    ) | {"sistema_texto": "titular_cuerpo"}, cfg=sin_llm)
+    texto = _texto_sec(r.prompt)
+    assert 'HEADLINE "EL COSTE SUBE"' in texto
+    assert 'BODY "Cada salto de contexto multiplica el gasto por token."' in texto
+    assert r.bloques_por_clave["cuerpo"].startswith("Cada salto")
+    assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
+
+
+def test_el_cuerpo_no_se_pasa_a_caja_alta(sin_llm):
+    """`pide_caja_alta` mira la familia de DISPLAY, que es la del titular.
+
+    Un párrafo de 30 palabras al 5% del alto en caja alta es ilegible, así que la caja
+    alta es de los bloques de display y el cuerpo conserva la que se escribió.
+    """
+    r = pa.construir(_spec(
+        contenido={"rol_slide": "prueba",
+                   "bloques": {"titular": "El coste sube", "cuerpo": "Cada salto lo multiplica."}},
+    ) | {"sistema_texto": "titular_cuerpo"}, cfg=sin_llm)
+    assert r.bloques_por_clave["titular"] == "EL COSTE SUBE"
+    assert r.bloques_por_clave["cuerpo"] == "Cada salto lo multiplica."
+
+
+def test_la_portada_siempre_lleva_el_lockup_de_siempre(sin_llm):
+    """La portada es la pieza que ya funcionaba y la que funda el set.
+
+    Se fuerza en `normalizar_spec`, un único sitio, para que ningún camino pueda
+    pedirle otra cosa por mucho que el job haya congelado un sistema de tres bloques.
+    """
+    r = pa.construir(_spec(contenido={
+        "rol_slide": "portada",
+        "bloques": {"etiqueta": "01", "titular": "El coste sube", "cuerpo": "Y sigue subiendo."},
+    }) | {"sistema_texto": "etiqueta_titular_cuerpo"}, cfg=sin_llm)
+    assert r.sistema_texto == "titular"
+    assert "LABEL" not in r.prompt and "BODY" not in r.prompt
+
+
+def test_un_texto_suelto_se_reparte_como_siempre(sin_llm):
+    """«Vacío = lo de siempre»: un job anterior a los sistemas se reparte como se repartía."""
+    r = pa.construir(_spec(contenido={"rol_slide": "remate"}), cfg=sin_llm)
+    assert list(r.bloques_por_clave) == ["titular", "apoyo"]
+    titular, kicker = pa.dividir_texto(_TEXTO)
+    assert r.bloques_por_clave == {"titular": titular.upper(), "apoyo": kicker.upper()}
+
+
+def test_un_texto_suelto_llena_el_cuerpo_del_sistema_que_lo_tiene(sin_llm):
+    # Lo escrito a mano en la compuerta previa tiene que caber en cualquier sistema.
+    r = pa.construir(_spec(contenido={"rol_slide": "remate"}) | {"sistema_texto": "titular_cuerpo"},
+                     cfg=sin_llm)
+    assert list(r.bloques_por_clave) == ["titular", "cuerpo"]
+
+
+def test_un_bloque_vacio_deja_su_hueco_y_no_corre_al_siguiente(sin_llm):
+    r = pa.construir(_spec(
+        contenido={"rol_slide": "prueba",
+                   "bloques": {"etiqueta": "", "titular": "El coste sube", "cuerpo": "Y sigue."}},
+    ) | {"sistema_texto": "etiqueta_titular_cuerpo"}, cfg=sin_llm)
+    assert "LABEL" not in r.prompt                       # no se emite el que falta
+    assert 'HEADLINE "EL COSTE SUBE"' in r.prompt        # …ni el siguiente ocupa su sitio
+    assert any("etiqueta" in a for a in r.avisos)
+
+
+def test_el_repertorio_congela_uno_y_es_reproducible():
+    # Mismo patrón que el arco y el mundo: se elige UNA vez por job y se congela, o dos
+    # imágenes del mismo carrusel saldrían con estructuras de texto distintas.
+    ident = {"sistemas_texto": ["titular", "etiqueta_titular_cuerpo"]}
+    assert pa.elegir_sistema("job-1", ident) == pa.elegir_sistema("job-1", ident)
+    elegidos = {pa.elegir_sistema(f"job-{i}", ident) for i in range(40)}
+    assert elegidos == {"titular", "etiqueta_titular_cuerpo"}
+
+
+def test_sin_repertorio_se_cae_de_fuente_en_fuente():
+    # identidad → brand.json → architect.json, la misma cadena que `escenarios_de`.
+    assert pa.sistemas_de({"sistemas_texto": ["titular_cuerpo"]}) == ["titular_cuerpo"]
+    assert pa.sistemas_de({}) == list(prompt_config.brand()["sistemas_texto"])
+    # Un nombre que no existe en el catálogo no puede colarse al prompt.
+    assert pa.sistemas_de({"sistemas_texto": ["inventado"]}) != ["inventado"]
+
+
+def test_los_sistemas_con_cuerpo_no_dictan_cortes_de_linea(sin_llm):
+    """La viuda que esa cláusula corrige es de titular largo a tamaño de póster.
+
+    Con cuerpo el titular baja a 6 palabras sobre 1-2 líneas, así que pagar sus ~140
+    caracteres fijos es justo lo que hay que recortar antes de tocar el techo.
+    """
+    con = pa.construir(_spec(contenido={"rol_slide": "remate"}), cfg=sin_llm).prompt
+    sin = pa.construir(_spec(contenido={"rol_slide": "remate"}) | {"sistema_texto": "titular_cuerpo"},
+                       cfg=sin_llm).prompt
+    assert "Break the headline over exactly these lines" in con
+    assert "Break the headline over exactly these lines" not in sin
+
+
+# ── El acento no puede cambiar entre piezas del mismo carrusel ───────────────
+# Defecto reportado: un carrusel con el acento de un color distinto en cada slide.
+# Tres causas independientes, y las tres tienen su test acá porque arreglar una sola
+# deja el defecto en pie.
+
+
+def test_el_bloqueo_de_paleta_es_identico_en_todas_las_piezas(sin_llm):
+    """Causa 1: la sección 6 la escribía el LLM por pieza, con la paleta redactada N veces."""
+    bloqueos = set()
+    for rol in ("portada",) + pa.ROLES_BEAT:
+        r = pa.construir(_spec(contenido={
+            "rol_slide": rol,
+            "escena_portada": "" if rol == "portada" else "a dark mixing desk",
+        }), cfg=sin_llm)
+        luz = _luz(r.prompt)
+        i = luz.find("PALETTE LOCK")
+        assert i >= 0, f"el beat {rol} se quedó sin bloqueo de paleta"
+        bloqueos.add(luz[i:i + luz[i:].find(".") + 1])
+    assert len(bloqueos) == 1
+    assert prompt_config.brand()["paleta"][2] in bloqueos.pop()   # el acento, con su hex
+
+
+def test_el_respaldo_de_luz_ya_no_redacta_la_paleta(sin_llm):
+    """La paleta se declara UNA vez. Que el respaldo la repitiera es el mismo defecto."""
+    luz = _luz(pa.construir(_spec(), cfg=sin_llm).prompt)
+    assert luz.count("#C9F227") == 1
+    assert "palette held to" not in luz
+
+
+def test_el_beat_que_calla_el_acento_lo_PROHIBE_en_vez_de_omitirlo(sin_llm):
+    """Causa 2: el silencio no es una prohibición.
+
+    Mientras la tensión se limitaba a no emitir la cláusula, el modelo pintaba igual
+    una palabra y elegía el color por su cuenta — que es justo el acento a la deriva.
+    """
+    tipo = [l for l in pa.construir(_spec(contenido={"rol_slide": "tension"}),
+                                    cfg=sin_llm).prompt.splitlines() if l.startswith("5.")][0]
+    assert "One word only" not in tipo                 # sigue sin elegirlo el modelo
+    assert "no second colour" in tipo                  # …pero ahora se dice
+    assert prompt_config.brand()["paleta"][1] in tipo  # y se nombra el color único
+
+
+def test_el_acento_marcado_a_mano_se_cita_con_su_tinta(sin_llm):
+    """Causa 3: la rama explícita pegaba el color crudo y la automática lo reducía.
+
+    Dos formulaciones del mismo color son dos colores para el modelo, así que el acento
+    salía distinto según lo hubiera elegido el usuario o el modelo.
+    """
+    r = pa.construir(_spec(
+        contenido={"texto_exacto_a_renderizar": "El factor Q **cambia** el ancho"},
+        marca={"color_acento": "acid lime (#C9F227) painted over the dark field"},
+    ), cfg=sin_llm)
+    tipo = [l for l in r.prompt.splitlines() if l.startswith("5.")][0]
+    assert "acid lime (#C9F227)" in tipo
+    assert "over the dark field" not in tipo
+
+
 # ── Continuidad del set (reemplaza al image-to-image) ────────────────────────
 
 def _composicion(prompt: str) -> str:
@@ -719,8 +892,23 @@ def test_el_slide_declara_el_set_compartido_y_el_objeto_distinto(sin_llm):
     }), cfg=sin_llm)
     comp = _composicion(r.prompt)
     assert "SET CONTINUITY" in comp
-    assert "mixing desk" in comp          # el ancla: mismo mundo
-    assert "DIFFERENT" in comp            # y la otra mitad: otro objeto y otro encuadre
+    assert "DIFFERENT" in comp            # la mitad que cambia: otro objeto y otro encuadre
+
+
+def test_la_continuidad_ya_no_cita_la_escena_de_la_portada(sin_llm):
+    """El mundo compartido lo declara el bloqueo de mundo, no una cita de la portada.
+
+    Citarla era re-derivar lo invariante del set a partir de UNA pieza —una copia, no
+    un ancla— y era además la única parte variable de la cláusula, con su propio tope
+    de palabras. Cuando el mundo se declara idéntico en todas las piezas, repetir la
+    portada dentro de cada slide solo gasta presupuesto.
+    """
+    r = pa.construir(_spec(contenido={
+        "rol_slide": "contenido",
+        "escena_portada": "A studio equalizer plugin screen on a dark mixing desk",
+    }, escenario="A workshop floor, concrete and steel racking."), cfg=sin_llm)
+    assert "mixing desk" not in r.prompt
+    assert "WORLD LOCK" in r.prompt and "concrete and steel racking" in r.prompt
 
 
 @pytest.mark.parametrize("rol", pa.ROLES_BEAT)
@@ -763,17 +951,25 @@ def test_la_portada_no_lleva_clausula_de_continuidad(sin_llm):
     assert "SET CONTINUITY" not in r.prompt
 
 
-def test_un_slide_sin_escena_de_portada_sigue_siendo_valido(sin_llm):
+def test_un_slide_sin_escena_de_portada_sigue_declarando_la_continuidad(sin_llm):
+    """La continuidad dejó de depender de que hubiera escena de portada.
+
+    Mientras la cláusula la citaba, un slide sin ella se quedaba sin continuidad Y sin
+    la instrucción de cambiar de objeto: el hueco exacto por el que el modelo repetía
+    la portada por su cuenta. Ahora lo compartido se declara siempre.
+    """
     r = pa.construir(_spec(contenido={"rol_slide": "contenido"}), cfg=sin_llm)
-    assert "SET CONTINUITY" not in r.prompt
+    assert "SET CONTINUITY" in r.prompt
     assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
 
 
-def test_la_continuidad_no_desborda_el_limite_de_caracteres(sin_llm):
-    # La escena de la portada entra recortada: es un ancla, no un segundo brief.
+def test_una_escena_de_portada_enorme_ya_no_llega_al_prompt(sin_llm):
+    # Antes entraba recortada y pagaba su recorte; ahora no entra, así que no puede
+    # desbordar el techo ni comerse el presupuesto del slide.
     largo = " ".join(["a very long cover scene clause"] * 40)
     r = pa.construir(_spec(contenido={"rol_slide": "contenido", "escena_portada": largo}),
                      cfg=sin_llm)
+    assert "very long cover scene" not in r.prompt
     assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == []
 
 
@@ -951,12 +1147,30 @@ def test_todo_beat_produce_un_prompt_valido(sin_llm, rol):
 
 
 def test_la_escala_del_titular_cambia_con_el_beat(sin_llm):
-    escalas = {rol: _tipografia(pa.construir(_spec(contenido={"rol_slide": rol}),
+    escalas = {rol: _escala_pct(pa.construir(_spec(contenido={"rol_slide": rol}),
                                              cfg=sin_llm).prompt)
-               for rol in ("tension", "desarrollo", "remate")}
-    assert "11-13%" in escalas["tension"]
-    assert "9-11%" in escalas["desarrollo"]
-    assert "12-15%" in escalas["remate"]
+               for rol in ("portada", "tension", "desarrollo", "remate")}
+    # La tensión aprieta y el remate cierra: los dos suben sobre el tamaño de lectura.
+    assert escalas["tension"] > escalas["desarrollo"]
+    assert escalas["remate"] > escalas["desarrollo"]
+    # Y TODO beat va por encima de la portada: en el slide manda el texto.
+    for rol in ("tension", "desarrollo", "remate"):
+        assert escalas[rol] > escalas["portada"], rol
+
+
+def test_el_slide_subordina_el_sujeto_al_tipo(sin_llm):
+    """La otra mitad de la inversión: la escala sola no basta.
+
+    El modelo cumple el porcentaje del titular y aun así fotografía un objeto que se
+    lleva más cuadro, así que la sección 3 tiene que decirlo. Se comprueba en el beat
+    porque es el camino real de un carrusel — la portada NO lo lleva: ahí el sujeto
+    sigue siendo el asunto de la pieza.
+    """
+    slide = pa.construir(_spec(contenido={"rol_slide": "desarrollo"}), cfg=sin_llm).prompt
+    portada = pa.construir(_spec(contenido={"rol_slide": "portada"}), cfg=sin_llm).prompt
+    assert "subordinate" in _composicion(slide)
+    assert "anchor the subject in the central band" in _composicion(portada)
+    assert "subordinate" not in _composicion(portada)
 
 
 def test_el_beat_de_tension_calla_el_acento(sin_llm):
@@ -1012,7 +1226,7 @@ def test_un_hueco_del_ritmo_cae_al_respaldo_de_ese_beat(sin_llm):
                            ritmo_carrusel=["Extreme macro of wet slate.", ""]), cfg=sin_llm)
     comp = _composicion(r.prompt)
     assert "Extreme macro" not in comp          # no se corre el plano del beat anterior
-    assert "Mid-distance still life" in comp    # el respaldo de architect.json
+    assert "Reading distance" in comp           # el respaldo de architect.json
 
 
 def test_sin_ritmo_el_slide_usa_el_de_la_casa(sin_llm):
@@ -1051,3 +1265,199 @@ def test_el_peor_caso_de_un_slide_cabe_en_el_presupuesto(sin_llm):
             ritmo_carrusel=["x" * 160] * 4,
         ), cfg=sin_llm)
         assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == [], rol
+
+
+# ── El mundo y el arco: los dos ejes que el job congela ──────────────────────
+#
+# Corrigen los dos defectos que se veían de un vistazo en las piezas generadas: que
+# todas eran un objeto sobre una mesa —con identidades distintas— y que las N imágenes
+# de un carrusel no contaban nada juntas.
+
+_MUNDO = "A workshop after hours: concrete floor, steel racking, tools left where they were used."
+
+
+def _mundo(prompt: str) -> str:
+    """Solo el WORLD LOCK: lo que la app prefija a la sección 2."""
+    sujeto = [l for l in prompt.splitlines() if l.startswith("2.")][0]
+    i = sujeto.find("WORLD LOCK")
+    return sujeto[i:] if i >= 0 else ""
+
+
+def test_el_bloqueo_de_mundo_es_identico_en_todas_las_piezas(sin_llm):
+    """La aserción central: byte a byte en la portada y en los cuatro beats.
+
+    Es lo mismo que se exige del bloqueo de luz y por lo mismo — un invariante del set
+    que se recalculara por pieza no sería un invariante—, pero acá además es lo que
+    hace que las piezas compartan LUGAR, que era lo que ninguna otra cláusula decía.
+    """
+    bloqueos = set()
+    for rol in ("portada",) + pa.ROLES_BEAT:
+        r = pa.construir(_spec(contenido={"rol_slide": rol}, escenario=_MUNDO), cfg=sin_llm)
+        bloqueos.add(_mundo(r.prompt))
+    assert len(bloqueos) == 1
+    assert bloqueos.pop().startswith("WORLD LOCK")
+
+
+def test_el_bloqueo_de_mundo_va_prefijado_y_la_poda_no_lo_toca(sin_llm):
+    # Va antes de la sección creativa a propósito: dentro de ella, `_ajustar_longitud`
+    # se lo comería justo en el caso peor, que es cuando más falta hace.
+    r = pa.construir(_spec(escenario=_MUNDO), cfg=sin_llm)
+    sujeto = [l for l in r.prompt.splitlines() if l.startswith("2.")][0]
+    assert sujeto.index("WORLD LOCK") < sujeto.index(_BASE.split()[1])
+
+
+def test_sin_escenario_el_prompt_sale_como_antes(sin_llm):
+    # «Vacío significa lo de siempre»: un job anterior a esta versión no puede cambiar.
+    assert "WORLD LOCK" not in pa.construir(_spec(), cfg=sin_llm).prompt
+
+
+@pytest.mark.parametrize("arco", pa.ARCOS)
+def test_el_enlace_del_arco_se_emite_en_los_slides(sin_llm, arco):
+    # El parametrizado va sobre `pa.ARCOS` y no sobre una lista escrita a mano: un arco
+    # nuevo sin cláusula no puede escaparse en silencio (es como se escapó la
+    # continuidad de set durante meses).
+    r = pa.construir(_spec(contenido={"rol_slide": "desarrollo"}, arco_carrusel=arco),
+                     cfg=sin_llm)
+    assert "SET ARC" in _composicion(r.prompt)
+
+
+@pytest.mark.parametrize("arco", pa.ARCOS)
+def test_la_portada_no_lleva_arco(sin_llm, arco):
+    # La portada no continúa nada: funda el set, igual que con la continuidad.
+    assert "SET ARC" not in pa.construir(_spec(arco_carrusel=arco), cfg=sin_llm).prompt
+
+
+def test_sin_arco_el_slide_conserva_la_instruccion_de_objeto_distinto(sin_llm):
+    """El respaldo que evita que «vacío = lo de siempre» signifique «peor que antes».
+
+    Antes de los arcos, «a DIFFERENT hero object» era una constante dentro de la
+    continuidad de set y era lo único que impedía que el modelo repitiera el objeto de
+    la portada. Al salir de ahí, un job sin arco se habría quedado sin ella.
+    """
+    comp = _composicion(pa.construir(_spec(contenido={"rol_slide": "prueba"}), cfg=sin_llm).prompt)
+    assert "DIFFERENT hero object" in comp
+
+
+@pytest.mark.parametrize("arco", pa.ARCOS)
+def test_ningun_arco_habla_de_distancia_ni_de_encuadre(arco):
+    """La frontera dura entre el arco y el beat: el arco dice QUÉ, el beat dice CÓMO.
+
+    Un `enlace` que nombrara una distancia o un encuadre chocaría con la cláusula de
+    plano del beat, que va pegada a él en la misma sección — y ante dos instrucciones
+    de cámara contradictorias el modelo elige una. Es la lección del paso 12, aplicada
+    a la capa nueva.
+    """
+    enlace = pa._clausula_arco({"contenido": {"rol_slide": "desarrollo"},
+                                "arco_carrusel": arco}).lower()
+    prohibidas = ("close-up", "macro", "wide shot", "mid-distance", "overhead",
+                  "framing", "shot distance", "camera height", "zoom")
+    assert [p for p in prohibidas if p in enlace] == []
+
+
+def test_la_eleccion_del_arco_y_del_mundo_es_reproducible():
+    """No puede depender de `hash()`: está aleatorizado por proceso.
+
+    Si lo fuera, un reinicio del servidor le daría otro arco al mismo job — y rehacer
+    un slide desde la revisión tiene que reconstruir el MISMO prompt.
+    """
+    assert pa.elegir_arco("job-abc") == pa.elegir_arco("job-abc")
+    assert pa.elegir_escenario("job-abc") == pa.elegir_escenario("job-abc")
+
+
+def test_el_arco_y_el_mundo_no_salen_emparejados():
+    """Con la misma semilla y cuatro de cada uno quedarían casados uno a uno.
+
+    El taller saldría siempre con transformación y el carrusel perdería la mitad de su
+    variedad sin que nada fallara.
+    """
+    pares = {(pa.elegir_arco(f"job-{i}"), pa.elegir_escenario(f"job-{i}")) for i in range(60)}
+    arcos = {a for a, _ in pares}
+    assert len(pares) > len(arcos)
+
+
+def test_la_eleccion_recorre_todos_los_arcos_y_todos_los_mundos():
+    # Si la rotación se quedara en un subconjunto, «no siempre lo mismo» sería mentira.
+    semillas = [f"job-{i}" for i in range(200)]
+    assert {pa.elegir_arco(s) for s in semillas} == set(pa.arcos_disponibles())
+    assert {pa.elegir_escenario(s) for s in semillas} == set(pa.escenarios_de())
+
+
+def test_el_repertorio_de_mundos_sale_de_la_identidad_antes_que_de_la_casa():
+    propios = ["A flooded quarry at dawn.", "A tiled municipal pool, empty."]
+    assert pa.escenarios_de({"escenarios": propios}) == propios
+    assert pa.elegir_escenario("cualquiera", {"escenarios": propios}) in propios
+
+
+def test_el_peor_caso_con_mundo_y_arco_cabe_en_el_presupuesto(sin_llm):
+    """El caso peor de verdad tras esta fase: beat + continuidad + ARCO + MUNDO + kicker.
+
+    Mismo motivo que el test hermano de más arriba: pasarse del techo no degrada la
+    imagen, la deja sin brief y sin bloque de texto.
+    """
+    for arco in pa.ARCOS:
+        for rol in pa.ROLES_BEAT:
+            r = pa.construir(_spec(
+                contenido={"rol_slide": rol,
+                           "texto_exacto_a_renderizar": "China entra en la liga alta de la IA global"},
+                marca={"tono_visual": "y" * 240},
+                ritmo_carrusel=["x" * 160] * 4,
+                arco_carrusel=arco,
+                escenario=" ".join(["weather-beaten"] * 22),
+            ), cfg=sin_llm)
+            assert pa.validar(r.prompt, bloques=r.bloques, aspect_ratio="4:5") == [], (arco, rol)
+
+
+# ── La guardia contra el carrusel de mesas ───────────────────────────────────
+
+# El defecto reportado: todas las piezas eran «un objeto sobre una mesa», con
+# identidades visuales distintas. No lo elegía el LLM — estaba escrito en la capa dura,
+# en seis sitios a la vez, y por eso ninguna identidad podía cambiarlo. Estos textos son
+# los que la app emite SIEMPRE, así que basta con que uno vuelva a nombrar una mesa para
+# que el default vuelva. El bodegón sigue siendo legítimo: vive en los repertorios de
+# mundos, que es donde el usuario puede elegirlo o no.
+_MESAS = ("table", "tabletop", "desk", "worktop", "countertop")
+
+
+def _nombra_mesa(texto: str) -> list[str]:
+    bajo = str(texto or "").lower()
+    return [m for m in _MESAS if re.search(rf"\b{m}\b", bajo)]
+
+
+def test_ningun_respaldo_determinista_nombra_una_mesa():
+    """Los planos por beat y los respaldos creativos: lo que sale cuando no hay nada más.
+
+    Es el camino que nadie mira —el degradado— y por eso es donde el default sobrevive.
+    """
+    arch = prompt_config.architect()
+    sospechosos: dict[str, str] = {}
+    for beat, cfg_rol in (arch.get("roles") or {}).items():
+        for clave in ("ritmo", "composicion"):
+            sospechosos[f"roles.{beat}.{clave}"] = cfg_rol.get(clave, "")
+    for clave, valor in (arch.get("respaldos") or {}).items():
+        sospechosos[f"respaldos.{clave}"] = valor if isinstance(valor, str) else ""
+    for clave, valor in (pa._RITMO_FALLBACK | pa._COMPOSICION_BEAT_FALLBACK).items():
+        sospechosos[f"código.{clave}"] = valor
+    malos = {k: _nombra_mesa(v) for k, v in sospechosos.items() if _nombra_mesa(v)}
+    assert malos == {}, f"vuelve el default de la mesa en: {malos}"
+
+
+def test_el_ritmo_de_la_casa_no_nombra_una_mesa():
+    # `ritmo_carrusel` es distancia y altura de cámara; el LUGAR es de `escenarios`.
+    # Mientras decía «still life on a bare table» nombraba el mundo sin permiso, y lo
+    # nombraba igual para todos los posts de la casa.
+    malos = [r for r in (prompt_config.brand().get("ritmo_carrusel") or []) if _nombra_mesa(r)]
+    assert malos == []
+
+
+def test_el_repertorio_de_mundos_no_es_todo_mesas():
+    """Ni el de la casa ni el compartido. Que UNO lo sea es la decisión correcta.
+
+    El usuario lo dijo así: una imagen de un objeto en una mesa no está mal — lo que
+    está mal es que sea siempre el formato. Con un mundo de mesa entre varios, sale a
+    veces; con todos, vuelve el defecto entero.
+    """
+    for nombre, repertorio in (("brand.json", prompt_config.brand().get("escenarios") or []),
+                               ("architect.json", pa.escenarios_de())):
+        assert len(repertorio) >= 2, nombre
+        con_mesa = [e for e in repertorio if _nombra_mesa(e)]
+        assert len(con_mesa) < len(repertorio), f"{nombre}: todos los mundos son una mesa"

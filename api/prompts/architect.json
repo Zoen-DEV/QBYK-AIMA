@@ -21,52 +21,193 @@
   "_comment_piezas": "La pieza se declara como PÓSTER DISEÑADO, no como fotografía. Pedir 'editorial photography' con un hueco libre es exactamente lo que producía una foto de stock con un caption encima: el modelo compone una foto y mete el texto donde le queda sitio. Declarando composite (base fotográfica + capa tipográfica) el modelo trata el tipo como parte del diseño. El 'full bleed' entró aquí al ver en producción que unos slides salían a sangre y otros con una banda de color liso arriba y abajo (un passe-partout): la v2 decía 'art-directed as print', y 'print' + 'banda plana' es la receta de una lámina montada. Es la sección 1, la más autoritativa del brief, así que el sangrado se declara acá y se repite en composición y negativos.",
   "piezas": {
     "portada": "Designed poster, social carousel cover, {aspect}: full-bleed photographic base with a typographic layer locked over it — not a photo with a caption. The photograph bleeds past all four edges: there is no border, matte, letterbox or panel of flat colour anywhere in the canvas.",
-    "contenido": "Designed poster, content slide of the same carousel, {aspect}: same full-bleed treatment, grid and type margins as the cover, one type tier smaller. The photograph bleeds past all four edges: there is no border, matte, letterbox or panel of flat colour anywhere in the canvas.",
+    "contenido": "Designed poster, content slide of the same carousel, {aspect}: same full-bleed treatment and type margins as the cover, but TYPE-LED, not image-led. The photograph bleeds past all four edges: there is no border, matte, letterbox or panel of flat colour anywhere in the canvas.",
     "refuerzo_sangrado": "THE PREVIOUS RENDER CAME BACK WITH A FLAT COLOUR BAND AT THE EDGE. The photograph must reach every one of the four canvas edges: no letterbox, no border, no matte, no strip of flat colour anywhere."
   },
 
   "_comment_palabras_layout": "Vocabulario de LAYOUT que no puede entrar en la sección 5 desde los campos de la identidad. La sección 5 pega `tipografia`, `tipografia_secundaria`, `color_texto` y `color_acento` VERBATIM, así que una identidad con «headline band» o «over the dark field» está escribiendo layout sin permiso — y eso es literalmente lo que fabricó el letterbox del carrusel auditado: cuando la escena no era oscura, el modelo pintaba el «dark field» como un rectángulo. `prompt_architect.sin_layout` elimina el SINTAGMA (la cláusula entre comas), no la cadena entera, y si el filtro dejara el campo vacío devuelve el original: quedarse sin familia tipográfica es peor que arrastrar la palabra. Los colores se reducen aparte a su TINTA (`prompt_architect.tinta`): nombre + hex y nada más. El fondo lo declaran las secciones 1, 3 y 6.",
   "palabras_layout_prohibidas": ["band", "panel", "block", "frame", "matte", "letterbox", "bar", "box", "backdrop", "background", "field"],
 
-  "_comment_zonas": "Esqueleto de póster COMPARTIDO por portada y slides — es lo que hace que el set se lea como un sistema: titular en la banda alta, segunda línea en la banda baja, sujeto en la banda central. Antes la portada usaba el tercio inferior y los slides el superior, y además el margen se pedía como 'safe margin' sin cuantificar: de ahí los titulares cortados por el borde. Los porcentajes son la corrección de ese defecto y no deben quitarse.",
+  "_comment_zonas": "Esqueleto de póster COMPARTIDO por portada y slides — es lo que hace que el set se lea como un sistema: titular en la banda alta, segunda línea en la banda baja, sujeto entre las dos. Antes la portada usaba el tercio inferior y los slides el superior, y además el margen se pedía como 'safe margin' sin cuantificar: de ahí los titulares cortados por el borde. Los porcentajes son la corrección de ese defecto y no deben quitarse. Lo que SÍ cambia entre portada y slide es cuánto cuadro se lleva el tipo, y ahí está la inversión de jerarquía: en la portada manda la imagen (banda alta hasta el 42%, el sujeto es el asunto de la pieza) y en el slide manda el TEXTO (banda alta hasta el 68%, el sujeto baja a lo que quede debajo). El motivo es que un slide de contenido no vende una idea con una foto: la escribe. La cifra del slide no es libre — la fija la escala del titular: 3 líneas × 20% de alto + el margen del 8% = 68%, así que subir una sube la otra o el titular se sale de su banda.",
   "zonas_texto": {
     "portada": {
       "zona": "the upper band, between the 8% top margin and the 42% height line",
       "zona_kicker": "the bottom band, just above the 8% bottom margin",
+      "zona_etiqueta": "the top margin line, above the headline",
+      "zona_cuerpo": "directly under the headline, in the same band",
       "alineacion": "flush left",
       "ancho": "up to 84% of the width",
       "margen": "the 8% safe margin on all four sides"
     },
     "contenido": {
-      "zona": "the upper band, between the 8% top margin and the 38% height line",
+      "zona": "the upper band, between the 8% top margin and the 68% height line",
       "zona_kicker": "the bottom band, just above the 8% bottom margin",
+      "zona_etiqueta": "the top margin line, above the headline",
+      "zona_cuerpo": "directly under the headline, in the same band",
       "alineacion": "flush left",
       "ancho": "up to 84% of the width",
       "margen": "the 8% safe margin on all four sides"
     }
   },
 
-  "_comment_roles": "ESCALERA DE BEATS DEL CARRUSEL. Antes solo existían dos roles —`portada` y `contenido`— así que los 2-5 slides de info compartían pieza, banda, escala y composición: cambiaba el objeto y nada más, y el carrusel salía como versiones de la misma imagen. La única variación que había (`_SLIDE_FRAMINGS` en job_runner) viajaba en el `prompt_base`, que el arquitecto solo ve como 'BASE PROMPT (weak, to rewrite)': con el LLM arriba no llegaba al prompt final casi nunca, mientras que la cláusula de lockup —que pide siempre el mismo cuadro— sí llega siempre. La variación estaba en la capa blanda y la uniformidad en la dura. Ahora cada posición tiene un BEAT con función narrativa, y lo que cambia entre beats se declara donde el LLM no lo puede pisar: la escala del titular (sección 5), la presencia del acento (sección 5) y el plano (sección 3, junto al lockup y a la continuidad de set). Lo que NO cambia entre beats es el esqueleto —banda alta para el titular, banda baja para el apoyo, sujeto en la central—: unificarlo fue una corrección deliberada y es lo que hace que el set se lea como un sistema. `funcion` va al redactor (post_writer) para que el TEXTO del slide i y su IMAGEN se encarguen desde el mismo beat; `composicion` y `ritmo` van al prompt de imagen. `ritmo` es el respaldo: si la identidad visual activa trae `ritmo_carrusel`, su entrada para ese beat lo reemplaza — el beat es estructura (universal) y el ritmo es marca (cómo ESTA marca fotografía ese beat).",
+  "_comment_sistemas": "SISTEMAS DE TEXTO: cuántos niveles de texto lleva un slide y dónde va cada uno.\n\nEl defecto que corrigen se veía de un vistazo: un slide solo sabía imprimir UN titular de ~14 palabras, así que un carrusel de cuatro slides tenía ~56 palabras para contar un video entero. Con ese presupuesto no se narra nada — solo se titula—, y el resultado era cuatro titulares sueltos sobre el tema en vez de un recorrido por lo que la fuente dice. No había dónde poner la explicación aunque el redactor la escribiera.\n\nMISMO REPARTO QUE `ritmo_carrusel`, que es la frontera que este proyecto ya validó: QUÉ bloques existen y DÓNDE van es layout y vive acá, igual para todas las marcas; CUÁL de los sistemas usa esta marca es identidad y vive en `sistemas_texto` de la identidad visual (repertorio de 1-3; el job congela uno en `params.sistema_texto`, como el arco y el mundo). Sin repertorio manda `sistemas_respaldo`, igual que `escenarios_respaldo`.\n\nSOLO EN LOS SLIDES. La portada mantiene su lockup de siempre (titular + apoyo al pie) porque es la pieza que ya funcionaba y porque es la que funda el set; `normalizar_spec` fuerza el sistema `titular` cuando el rol es portada, y lo hace en un solo sitio para que ningún camino pueda pedir otra cosa. La imagen única y la historia son portada a estos efectos.\n\nLA ARITMÉTICA NO ES LIBRE, igual que en `zonas_texto`: todo lo que va en la banda alta tiene que caber por debajo del 68%, contando el margen del 8%.\n  - `titular`: 3 líneas x 20% + 8% = 68%. Es la cuenta de siempre.\n  - `titular_cuerpo`: 8% + (2 x 14%) + 3% de aire + (4 líneas de cuerpo a 5.5% con su interlínea, ~27%) = ~66%. Por eso el titular BAJA a 11-14% cuando hay cuerpo: mantenerlo al 20% dejaba al cuerpo sin banda.\n  - `etiqueta_titular_cuerpo`: la etiqueta y el titular ocupan ~44% y el cuerpo se va a la banda BAJA, encima del margen del 8%. Que el cuerpo cambie de banda entre los dos sistemas es lo que los hace distintos de verdad y no dos variantes del mismo; lo que NO cambia es el esqueleto —algo arriba, algo al pie—, que es lo que sigue haciendo que el set se lea como un sistema.\n\n`palabras` es el presupuesto que se le pide al redactor (`post_writer`) y contra el que avisa el lint: son las palabras que caben a esa escala, no una preferencia de estilo. `acento` nombra el ÚNICO bloque que puede llevar el color de acento — repartido entre tres niveles deja de ser un acento y es confeti.\n\n`caja_alta: false` en los cuerpos, y no es un detalle: `pide_caja_alta` mira la familia de DISPLAY de la identidad, que es la del titular. Un párrafo de 30 palabras al 5% del alto compuesto en caja alta es ilegible, así que la caja alta se aplica a los bloques de display (etiqueta, titular, apoyo) y el cuerpo conserva la que se escribió. Lo tienen que respetar los dos renderizadores —el prompt y la plantilla de Pillow— o la pieza diría una cosa según por dónde saliera.",
+  "sistemas_respaldo": ["titular", "titular_cuerpo", "etiqueta_titular_cuerpo"],
+  "sistemas_texto": {
+    "titular": {
+      "nombre": "Titular",
+      "descripcion": "una sola idea por slide, a toda página",
+      "acento": "titular",
+      "encargo": "ONE printed idea per slide: a single statement that fills the frame on its own",
+      "bloques": [
+        {
+          "clave": "titular",
+          "zona": "zona",
+          "palabras": [3, 8],
+          "cita": "HEADLINE \"{texto}\" — the largest element in the frame, {alineacion} in {zona}",
+          "escala": {
+            "portada": "Headline 13-16% of frame height per line, over 2-3 lines.",
+            "contenido": "Headline 15-18% of frame height per line, over 2-3 lines.",
+            "tension": "Headline 17-20% of frame height per line, over 2-3 lines.",
+            "desarrollo": "Headline 15-18% of frame height per line, over 2-3 lines.",
+            "prueba": "Headline 15-18% of frame height per line, over 2-3 lines.",
+            "remate": "Headline 17-20% of frame height per line, over 2-3 lines."
+          }
+        },
+        {
+          "clave": "apoyo",
+          "zona": "zona_kicker",
+          "palabras": [0, 8],
+          "escala_rel": 0.45,
+          "cita": "SECOND LINE \"{texto}\" at ~40% of the headline size, {alineacion} in {zona}",
+          "escala": "Second line ~40% of the headline size, one line."
+        }
+      ]
+    },
+    "titular_cuerpo": {
+      "nombre": "Titular y cuerpo",
+      "descripcion": "la afirmación y el párrafo que la explica, los dos arriba",
+      "acento": "titular",
+      "cortes": false,
+      "encargo": "a claim and the explanation that carries it: the headline states it, the body says what the source actually explains",
+      "bloques": [
+        {
+          "clave": "titular",
+          "zona": "zona",
+          "palabras": [3, 6],
+          "escala_rel": 0.82,
+          "max_lineas": 2,
+          "cita": "HEADLINE \"{texto}\" — the largest element in the frame, {alineacion} in {zona}",
+          "escala": "Headline 11-14% of frame height per line, over 1-2 lines."
+        },
+        {
+          "clave": "cuerpo",
+          "zona": "zona_cuerpo",
+          "caja_alta": false,
+          "palabras": [18, 30],
+          "escala_rel": 0.35,
+          "max_lineas": 4,
+          "cita": "BODY \"{texto}\" at ~35% of the headline size, set over 3-4 lines, {alineacion} in {zona}",
+          "escala": "Body 4.5-5.5% of frame height per line, over 3-4 lines, generous leading, regular weight."
+        }
+      ]
+    },
+    "etiqueta_titular_cuerpo": {
+      "nombre": "Etiqueta, titular y cuerpo",
+      "descripcion": "ficha: rótulo arriba, titular, y el cuerpo anclado al pie",
+      "acento": "titular",
+      "cortes": false,
+      "encargo": "a numbered card: a short label names the step, the headline states it and the body at the foot explains it",
+      "bloques": [
+        {
+          "clave": "etiqueta",
+          "zona": "zona_etiqueta",
+          "palabras": [1, 3],
+          "escala_rel": 0.22,
+          "max_lineas": 1,
+          "cita": "LABEL \"{texto}\" at ~22% of the headline size, letterspaced, {alineacion} in {zona}",
+          "escala": "Label 3-4% of frame height, one line, widely letterspaced."
+        },
+        {
+          "clave": "titular",
+          "zona": "zona",
+          "palabras": [3, 6],
+          "escala_rel": 0.87,
+          "max_lineas": 2,
+          "cita": "HEADLINE \"{texto}\" — the largest element in the frame, {alineacion} below the label",
+          "escala": "Headline 12-15% of frame height per line, over 1-2 lines."
+        },
+        {
+          "clave": "cuerpo",
+          "zona": "zona_kicker",
+          "caja_alta": false,
+          "palabras": [12, 24],
+          "escala_rel": 0.32,
+          "max_lineas": 3,
+          "cita": "BODY \"{texto}\" at ~32% of the headline size, set over 2-3 lines, {alineacion} in {zona}",
+          "escala": "Body 4-5% of frame height per line, over 2-3 lines, regular weight."
+        }
+      ]
+    }
+  },
+
+  "_comment_escenarios": "EL MUNDO DE LA PIEZA. Durante meses todas las imágenes salieron siendo «un objeto sobre una mesa», y con identidades distintas: no lo elegía el LLM, estaba escrito en la capa dura en seis sitios a la vez (este archivo pedía «what it rests on» y «still life on a bare surface», brand.json decía «on a bare table», post_writer ponía de único ejemplo «a worn oak desk» y el rubric premiaba «specific objects»). La identidad no podía cambiarlo: `ritmo_carrusel` solo admite distancia y altura de cámara, así que la marca elegía cómo se fotografía pero nunca QUÉ mundo se fotografía. Este repertorio es el respaldo compartido, y por eso importa que NO sea todo tabletop: es lo que genera la casa cuando la identidad no trae `escenarios`. El bodegón de mesa sigue estando —es una pieza legítima— pero como uno de seis y no como el default invisible. El job elige UNO al crearse y lo congela en `params.escenario_visual`; se emite con `mundo_bloqueado`.",
+  "escenarios_respaldo": [
+    "A working workshop: poured concrete floor, steel shelving, tools and coiled cable left where they were last used.",
+    "A lived-in interior: painted plaster walls, a deep window reveal, worn board floor and the furniture the room already had.",
+    "The edge of a built place, outdoors: wet asphalt, brick, painted metal railings, the weather sitting on every surface.",
+    "A storage room stacked to the ceiling: crates, rolls and spools on industrial racking, narrow aisles between them.",
+    "Close to the ground of a landscape: soil, stone, standing water and growth, with man-made things half sunk into it.",
+    "A bare studio table under a single lamp: one clean surface, nothing on it but the subject and its shadow."
+  ],
+
+  "_comment_mundo": "BLOQUEO DE MUNDO, hermano del bloqueo de luz y por el mismo motivo: lo que es invariante dentro de un job no puede decidirse una vez por imagen. La luz ya se resolvió así (`luz_bloqueada`); el lugar tenía el mismo problema con otro traje —cada pieza inventaba su propio sitio y la continuidad se intentaba citando la escena de la portada, que es una copia y no un ancla—. Se prefija a la sección 2 (SUJETO), byte a byte idéntico en la portada y en todos los slides, y por ir prefijado la poda de `_ajustar_longitud` no lo toca. La última frase es el arreglo del defecto reportado: sin ella, «un objeto y su sombra» vuelve a ser una mesa por defecto.",
+  "mundo_bloqueado": "WORLD LOCK — the same location in every piece of this set: {escenario} The subject belongs there and is held by it.",
+
+  "_comment_arcos": "EL ARCO DEL CARRUSEL: qué encadena las N imágenes entre sí. Los beats ya daban a cada slide una FUNCIÓN narrativa, pero solo para el texto y el plano; las imágenes seguían gobernadas por `continuidad_set`, que pedía «mismo cuarto, objeto protagonista DISTINTO». Eso es una regla de CATÁLOGO, no de relato, y produce exactamente lo que se auditó: cinco props sin relación sobre la misma madera. El camino de video del mismo proyecto ya lo hacía bien («keep a recurring anchor… chain the beats»), el de imagen se escribió con la regla contraria.\n\nREGLA QUE NO SE PUEDE ROMPER: el arco elige QUÉ hay delante de la cámara; el beat elige CÓMO se fotografía. Un `enlace` que hable de distancia, altura o encuadre colisiona con la cláusula de plano del beat —que va pegada a ella en la sección 3— y ante dos instrucciones de cámara contradictorias el modelo elige una. Es la misma lección del paso 12.\n\nNO HAY ARCO DE PROGRESIÓN TEMPORAL a propósito: «el mismo sitio a otra hora» exige cambiar la luz entre piezas y eso contradice el LIGHT LOCK, que es byte a byte idéntico. Lo que se quería de él lo cubre `transformacion`, que cambia el ESTADO y no la luz.\n\n`sujeto` dice si el objeto protagonista vuelve, y lo leen dos sitios más: el redactor (para escribir las escenas de los slides encadenadas o distintas) y el lint (que no puede avisar de «escena repetida» cuando la repetición es justo lo que el arco pide).",
+  "arcos": {
+    "transformacion": {
+      "sujeto": "recurrente",
+      "funcion": "the same hero object comes back in every slide with its STATE moved on — whole to broken, full to empty, sealed to opened, one to many. The object recurs; its condition never does",
+      "enlace": "SET ARC — TRANSFORMATION: the cover's own hero object at a later state; same thing, different condition, and the change is visible."
+    },
+    "cadena": {
+      "sujeto": "encadenado",
+      "funcion": "each slide opens on something the previous one left behind — what it produced, what it became, what it fed into — and names that carried-over element explicitly",
+      "enlace": "SET ARC — CHAIN: the hero object is what the previous piece left behind — its product, its residue, what it fed into."
+    },
+    "recorrido": {
+      "sujeto": "distinto",
+      "funcion": "one place gone through part by part — the way in, what is worked on, what is stored, what is left at the far end — each slide a different corner of the SAME location",
+      "enlace": "SET ARC — WALKTHROUGH: a different corner of the same location, with its own hero object; the place is continuous, the part of it is new."
+    },
+    "escala": {
+      "sujeto": "distinto",
+      "funcion": "pieces of one system: the loose part, the assembly it belongs to, the fitting it feeds, the space it is installed in — every slide a different rung of the same thing",
+      "enlace": "SET ARC — SYSTEM: a different rung of the cover's own system — the loose part, the assembly, the installation; never the same thing twice."
+    }
+  },
+
+  "_comment_roles": "ESCALERA DE BEATS DEL CARRUSEL. Antes solo existían dos roles —`portada` y `contenido`— así que los 2-5 slides de info compartían pieza, banda, escala y composición: cambiaba el objeto y nada más, y el carrusel salía como versiones de la misma imagen. La única variación que había (`_SLIDE_FRAMINGS` en job_runner) viajaba en el `prompt_base`, que el arquitecto solo ve como 'BASE PROMPT (weak, to rewrite)': con el LLM arriba no llegaba al prompt final casi nunca, mientras que la cláusula de lockup —que pide siempre el mismo cuadro— sí llega siempre. La variación estaba en la capa blanda y la uniformidad en la dura. Ahora cada posición tiene un BEAT con función narrativa, y lo que cambia entre beats se declara donde el LLM no lo puede pisar: la escala del titular (sección 5), la presencia del acento (sección 5) y el plano (sección 3, junto al lockup y a la continuidad de set). Lo que NO cambia entre beats es el esqueleto —banda alta para el titular, banda baja para el apoyo—: unificarlo fue una corrección deliberada y es lo que hace que el set se lea como un sistema. Los cuatro planos se reescribieron al invertirse la jerarquía del slide: el sujeto conserva su ESCALERA DE DISTANCIAS (macro → media → cenital → wide), que es lo único que impide que los cuatro slides se parezcan, pero deja de ocupar la banda central y pasa a la parte baja del cuadro, debajo del titular. Las dos mitades tenían que moverse juntas: si el plano siguiera pidiendo el objeto llenando la banda central, contradiría a la cláusula de lockup que la app pega justo al lado, y ante dos instrucciones de cámara contradictorias en la misma sección el modelo elige una. `funcion` va al redactor (post_writer) para que el TEXTO del slide i y su IMAGEN se encarguen desde el mismo beat; `composicion` y `ritmo` van al prompt de imagen. `ritmo` es el respaldo: si la identidad visual activa trae `ritmo_carrusel`, su entrada para ese beat lo reemplaza — el beat es estructura (universal) y el ritmo es marca (cómo ESTA marca fotografía ese beat).",
   "roles": {
     "tension": {
       "funcion": "the tension — the problem, symptom or cost the reader recognises; it makes the promise of the cover urgent",
-      "composicion": "SHOT — TENSION, the closest framing of the set: the subject fills the central band edge to edge, its own falloff and defocus forming the clear zones.",
-      "ritmo": "Tight macro of a single worn surface or texture, hard raking light across it."
+      "composicion": "SHOT — TENSION, the closest framing of the set: the subject crops hard against the bottom edge, its own falloff and defocus forming the clear zone above.",
+      "ritmo": "The tightest shot of the set: one texture fills the lower frame, whatever holds it cropped away by the edges."
     },
     "desarrollo": {
       "funcion": "the development — the explanation, mechanism or step that moves the idea one notch forward",
-      "composicion": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole in the central band, the set legible behind it, bare surface forming the clear zones.",
-      "ritmo": "Mid-distance still life on a bare surface, shallow focus, camera at object height."
+      "composicion": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole along the lower edge, the quietest plane of the location forming the clear zone above.",
+      "ritmo": "Reading distance, camera at the subject's own height, the thing whole and whatever holds it visible."
     },
     "prueba": {
       "funcion": "the evidence — the concrete figure, example or result from the source that proves the development",
-      "composicion": "SHOT — EVIDENCE, shot square-on: one object alone, centred on a bare field that forms the clear zones, nothing else competing in the frame.",
-      "ritmo": "Flat overhead of one object centred on an empty field, single hard key light."
+      "composicion": "SHOT — EVIDENCE, shot square-on: one thing alone in the lower band, the rest of the frame an empty clear zone.",
+      "ritmo": "Square to the subject, one thing isolated against the plainest part of the location, nothing else competing."
     },
     "remate": {
       "funcion": "the payoff — the line the reader would screenshot; still an informative idea from the source, never a sign-off or a summary",
-      "composicion": "SHOT — PAYOFF, the widest and deepest frame of the set: the subject reads small in the central band, quiet space opening above and below it.",
-      "ritmo": "Wide low three-quarter view with strong foreground depth, the subject small in a large space."
+      "composicion": "SHOT — PAYOFF, the widest and deepest frame of the set: the subject reads small at the foot of a large quiet space opening above it.",
+      "ritmo": "The widest and deepest shot of the set, the subject small inside the space it belongs to."
     }
   },
 
@@ -87,11 +228,10 @@
   "_comment_contexto_cultural": "El idioma detectado llegaba SOLO a la sección de texto (para las tildes), nunca al brief del sujeto, así que el atrezzo salía con el default del modelo: estadounidense. En un post sobre España aparecieron billetes de dólar. Va al briefing del LLM como línea dura porque compite contra ese default, y se acompaña de `negativos_no_ingles` en la sección 9 —el LLM escribe el sujeto, pero quien renderiza es otro modelo—. Limitación conocida: el pipeline detecta IDIOMA, no país; `es` no distingue España de LatAm. Elimina el default estadounidense, que es el fallo observado, y no pretende más.",
   "contexto_cultural": "CULTURAL CONTEXT: the source is in {idioma} — props, currency, plugs, packaging and signage must match that context; never default to US props or US currency.",
 
+  "_comment_texto": "Sección 4. Pasó de dos bloques fijos (titular + kicker, con su plantilla cada uno) a una LISTA de bloques que dicta el sistema de texto: la apertura, una cita por bloque —el string literal con su tamaño relativo y su banda— y un detalle COMPARTIDO. Que el detalle se emita una sola vez y no por bloque es lo que hace asequible el tercer nivel: el idioma, las tildes, la copia carácter a carácter y el área segura valen para todos los strings, y repetirlos por bloque triplicaba la parte cara de la sección sin decir nada nuevo. Por el mismo motivo la posición y el tamaño viajan DENTRO de la cita de cada bloque y no en el detalle: son lo único que de verdad cambia entre uno y otro. «These are the ONLY words in the image» se movió a la apertura, donde cubre la lista entera.",
   "texto": {
-    "instruccion": "render this exact text: \"{titular}\"",
-    "instruccion_con_kicker": "render this exact headline: \"{titular}\", plus this exact second line at ~40% of its size: \"{kicker}\"",
-    "detalle": "Language: {idioma}; {acentos}. Copy it character by character — never translate, abbreviate or hyphenate, and set every glyph in the case supplied: never change the case of a word. Largest element in the frame, {alineacion} in the reserved clear zone: {zona}, {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside {margen} — nothing touches or is cut by a frame edge. These are the ONLY words in the image.",
-    "detalle_kicker": "The second line locks into {zona_kicker}, same alignment and safe area.",
+    "apertura": "render these exact strings, and no other words anywhere in the image —",
+    "detalle": "Language: {idioma}; {acentos}. Copy each string character by character — never translate, abbreviate or hyphenate, and set every glyph in the case supplied: never change the case of a word. Each block spans {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside {margen} — nothing touches or is cut by a frame edge.",
     "_comment_cortes": "Cortes de línea dictados (flag IMAGE_LINE_BREAKS). El modelo rompe el titular por donde le cabe, no por donde la frase lo pide, y de ahí salen las viudas: en la portada auditada quedó «EN» solo en la tercera línea, al 14% del alto del cuadro — a ese cuerpo, una palabra suelta ocupa un tercio de la pieza. `prompt_architect.lineas_titular` decide el reparto una vez (equilibrado por longitud, prefiriendo cortar detrás de una pausa y sin viudas) y la sección 4 lo dicta. La segunda frase no es opcional: sin ella el modelo imprime «line 1» dentro de la imagen. Reemplazó a «never re-wrap», que pedía no re-partir sin decir nunca cuál era la partición buena.",
     "cortes": "Break the headline over exactly these lines: {lineas}. These line labels are instructions, never printed.",
     "detalle_acentos": "keep every accent and diacritic exactly as written",
@@ -99,41 +239,43 @@
     "refuerzo": "TEXT ACCURACY AND FRAMING ARE THE PRIMARY REQUIREMENT of this render: spell the quoted string character by character, keep every accent, fit it whole inside the safe area with nothing cropped, and print no other glyph anywhere."
   },
 
-  "_comment_tipografia": "Sección 5, determinista. `escala` es lo que separa una pieza de diseñador de un caption: sin altura declarada el modelo pone cuerpo de pie de foto. `acento` es la plancha/palabra en color de la referencia — un solo span, si no se convierte en confeti. `acento_explicito` es el que marcó el usuario con **dobles asteriscos** en la revisión previa: cuando existe manda sobre la elección automática, y los asteriscos NUNCA llegan al render (se quitan al normalizar la spec). La escala por BEAT es una de las dos cosas que distinguen un slide de otro dentro del carrusel (la otra es el plano): la tensión aprieta y sube el cuerpo, el desarrollo es el tamaño de lectura, el remate vuelve a subir para cerrar. `acento_omitido` es la otra mitad del ritmo: un acento que aparece en TODOS los slides deja de ser un acento. Se calla en la tensión, así que el color cae en la portada, en la prueba y en el remate.",
+  "_comment_tipografia": "Sección 5, determinista. `escala` es lo que separa una pieza de diseñador de un caption: sin altura declarada el modelo pone cuerpo de pie de foto. `acento` es la plancha/palabra en color de la referencia — un solo span, si no se convierte en confeti. `acento_explicito` es el que marcó el usuario con **dobles asteriscos** en la revisión previa: cuando existe manda sobre la elección automática, y los asteriscos NUNCA llegan al render (se quitan al normalizar la spec). Los dos citan el color por su TINTA (nombre + hex) y por la misma razón: dos formulaciones distintas del mismo color son dos colores para el modelo. La escala por BEAT es una de las dos cosas que distinguen un slide de otro dentro del carrusel (la otra es el plano): la tensión aprieta y sube el cuerpo, el desarrollo es el tamaño de lectura, el remate vuelve a subir para cerrar. `acento_omitido` es la otra mitad del ritmo: un acento que aparece en TODOS los slides deja de ser un acento. Se calla en la tensión, así que el color cae en la portada, en la prueba y en el remate. OJO CON QUÉ SIGNIFICA CALLARLO: mientras el beat omitido simplemente no emitía cláusula, el modelo pintaba igual una palabra y elegía el color por su cuenta — el silencio no es una prohibición—, y ese era uno de los tres motivos por los que un carrusel salía con un acento distinto en cada slide. Ahora ese beat emite `acento_ninguno`, que lo prohíbe explícitamente y nombra el color único. Los otros dos motivos se arreglan fuera de esta sección: la tinta del acento explícito (arriba) y el `paleta_bloqueada` de la sección 6. INVERSIÓN DE JERARQUÍA: hasta acá los slides iban por DEBAJO de la portada (9-12% contra 13-16%) y la sección 1 pedía además 'one type tier smaller' — el slide era la pieza con el titular más pequeño del set. Es al revés de lo que un slide de contenido tiene que hacer: la portada vende con una imagen y engancha, pero el slide TRANSMITE, y lo que transmite es el texto. Ahora el slide va por encima (15-20%) y la sección 1 declara que el tipo manda. La frase 'largest element in the frame' se repite acá aunque la sección 1 ya lo diga: la 1 describe la PIEZA y la 5 fija el CUERPO, y sin la coletilla el modelo cumplía el porcentaje y aun así fotografiaba un objeto que llenaba más cuadro que el titular. Los números no son libres: 3 líneas × 20% + el margen del 8% = el 68% de `zonas_texto.contenido`, y las tres cifras se mueven juntas.",
   "tipografia": {
     "plantilla": "{display}. {escala} Set solid, flush left, optical alignment, no hyphenation; {color}. {acento}",
-    "escala": {
-      "portada": "Each headline line stands 13-16% of the frame height, broken over 2-3 lines.",
-      "contenido": "Each headline line stands 9-12% of the frame height, broken over 2-3 lines.",
-      "tension": "Each headline line stands 11-13% of the frame height, broken over 2-3 lines.",
-      "desarrollo": "Each headline line stands 9-11% of the frame height, broken over 2-3 lines.",
-      "prueba": "Each headline line stands 9-11% of the frame height, broken over 2-3 lines.",
-      "remate": "Each headline line stands 12-15% of the frame height, broken over 2-3 lines."
-    },
+    "_comment_escala": "La escala se mudó a `sistemas_texto`: cada bloque declara la suya y la sección 5 las concatena en el orden del sistema. Vivía acá cuando la pieza solo tenía titular y apoyo; con un cuerpo de texto en juego la escala del titular DEPENDE de qué más hay en la banda (11-14% con cuerpo contra 17-20% sin él), así que un solo número por rol ya no podía ser correcto para los tres sistemas. La variación por BEAT sobrevive donde tiene sitio, que es el sistema `titular`.",
     "acento_omitido": ["tension"],
     "acento": "One word only — the most load-bearing of the string — in {color_acento}; the rest in the headline color.",
     "acento_explicito": "Exactly this fragment — \"{acento}\" — in {color_acento}; every other word stays in the headline color.",
-    "secundaria": "Second line: {secundaria}."
+    "acento_ninguno": "Every word in {color_texto}: no highlighted word and no second colour anywhere in the type.",
+    "secundaria": "Everything that is not the headline: {secundaria}."
   },
 
   "_comment_composicion_zona": "Cláusula que la app pega SIEMPRE a la composición. En la v1 decía 'keep focal elements out of it': eso garantizaba el look 'foto arriba, texto en la banda'. La v2 declaró el lockup de póster (tipo arriba y abajo, sujeto en el centro) con el solape controlado, que es lo que integra tipo e imagen. La v3 corrige la palabra que rompía la pieza: 'flat'. Para un modelo de imagen 'flat band' es un RECTÁNGULO DE COLOR LISO, no una zona tranquila de la foto — de ahí que algunos slides salieran con un passe-partout hueso (#EDEAE0 está en la paleta, así que lo pintaba con la marca) y otros a sangre, según cómo resolviera la ambigüedad esa tirada. El aire se sigue pidiendo, pero se dice DE QUÉ está hecho: sombra, desenfoque, superficie desnuda. Conserva los marcadores 'clear zone'/'negative space' que exige el validador.",
   "composicion_zona": "Poster lockup, full bleed to all four edges: the upper and bottom bands are uncluttered clear zones for the type — negative space made of the photograph itself (shadow, defocus, bare surface), never panels of flat colour; anchor the subject in the central band between them, lit so its silhouette separates from the type, overlapping it only where the frame falls to near-black.",
 
-  "_comment_composicion_zona_slide": "La misma cláusula, corta, para los slides con beat. No es un recorte cosmético: el beat ya nombra DE QUÉ está hecho el aire en ese plano concreto (el falloff de la propia masa, la superficie desnuda, el campo vacío), que es lo que la versión larga dice en genérico, así que repetirlo cuesta ~180 caracteres del presupuesto y no aporta. Conserva los tres marcadores que no pueden faltar: el sangrado, 'clear zones' (lo exige el validador) y la prohibición de las bandas planas.",
-  "composicion_zona_slide": "Poster lockup, full bleed to all four edges: upper and bottom bands stay uncluttered clear zones for the type, never panels of flat colour; the subject anchored in the central band between them.",
+  "_comment_composicion_zona_slide": "La cláusula del slide, que ya no es la de la portada acortada sino su INVERSA. Antes decía 'the subject anchored in the central band', igual que la portada: el objeto era el asunto de la pieza y el titular lo acompañaba. En un slide de contenido eso está al revés — el slide no vende una idea con una foto, la escribe— así que acá el tipo se lleva la mayor parte del cuadro y el sujeto queda subordinado, bajo del titular y lo bastante pequeño para no disputarle la masa. Lo que NO cambia es el esqueleto (titular arriba, apoyo al pie, sangrado a los cuatro bordes): eso es lo que sigue haciendo que el set se lea como un sistema, y por eso la inversión se declara como jerarquía de tamaño y no moviendo las bandas de sitio. Conserva los tres marcadores que no pueden faltar: el sangrado, 'clear zone' (lo exige el validador) y la prohibición de las bandas planas. La palabra 'subordinate' es deliberada y no equivale a 'fondo': el sujeto sigue siendo un objeto real y fotografiado —es lo que sostiene la escalera de planos del beat, o sea lo único que impide que los slides se parezcan entre sí—, solo que deja de ser el protagonista.",
+  "composicion_zona_slide": "Type-led poster lockup, full bleed to all four edges: the headline owns the upper two thirds as an uncluttered clear zone, never a panel of flat colour; the subject is subordinate to it, held low beneath the type.",
 
   "_comment_luz": "BLOQUEO DE LUZ. La sección 6 la escribía entera el LLM, una vez por imagen y sin conocer a sus hermanas: en un carrusel de cinco piezas eso son cinco esquemas de iluminación distintos, y en ningún punto del pipeline aparecía una temperatura de color. El resultado auditado fue exactamente ese — cuarto oscuro, salón cálido a mediodía, estante oscuro, escritorio de madera, laboratorio industrial— con deriva de fría a ~4000K sin criterio. El esquema de iluminación es lo que hace que cinco fotos parezcan del mismo día, así que POR DEFINICIÓN no puede decidirse cinco veces: pasa a ser propiedad de la identidad y lo prefija la app, byte a byte idéntico en todas las piezas del job. Matiza —no revierte— la regla de que `image_style` gana a `tono_visual`: el TRATAMIENTO fotográfico lo sigue eligiendo el LLM por post (sección 7), la LUZ es de la marca. `{clave}` es el `tono_visual` de la IDENTIDAD (nunca el `image_style` del post), recortado a `validacion.luz_palabras`; `{fondo}` es el primer color de la paleta. La temperatura es fija y app-owned a propósito: es el parámetro que frena la deriva cálida y el que un LLM reinterpreta en cada llamada, así que es justo el que no se delega.",
   "luz_bloqueada": "LIGHT LOCK — identical in every piece of this set: {clave} {temperatura} Falloff to {fondo} at the edges, no ambient fill, one visible contact shadow.",
   "luz_temperatura": "Colour temperature fixed at 5400K neutral: no warm or cool drift between pieces.",
 
-  "_comment_continuidad_set": "Lo que mantiene unido al carrusel ahora que los slides NO se generan pasando la portada en `medias`. Aquella vía parecía coherencia y era otra cosa: con estos modelos `medias` es image-to-image, así que cada slide volvía siendo la portada re-encuadrada. La continuidad se declara entonces por texto y en las dos direcciones: lo que se COMPARTE (set, superficies, luz, paleta, óptica) y lo que tiene que CAMBIAR (el objeto protagonista y la posición de cámara). Sin la segunda mitad, el modelo repite el objeto de la portada por su cuenta. Solo se pega a los slides.",
-  "continuidad_set": "SET CONTINUITY: same room, surfaces, light and palette as the carousel cover ({escena_portada}) — but a DIFFERENT hero object, camera position and framing; never the cover restaged or re-cropped.",
+  "_comment_paleta": "BLOQUEO DE PALETA, el tercero de la familia (`luz_bloqueada`, `mundo_bloqueado`) y por el motivo de siempre: lo invariante dentro de un job no puede decidirse una vez por imagen. La sección 6 la escribe el LLM por pieza y su instrucción le pedía literalmente «Name the brand hex values for the palette», así que la paleta se REDACTABA N veces, cada vez con otras palabras y otro énfasis. El defecto que producía se ve de un vistazo y fue el reportado: en un mismo carrusel, cada slide con el acento de un color distinto. Es una de las TRES causas de ese defecto y la única que vive fuera de la sección 5 (las otras dos: el beat que callaba el acento sin prohibirlo y la rama de acento explícito que se saltaba `tinta`). Se prefija a la sección 6 detrás del bloqueo de luz, byte a byte idéntico en todas las piezas y fuera de la poda. Como contrapartida, la instrucción del LLM le PROHÍBE nombrar colores y `respaldos.luz` dejó de arrastrar la paleta: se declara una vez, acá.",
+  "paleta_bloqueada": "PALETTE LOCK — these colours only, no other hue anywhere: {paleta}.",
+
+  "_comment_continuidad_set": "Lo que mantiene unido al carrusel ahora que los slides NO se generan pasando la portada en `medias`. Aquella vía parecía coherencia y era otra cosa: con estos modelos `medias` es image-to-image, así que cada slide volvía siendo la portada re-encuadrada. La continuidad se declara entonces por texto y en las dos direcciones: lo que se COMPARTE (esta cláusula) y lo que tiene que CAMBIAR (el `enlace` del arco, que se pega justo detrás). Sin la segunda mitad, el modelo repite el objeto de la portada por su cuenta. Solo se pega a los slides.\n\nDEJÓ DE CITAR `{escena_portada}`, y eso es una mejora además de un ahorro: citar la escena de la portada era re-derivar el mundo compartido a partir de UNA pieza —una copia, no un ancla— y era la única parte variable de la cláusula, con su propio tope de palabras. Ahora el mundo lo declara `mundo_bloqueado` byte a byte idéntico en TODAS las piezas, portada incluida, que es exactamente lo que esta cláusula intentaba aproximar. El presupuesto liberado es el que paga el WORLD LOCK (ver `validacion`).",
+  "continuidad_set": "SET CONTINUITY: same surfaces and materials as the rest of the set; never the cover restaged, re-cropped or re-lit.",
+
+  "_comment_sin_arco": "Literalmente la segunda mitad que tenía `continuidad_set` antes de los arcos, conservada para el job que no trae ninguno (uno creado antes de esta versión, o una llamada directa al arquitecto). Sin esto, un job sin arco se quedaría sin la única instrucción que impedía que el modelo repitiera el objeto de la portada por su cuenta: «vacío = lo de siempre» significa comportarse como antes, no comportarse peor.",
+  "continuidad_sin_arco": "A DIFFERENT hero object, camera position and framing from the cover.",
 
   "respaldos": {
     "_comment": "Se usan cuando no hay LLM disponible o su respuesta viene incompleta. Producen un prompt válido (9 secciones) sin llamar a nadie. `tipografia` ya no está aquí: la escribe la app siempre.",
     "sujeto": "{prompt_base}",
-    "composicion": "One clear focal hierarchy: the subject centred in the middle band, secondary elements falling away in depth, edges level.",
-    "luz": "Single hard source raking from above, deep falloff into near-black, visible contact shadow; palette held to {paleta}.",
+    "_comment_composicion": "El respaldo NO dice dónde se apoya el sujeto, a propósito: la cláusula determinista que la app pega justo detrás lo declara siempre, y con distinta jerarquía en la portada y en el slide. Mientras este texto decía «the subject centred in the middle band», todo slide del camino de respaldo abría contradiciendo a su propio lockup dos frases después.",
+    "composicion": "One clear focal hierarchy: a single subject reading clean against depth that falls away behind it, edges level.",
+    "_comment_luz": "Sin «palette held to {paleta}»: la paleta la declara `paleta_bloqueada` prefijado a esta misma sección, byte a byte igual en todas las piezas. Que el respaldo la repitiera con otras palabras es exactamente el defecto que ese bloqueo corrige, solo que en el camino determinista.",
+    "luz": "Single hard source raking from above, deep falloff into near-black, visible contact shadow.",
     "estilo": "{tono_visual}. Art direction: {referencias}.",
     "camara": "50mm equivalent, f/4, subject sharp against a dark background, natural micro-texture and fine grain."
   },
@@ -169,10 +311,14 @@
     "_comment_v7": "Declarar el sangrado EN POSITIVO en la sección 1 (`piezas`) cuesta ~110 caracteres fijos más. Es el segundo de los tres frentes contra el passe-partout, y va en la sección 1 porque es la más autoritativa del brief: el negativo por sí solo ya se demostró insuficiente dos veces. Sube a 4400 para sostener el escalón de 18 palabras fijado en la v6. Se pagó una parte con el saneo de la sección 5 (`tinta` recorta `color_texto`/`color_acento` a nombre + hex).",
     "_comment_v9": "El negativo de moneda/atrezzo estadounidense (`negativos_no_ingles`) añade ~75 caracteres a los prompts no ingleses, que son el caso normal del proyecto. Sube a 4750 para mantener el escalón de 18 palabras. La línea de CULTURAL CONTEXT no cuenta: va al MENSAJE del LLM, no al prompt final. Es la última subida del plan de calidad de carrusel.",
     "_comment_v8": "Los cortes de línea dictados de la sección 4 (flag IMAGE_LINE_BREAKS) añaden ~140 caracteres. Sube a 4650 para sostener el escalón de 18 palabras, que sigue siendo la barra. Nota de contexto, medida con `scripts/medir_prompt.py`: a estas alturas el brief FIJO ronda los 3400 caracteres y la poda está activa incluso en un caso realista, no solo en el peor. Si una fase futura vuelve a necesitar techo, el sitio correcto donde buscar no es este número sino las secciones fijas: 18 palabras por sección creativa es una frase densa de verdad y el histórico del proyecto funcionaba con 10-14. Perseguir 22 costaría otros ~250 caracteres por escalón sin que nadie haya demostrado que se noten.",
-    "max_caracteres": 4750,
+    "_comment_v10": "Sube a 5050 por el bloqueo de mundo (`mundo_bloqueado`), que son ~180 caracteres FIJOS en TODAS las piezas —portada incluida—, y el `enlace` del arco en los slides. Se pagó primero lo que se pudo pagar, que es la regla: `continuidad_set` dejó de citar `{escena_portada}` (era su única parte variable, con su propio tope de palabras, y ahora el mundo lo declara el bloqueo mucho mejor) y quedó reducida a su única afirmación propia, porque «misma localización, luz y paleta» pasó a estar dicho —idéntico y antes— por los bloqueos de mundo y de luz; el `enlace` además REEMPLAZA la segunda mitad de esa cláusula («but a DIFFERENT hero object…»), no se le suma. Con eso el peor caso quedaba en el escalón de 14 palabras, y 14 está por debajo de la barra que fijó la v6. Medido con `scripts/medir_prompt.py`: 5050 es el primer techo que devuelve el escalón de 18 a los cuatro beats de la identidad de la casa (a 5000 se quedaban fuera `desarrollo`, a 4900 también `prueba` y `remate`). Se sube con él `higgsfield_mcp._MAX_PROMPT_CHARS` a 5100, manteniendo los 50 caracteres de margen para que un prompt válido nunca llegue a truncarse. La barra sigue siendo 18, no 22: es la que se persigue, no una que suba con cada fase. OJO con el indicador: `medir_prompt._poda` se medía sobre `sujeto` porque era una creativa sin decorar, y el bloqueo de mundo se prefija justo ahí — pasó a medirse sobre `camara` o habría informado 61 palabras de un tope de 26.",
+    "_comment_v11": "Sube a 5150 por el bloqueo de PALETA (`paleta_bloqueada`), ~130 caracteres FIJOS en todas las piezas. Se pagó primero lo que se podía pagar, que sigue siendo la regla: la cláusula se escribió en su forma mínima («these colours only, no other hue anywhere») en vez de repetir el «identical in every piece of this set» que ya dice el bloqueo de luz dos frases antes, y `respaldos.luz` dejó de arrastrar «palette held to {paleta}» —que es la misma paleta redactada por segunda vez, o sea el defecto que este bloqueo corrige, solo que en el camino determinista—. Con eso el peor caso quedaba en el escalón de 14, por debajo de la barra de 18 que fijó la v6. Barrido con `scripts/medir_prompt.py`: 5150 es el primer techo que se lo devuelve a los cuatro beats de la casa (a 5100 seguían en 14; 5200 y 5250 no mejoran nada, así que subir más sería regalar techo). Se sube con él `higgsfield_mcp._MAX_PROMPT_CHARS` a 5200, manteniendo los 50 caracteres de margen. Lo que compra es el defecto reportado: cada slide del carrusel con el acento de un color distinto.",
+    "_comment_v12": "Sube a 5250 por los SISTEMAS DE TEXTO. Acá el gasto no es prosa de brief sino CONTENIDO: un cuerpo de 18-30 palabras son ~200 caracteres que se imprimen en la pieza, y son exactamente la funcionalidad —un slide que solo sabía imprimir un titular no podía contar lo que dice la fuente—. Aun así se pagó primero lo que se podía pagar, que sigue siendo la regla y esta vez dio para casi todo: (1) la sección 4 pasó de dos plantillas fijas a una lista de citas con el `detalle` COMPARTIDO, así que el idioma, las tildes, la copia carácter a carácter y el área segura se emiten UNA vez en vez de una por bloque —sin eso, el tercer nivel costaba el triple—; (2) los dos sistemas con cuerpo apagan los cortes de línea dictados (`cortes: false`, ~140 caracteres): la viuda que esa cláusula corrige es un defecto de titular largo a tamaño de póster y ahí el titular baja a 6 palabras sobre 1-2 líneas; (3) las escalas de la sección 5 se escribieron en telegrama («Headline 12-15% of frame height per line») en vez de en prosa, que con tres bloques se emite tres veces. Barrido con `scripts/medir_prompt.py`, extendido para recorrer los tres sistemas con contenido REALISTA en cada bloque —vocabulario castellano corriente, no palabras de dirección de arte de 15 caracteres: a un titular se le piden 6 palabras de texto impreso y medirlo con tecnicismos infla el techo por un caso que el redactor no puede producir—. 5250 es EXACTAMENTE el primer techo que sostiene el escalón de 18 en los tres sistemas y los cuatro beats; a 5200 se caía a 14. Se sube con él `higgsfield_mcp._MAX_PROMPT_CHARS` a 5300, con los 50 caracteres de margen de siempre.",
+    "max_caracteres": 5250,
     "max_palabras_bloque": 8,
     "max_palabras_seccion": 26,
-    "continuidad_set_palabras": 10,
+    "mundo_palabras": 22,
+    "arco_palabras": 26,
     "ritmo_palabras": 18,
     "luz_palabras": 22,
     "marcas_aire_negativo": ["negative space", "clear zone", "reserved", "empty band"],
@@ -182,6 +328,6 @@
   "llm": {
     "modelo_max_tokens": 1200,
     "sistema": "You are a senior art director writing production prompts for a text-to-image model that WILL render typography into the image. You never write fluff: every clause carries a concrete, verifiable visual fact (material, era, geography, angle, measurable quantity). You answer with JSON only.",
-    "instruccion": "Rewrite the weak base prompt below into the creative sections of a structured art-direction brief. The piece is a DESIGNED POSTER: a photographic base with a typographic layer locked over it. The app owns the format, the text block, the typography and the negatives — you never write those.\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}\n\nWrite every value in ENGLISH (the model follows English best), 15-26 words each, dense prose — not keyword lists. Anything past 26 words gets cut, so spend the budget on concrete facts.\n- sujeto: ONE concrete hero object, poster-style. Name the actual thing, its material, wear and era, the geographic or cultural context when the topic implies one, what it rests on, and the shot angle. NEVER a category label (\"modern data center\", \"business meeting\", \"abstract technology background\") — pick a real, nameable thing. At most 2 secondary objects, and none of them printed matter, packaging, screens, labels, paper or signage: every letterable surface is one more place where a generator writes pseudo-text, and removing the surfaces works where forbidding the text does not. Never ask for a cluttered or busy table.\n- composicion: how the frame is organised around that hero object in the central band — focal hierarchy, depth layers, where the eye enters. The photograph is FULL BLEED: it reaches past all four edges, so never compose a border, matte, margin or band of flat colour. Do NOT describe the text zones: the app appends them verbatim.\n- luz: how the set's fixed lighting falls on THIS scene. You do NOT choose the key direction, the colour temperature or the falloff: the app prefixes a LIGHT LOCK clause that is byte-identical in every piece of this carousel, so never restate it — repeating it only burns the character budget. Write what that same light does here: which surfaces and materials it catches, where it dies, and the rim or spill that separates this subject from the type. Name the brand hex values for the palette.\n- estilo: the art-direction lineage in concrete terms (film-poster still, industrial reportage, isometric technical illustration...) plus the visual references supplied.\n- camara: focal length, aperture and depth of field, sensor or film character, texture and grain.\n\nHARD RULES:\n- Do NOT include the text to render, the typography or the negatives in any section: the app writes those blocks itself.\n- BANNED empty adjectives unless immediately backed by a concrete detail: {adjetivos_prohibidos}.\n- No people as the main subject; no hands doing fine work.\n- PHYSICAL PLAUSIBILITY: every object rests on or is supported by a named surface and casts a contact shadow — nothing floats, nothing is unsupported, and every mechanism is assembled the way the real object works (a disc sits in a tray, a lid sits on its thread, a cable ends in a socket).\n- Stay faithful to the topic and angle: a viewer who knows the content must see why this image was chosen."
+    "instruccion": "Rewrite the weak base prompt below into the creative sections of a structured art-direction brief. The piece is a DESIGNED POSTER: a photographic base with a typographic layer locked over it. The app owns the format, the text block, the typography and the negatives — you never write those.\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}\n\nWrite every value in ENGLISH (the model follows English best), 15-26 words each, dense prose — not keyword lists. Anything past 26 words gets cut, so spend the budget on concrete facts.\n- sujeto: ONE concrete hero object, poster-style. Name the actual thing, its material, wear and era, the geographic or cultural context when the topic implies one, HOW THAT PLACE HOLDS IT, and the shot angle. Do NOT restate the location and do NOT default to a tabletop: the app prefixes a WORLD LOCK clause naming the set's one location, byte-identical in every piece, and your job is to put the object where that place would actually keep it — on the floor, on a bracket, hung from a hook, leaning on a wall, wedged in a frame, half sunk in water, standing in the open. NEVER a category label (\"modern data center\", \"business meeting\", \"abstract technology background\") — pick a real, nameable thing. At most 2 secondary objects, and none of them printed matter, packaging, screens, labels, paper or signage: every letterable surface is one more place where a generator writes pseudo-text, and removing the surfaces works where forbidding the text does not. Never ask for a cluttered or busy arrangement.\n- composicion: how the frame is organised around that hero object in the central band — focal hierarchy, depth layers, where the eye enters. The photograph is FULL BLEED: it reaches past all four edges, so never compose a border, matte, margin or band of flat colour. Do NOT describe the text zones: the app appends them verbatim.\n- luz: how the set's fixed lighting falls on THIS scene. You do NOT choose the key direction, the colour temperature or the falloff: the app prefixes a LIGHT LOCK clause that is byte-identical in every piece of this carousel, so never restate it — repeating it only burns the character budget. Write what that same light does here: which surfaces and materials it catches, where it dies, and the rim or spill that separates this subject from the type. Do NOT name colours, palettes or hex values: the app also prefixes a PALETTE LOCK, byte-identical in every piece, and a second wording of the same palette is read as a second palette — that is what made the accent colour drift from slide to slide.\n- estilo: the art-direction lineage in concrete terms (film-poster still, industrial reportage, isometric technical illustration...) plus the visual references supplied.\n- camara: focal length, aperture and depth of field, sensor or film character, texture and grain.\n\nHARD RULES:\n- Do NOT include the text to render, the typography or the negatives in any section: the app writes those blocks itself.\n- BANNED empty adjectives unless immediately backed by a concrete detail: {adjetivos_prohibidos}.\n- No people as the main subject; no hands doing fine work.\n- PHYSICAL PLAUSIBILITY: every object is held by something you name in that location — a floor, a shelf, a bracket, a hook, a wall it leans on, water it sits in, its own weight on the ground — and casts a contact shadow there: nothing floats, nothing is unsupported, and every mechanism is assembled the way the real object works (a disc sits in a tray, a lid sits on its thread, a cable ends in a socket). \"Supported\" does not mean \"on a table\": a table is one of many ways a place holds a thing.\n- Stay faithful to the topic and angle: a viewer who knows the content must see why this image was chosen."
   }
 }

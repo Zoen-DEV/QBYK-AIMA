@@ -104,6 +104,23 @@ def test_una_pieza_que_el_modelo_no_menciona_no_es_un_fallo(vision):
     assert res.ok and all(p.ok for p in res.piezas)
 
 
+def test_el_conjunto_juzga_tambien_el_color_de_acento(vision):
+    """El acento a la deriva se arregló en el prompt, pero solo se VE comparando piezas.
+
+    Ningún QA por imagen puede detectarlo —`image_text_qa` mira ortografía— y
+    `mismo_sistema_tipografico` decía «sí» con cinco acentos distintos, porque mira
+    familia, caja y jerarquía: el color no es la forma. Sin un veredicto propio, la
+    próxima regresión vuelve a pasar meses sin que nadie se entere.
+    """
+    assert "mismo_acento" in sqa.veredictos()
+    sqa.revisar([_png()] * 4, cfg=_Cfg())
+    # Fuente única: el JSON que se pide y el que se lee salen de la misma lista.
+    assert all(f'"{v}"' in vision["ultimo_user"] for v in sqa.veredictos())
+    # Y la tolerancia que evita el falso positivo caro: un slide sin acento (la tensión
+    # lo calla a propósito) no puede contar como fallo, o dispara una regeneración.
+    assert "NO highlighted word at all is CORRECT" in vision["ultimo_user"]
+
+
 def test_las_imagenes_van_todas_en_la_misma_llamada(vision):
     sqa.revisar([_png()] * 5, cfg=_Cfg())
     assert vision["n_imagenes"] == 5

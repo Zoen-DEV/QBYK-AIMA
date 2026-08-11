@@ -15,13 +15,25 @@ las claves que describen el ARCHIVO y no la identidad: `_comment*` (documentaci�
 `version` (revisión del archivo — que además hoy no la lee nadie; una identidad guardada
 tiene sus propios `created_at`/`updated_at`).
 
-**El esquema creció una vez**, con `ritmo_carrusel`: la lista ordenada de cómo esta marca
-fotografía cada beat del carrusel (`tension`, `desarrollo`, `prueba`, `remate`). Es la
-única parte del carrusel que sí es identidad: el beat —qué función cumple cada slide— es
-estructura y vive en `architect.json`, pero recorrer esa escalera con macros de textura o
-con naturalezas muertas abiertas produce dos carruseles que no se parecen en nada. Es
-**opcional**: vacío significa "lo de siempre" y cada beat cae a su respaldo de
-`architect.json`, así que una identidad guardada antes del campo genera exactamente igual.
+**El esquema creció dos veces**, y las dos por lo mismo: la identidad podía elegir cómo se
+ve una pieza pero no qué pieza es.
+
+1. `ritmo_carrusel`: la lista ordenada de cómo esta marca fotografía cada beat del carrusel
+   (`tension`, `desarrollo`, `prueba`, `remate`). El beat —qué función cumple cada slide— es
+   estructura y vive en `architect.json`, pero recorrer esa escalera con macros de textura o
+   con naturalezas muertas abiertas produce dos carruseles que no se parecen en nada.
+2. `escenarios`: el repertorio de 2-4 mundos donde esta marca fotografía. Es el que faltaba,
+   y su ausencia era un defecto visible: `ritmo_carrusel` solo admite distancia, altura de
+   cámara y qué llena el cuadro, así que la identidad decidía CÓMO se fotografía pero nunca
+   DÓNDE — y el dónde lo acababa poniendo el vocabulario de la capa dura, que decía "apoyado
+   en una superficie" en seis sitios distintos. Resultado: identidades con paleta y
+   tipografía completamente distintas producían la misma foto, un objeto sobre una mesa. El
+   job elige UNO del repertorio al crearse y lo congela; se emite como bloqueo de mundo,
+   idéntico en todas las piezas (ver `prompt_architect.elegir_escenario`).
+
+Los dos son **opcionales**: vacío significa "lo de siempre" —el ritmo cae a su respaldo beat
+a beat y el repertorio al de `brand.json`—, así que una identidad guardada antes de estos
+campos genera exactamente igual.
 
 Tres contratos que el validador hace explícitos porque hoy viven implícitos en el código
 y romperlos **falla en silencio**:
@@ -63,16 +75,21 @@ SYSTEM_ID = "system"
 NOMBRE_SYSTEM = "QBYK — identidad de la casa"
 
 # Campos del esquema, en el orden de `brand.json` (que es también el de la UI).
-CAMPOS_LISTA: tuple[str, ...] = ("paleta", "paleta_nombres", "referencias", "ritmo_carrusel")
+CAMPOS_LISTA: tuple[str, ...] = ("paleta", "paleta_nombres", "referencias", "escenarios",
+                                 "ritmo_carrusel", "sistemas_texto")
 CAMPOS_TEXTO: tuple[str, ...] = ("color_texto", "color_acento", "tipografia",
                                  "tipografia_secundaria", "tono_visual", "aspect_ratio")
 CAMPOS: tuple[str, ...] = ("paleta", "paleta_nombres", "color_texto", "color_acento",
                            "tipografia", "tipografia_secundaria", "tono_visual",
-                           "aspect_ratio", "referencias", "ritmo_carrusel")
+                           "aspect_ratio", "referencias", "escenarios", "ritmo_carrusel",
+                           "sistemas_texto")
 
 # Los beats del carrusel se importan, no se copian: la POSICIÓN dentro de
 # `ritmo_carrusel` es el beat, así que las dos listas tienen que moverse juntas.
 ROLES_RITMO: tuple[str, ...] = prompt_architect.ROLES_BEAT
+# Y los sistemas de texto por el mismo motivo: un nombre que no esté en el catálogo de
+# `architect.json` no lo sabe imprimir nadie. Se lee, nunca se copia.
+SISTEMAS_TEXTO: tuple[str, ...] = prompt_architect.sistemas_disponibles()
 
 # Mínimo 3 colores porque `_lockup_plantilla` indexa hasta `paleta[2]`; el máximo evita
 # que una identidad meta una carta de color entera en el prompt.
@@ -81,6 +98,28 @@ MIN_REFERENCIAS, MAX_REFERENCIAS = 1, 6
 # Un plano por beat como mucho: más entradas no serían un ritmo más rico, serían
 # entradas que no le tocan a ningún slide.
 MAX_RITMO = len(ROLES_RITMO)
+# `escenarios`: DÓNDE fotografía esta marca. Un repertorio, no un mundo único, porque
+# el job elige uno y lo congela: con uno solo, todos los posts del perfil saldrían del
+# mismo sitio; con más de cuatro deja de ser una identidad reconocible y pasa a ser
+# "cualquier sitio". El mínimo es 2 por la misma razón — un repertorio de uno es un
+# campo de texto disfrazado de lista.
+MIN_ESCENARIOS, MAX_ESCENARIOS = 2, 4
+# `sistemas_texto`: cuántos NIVELES de texto imprimen los slides de esta marca. Mismo
+# patrón que `escenarios` —repertorio, el job congela uno— y por el mismo motivo: con
+# un sistema único, todos los carruseles del perfil salen con la misma estructura de
+# textos. Acá el mínimo SÍ es 1: a diferencia de un mundo, un sistema de texto es una
+# decisión de diseño que una marca puede tomar de una vez para siempre.
+MIN_SISTEMAS, MAX_SISTEMAS = 1, len(SISTEMAS_TEXTO)
+# Dos topes, y hacen falta los dos. `prompt_architect` recorta el mundo a
+# `validacion.mundo_palabras`, así que en PALABRAS ya está acotado; pero una palabra
+# puede tener treinta caracteres y el bloqueo de mundo se emite en TODAS las piezas del
+# job, portada incluida, así que lo que cueste se paga N veces contra un techo de
+# caracteres. Sin el tope en caracteres, 22 palabras largas se comen 330 y el peor caso
+# se pasa del techo — que no es cosmético: ahí el validador tira el prompt entero y la
+# imagen sale sin bloque de texto. El resto de campos del esquema se acotan igual
+# (`MAX_TEXTO`, `MAX_RITMO_ITEM`), así que esto es la regla de la casa, no una excepción.
+MAX_ESCENARIO_PALABRAS = 22
+MAX_ESCENARIO = 160
 # Topes de longitud: presupuesto del brief, no estética (ver docstring del módulo).
 MAX_TEXTO = 240
 MAX_REFERENCIA = 160
@@ -107,20 +146,40 @@ PALABRAS_PERSONA: tuple[str, ...] = (
     "model", "hands", "human",
 )
 
-# Una identidad tiene que sostener un titular al 9-16% del alto del cuadro. Una sans
-# neutra de UI a ese cuerpo devuelve el look de "caption pegado sobre una foto", que es
-# justo lo que el propio prompt de extracción advierte que no hay que devolver: que
-# pasara era un agujero del validador.
+# Una identidad tiene que sostener un titular a escala de póster (el elemento mayor del
+# cuadro; el porcentaje exacto es layout y lo fija `architect.json`). Una sans neutra de
+# UI a ese cuerpo devuelve el look de "caption pegado sobre una foto", que es justo lo
+# que el propio prompt de extracción advierte que no hay que devolver: que pasara era un
+# agujero del validador.
 FAMILIAS_UI_PROHIBIDAS: tuple[str, ...] = (
     "inter", "helvetica", "arial", "roboto", "system ui", "ui sans", "neutral sans",
 )
 # Marcas de que la familia SÍ es de display. Su ausencia es un reparo (discutible),
 # no un error: hay familias de titular que se describen sin ninguna de estas palabras.
+#
+# La lista cubre a propósito varias FAMILIAS de clase, no una. Con solo el vocabulario
+# de la grotesca condensada ("condensed", "grotesque", "grotesk"), una didone, una
+# egipcia o una lettering de plantilla legítimas salían marcadas con reparo, y el
+# reparo empuja al usuario —y al modelo del extractor, que recibe esta misma lista en
+# `identity_extract._reglas_diseno`— a reescribirlas hacia la única clase que la lista
+# nombraba. El resultado era que todas las identidades acababan con la misma
+# tipografía: la distinción entre marcas se perdía en el validador, no en el generador.
 MARCAS_DISPLAY: tuple[str, ...] = (
     "display", "condensed", "grotesque", "grotesk", "extended", "caps", "poster",
+    "didone", "fat face", "slab", "egyptian", "stencil", "gothic", "titling",
+    "headline", "wood type", "monospaced", "typewriter",
 )
 # En la secundaria (el kicker), la señal de amateur más fuerte del set auditado.
 SECUNDARIA_DEBIL: tuple[str, ...] = ("regular weight", "mixed case")
+
+# El bodegón de mesa. No está prohibido —es una pieza legítima y uno de los mundos de la
+# casa lo es— pero un repertorio en el que TODOS los mundos son una mesa reproduce
+# exactamente el defecto que `escenarios` existe para corregir: el job elige uno de los
+# cuatro y da igual cuál, siempre sale un objeto sobre una superficie. Reparo y no error
+# porque una marca de bodegón de estudio es una decisión defendible.
+PALABRAS_MESA: tuple[str, ...] = (
+    "table", "tabletop", "desk", "desktop", "worktop", "countertop", "counter", "bench",
+)
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 _HEX_EN_TEXTO = re.compile(r"#[0-9a-fA-F]{6}")
@@ -197,7 +256,14 @@ def normalizar(data: Any) -> dict:
         "paleta": [_color(c) for c in _lista(d.get("paleta"))],
         "paleta_nombres": _lista(d.get("paleta_nombres")),
         "referencias": _lista(d.get("referencias")),
+        # A diferencia de `ritmo_carrusel`, acá la posición NO significa nada: es un
+        # repertorio de alternativas y el job elige una, así que un hueco se descarta.
+        "escenarios": _lista(d.get("escenarios")),
         "ritmo_carrusel": _ritmo(d.get("ritmo_carrusel")),
+        # Repertorio de sistemas de texto: como `escenarios`, la posición no significa
+        # nada y los duplicados sobran (el job elige uno, no los recorre).
+        "sistemas_texto": list(dict.fromkeys(
+            s.lower() for s in _lista(d.get("sistemas_texto")))),
     }
     for campo in CAMPOS_TEXTO:
         ident[campo] = _texto(d.get(campo))
@@ -308,13 +374,61 @@ def validar(identidad: Any) -> list[str]:
                 f"cámara y qué llena el cuadro."
             )
 
+    # `escenarios` es OPCIONAL —vacío = el repertorio de la casa, que es como se generaba
+    # antes del campo—, pero si la marca declara el suyo tiene que ser un repertorio de
+    # verdad: con uno solo, todos los posts del perfil salen del mismo sitio.
+    escenarios = ident.get("escenarios") or []
+    if escenarios and not MIN_ESCENARIOS <= len(escenarios) <= MAX_ESCENARIOS:
+        errores.append(
+            f"`escenarios` debe tener entre {MIN_ESCENARIOS} y {MAX_ESCENARIOS} mundos "
+            f"(tiene {len(escenarios)}), o ninguno para usar los de la casa: el job elige "
+            f"UNO y lo congela, así que con un solo mundo todos los posts salen del mismo sitio"
+        )
+    for i, escenario in enumerate(escenarios):
+        if len(escenario) > MAX_ESCENARIO:
+            errores.append(
+                f"el escenario {i + 1} supera los {MAX_ESCENARIO} caracteres "
+                f"(tiene {len(escenario)})"
+            )
+        if len(escenario.split()) > MAX_ESCENARIO_PALABRAS:
+            errores.append(
+                f"el escenario {i + 1} tiene {len(escenario.split())} palabras y el tope son "
+                f"{MAX_ESCENARIO_PALABRAS}: se emite en TODAS las piezas del job, así que lo "
+                f"que sobre se paga N veces. Nombra el sitio, sus superficies y su luz de "
+                f"fondo, no una escena entera"
+            )
+        palabra = _palabra_en(escenario, PALABRAS_PERSONA)
+        if palabra:
+            errores.append(
+                f"el escenario {i + 1} habla de «{palabra}»: un mundo es un LUGAR, y el brief "
+                f"de imagen prohíbe a las personas como sujeto principal. El modelo resuelve "
+                f"esa contradicción por su cuenta y siempre en contra de lo que la identidad "
+                f"quería. Descríbelo por lugar, superficies y materiales."
+            )
+
+    # `sistemas_texto` es OPCIONAL —vacío = el repertorio de la casa— pero un nombre que
+    # no esté en el catálogo no lo sabe imprimir nadie: caería al sistema base en
+    # silencio, y la marca creería estar publicando carruseles con cuerpo de texto.
+    sistemas = ident.get("sistemas_texto") or []
+    if sistemas and not MIN_SISTEMAS <= len(sistemas) <= MAX_SISTEMAS:
+        errores.append(
+            f"`sistemas_texto` debe tener entre {MIN_SISTEMAS} y {MAX_SISTEMAS} sistemas "
+            f"(tiene {len(sistemas)}), o ninguno para usar los de la casa"
+        )
+    for sistema in sistemas:
+        if sistema not in SISTEMAS_TEXTO:
+            errores.append(
+                f"`sistemas_texto` nombra «{sistema}», que no existe: los disponibles son "
+                f"{', '.join(SISTEMAS_TEXTO)}"
+            )
+
     tipografia = ident.get("tipografia") or ""
     familia = _palabra_en(tipografia, FAMILIAS_UI_PROHIBIDAS)
     if familia:
         errores.append(
-            f"`tipografia` nombra «{familia}», una sans neutra de interfaz: a un titular del "
-            f"9-16% del alto del cuadro devuelve el look de «caption pegado sobre una foto». "
-            f"Describe una clase de display (peso, ancho, caja, tracking)."
+            f"`tipografia` nombra «{familia}», una sans neutra de interfaz: a escala de póster "
+            f"devuelve el look de «caption pegado sobre una foto». Describe una clase de "
+            f"display (peso, ancho, caja, tracking)."
         )
 
     return errores
@@ -434,6 +548,19 @@ def revisar_diseno(identidad: Any) -> list[str]:
             f"`tipografia_secundaria` pide «{debil}»: el kicker en peso regular y caja mixta "
             f"es lo que hace que la pieza se lea como una foto con caption. Usa la misma "
             f"familia en un peso que aguante."
+        )
+
+    # El repertorio de mundos existe para que dos identidades distintas no produzcan la
+    # misma foto. Si los cuatro mundos son una mesa, el campo está puesto y el defecto
+    # sigue: da igual cuál elija el job.
+    escenarios = ident.get("escenarios") or []
+    if len(escenarios) >= MIN_ESCENARIOS and all(
+            _palabra_en(e, PALABRAS_MESA) for e in escenarios):
+        reparos.append(
+            f"los {len(escenarios)} escenarios son variantes de una mesa: el job elige uno y "
+            f"lo congela, así que todas las piezas de esta identidad saldrían siendo un objeto "
+            f"sobre una superficie. El bodegón es una pieza legítima, pero como uno de los "
+            f"mundos y no como todos — añade un sitio con suelo, pared, exterior o profundidad"
         )
 
     paleta = ident.get("paleta") or []

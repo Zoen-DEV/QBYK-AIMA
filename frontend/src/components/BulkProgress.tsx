@@ -49,7 +49,8 @@ interface RowPreviewData {
   // esto y no de lo que el modelo entregó, para que cuando la escritura devuelva los
   // prompts vacíos haya dónde escribirlos.
   needs?: { imagenes?: boolean; video?: boolean; captions?: string[]; n_info?: number;
-            beats?: string[]; n_shots?: number; faltan?: string[] };
+            beats?: string[]; arco?: string; arco_funcion?: string; escenario?: string;
+            n_shots?: number; faltan?: string[] };
   video?: { url?: string };
   params: Record<string, unknown>;
   li_media_urls: string[];
@@ -374,6 +375,25 @@ const CAPTION_LABEL: Record<string, string> = {
   facebook_text: "Facebook",
 };
 
+// Qué encadena las imágenes del carrusel. Mismo texto que el preview del individual: es
+// la misma decisión y tiene que leerse igual en las dos compuertas.
+const ARCO_AYUDA: Record<string, string> = {
+  transformacion: "el mismo objeto vuelve en cada slide con su estado cambiado",
+  cadena: "cada slide arranca en lo que dejó el anterior",
+  recorrido: "un mismo lugar recorrido por partes, un rincón por slide",
+  escala: "piezas del mismo sistema: la pieza, el conjunto, el sitio donde vive",
+};
+
+// Nombre de cada nivel de texto de un slide. Duplicado del preview individual por el
+// mismo motivo que `ARCO_AYUDA`: es el mismo campo y tiene que leerse igual en las dos
+// compuertas. Las claves las decide `architect.json` → `sistemas_texto`.
+const BLOQUE_ETIQUETA: Record<string, string> = {
+  etiqueta: "Etiqueta",
+  titular: "Titular",
+  cuerpo: "Cuerpo",
+  apoyo: "Apoyo",
+};
+
 function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
   const p = row.preview?.posts;
   const [storyboard, setStoryboard] = useState((p?.video_storyboard || []).join("\n"));
@@ -393,8 +413,25 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
   const needs = row.preview?.needs || {};
   const nInfo: number = Number(needs.n_info) || 0;
   const beats: string[] = Array.isArray(needs.beats) ? needs.beats : [];
-  const [imgTexts, setImgTexts] = useState<string[]>(() =>
-    Array.from({ length: nInfo }, (_, i) => (p?.image_text?.slides || [])[i] || "")
+  // El arco y el mundo que la app congeló en esta fila. Se muestran y no se editan,
+  // igual que en el preview del individual: son la decisión que explica por qué las
+  // escenas de esta fila dicen lo que dicen.
+  const arco: string = needs.arco || "";
+  const escenario: string = needs.escenario || "";
+  // El sistema de texto congelado en esta fila: qué bloques imprime cada slide. Igual
+  // que los beats, viene del backend y no se deduce acá — si esta pantalla y el prompt
+  // contaran bloques distintos, se editarían dos campos donde la pieza imprime tres.
+  const bloquesSistema: { clave: string; palabras: number[] }[] = Array.isArray(
+    needs.sistema_texto?.bloques
+  )
+    ? needs.sistema_texto.bloques
+    : [{ clave: "titular", palabras: [3, 8] }];
+  const bloquesDe = (slide: unknown): Record<string, string> =>
+    slide && typeof slide === "object"
+      ? (slide as Record<string, string>)
+      : { titular: typeof slide === "string" ? slide : "" };
+  const [imgTexts, setImgTexts] = useState<Record<string, string>[]>(() =>
+    Array.from({ length: nInfo }, (_, i) => bloquesDe((p?.image_text?.slides || [])[i]))
   );
   // Captions de las redes destino. Se dibujan desde `needs.captions` (lo que el job
   // pide) y no desde lo que el modelo entregó: un caption vacío tiene que verse como
@@ -480,7 +517,11 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
         body.append("image_style", imgStyle);
         body.append("image_slide_prompts", imgSlides);
         body.append("image_hook", imgHook);
-        imgTexts.forEach((t, i) => body.append(`image_slide_text_${i}`, t));
+        imgTexts.forEach((bloques, i) =>
+          bloquesSistema.forEach((b) =>
+            body.append(`image_slide_${b.clave}_${i}`, bloques[b.clave] ?? "")
+          )
+        );
       }
       const res = await fetch(`${apiUrl}/jobs/${row.job_id}/edit`, { method: "POST", body });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -554,18 +595,44 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
               onBlur={save}
             />
           </label>
+          {(arco || escenario) && (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-2.5 space-y-1">
+              {arco && (
+                <p className="text-[11px] text-gray-500">
+                  <span className="text-gray-400">Arco:</span>{" "}
+                  <span className="font-mono text-gray-300">{arco}</span>
+                  {ARCO_AYUDA[arco] ? ` — ${ARCO_AYUDA[arco]}` : ""}
+                </p>
+              )}
+              {escenario && (
+                <p className="text-[11px] text-gray-500">
+                  <span className="text-gray-400">Mundo:</span> {escenario}
+                </p>
+              )}
+            </div>
+          )}
           {nInfo > 0 && (
             <div className="space-y-2">
               <span className="text-[11px] text-gray-400 block">Texto de cada slide</span>
               <p className="text-[11px] text-gray-500">
-                Una idea por slide, en secuencia. Cada slide tiene su función —la etiqueta de la
-                izquierda— y su imagen se genera para ese momento. Si la idea tiene dos tiempos,
-                sepáralos con una raya espaciada
-                (<code className="text-gray-400">Titular — apoyo</code>): lo de antes va grande
-                arriba y lo de después, pequeño, al pie. La raya no se imprime.
+                El carrusel tiene que CONTAR el contenido: quien no vio el video termina el último
+                slide sabiendo la cosa. Cada slide tiene su función —la etiqueta de la izquierda— y
+                su imagen se genera para ese momento.
+                {bloquesSistema.length > 1 ? (
+                  <span>
+                    {" "}Los campos son los niveles de texto que imprime esta identidad
+                    {needs.sistema_texto?.nombre ? ` (${needs.sistema_texto.nombre})` : ""}.
+                  </span>
+                ) : (
+                  <span>
+                    {" "}Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                    (<code className="text-gray-400">Titular — apoyo</code>): lo de antes va grande
+                    arriba y lo de después, pequeño, al pie. La raya no se imprime.
+                  </span>
+                )}
               </p>
-              {imgTexts.map((t, i) => (
-                <label key={i} className="flex items-start gap-2">
+              {imgTexts.map((bloques, i) => (
+                <div key={i} className="flex items-start gap-2">
                   {/* El beat sale del backend (`needs.beats`), la misma secuencia con la
                       que se genera la imagen de ese slide: quien reescribe el texto a
                       mano tiene que ver qué función cumple ahí. */}
@@ -573,18 +640,32 @@ function RowPromptEditor({ row, apiUrl }: { row: Row; apiUrl: string }) {
                     <span className="block font-mono">Slide {i + 2}</span>
                     {beats[i] && <span className="block text-gray-600">{beats[i]}</span>}
                   </span>
-                  <textarea
-                    value={t}
-                    rows={2}
-                    className={inputCls}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setImgTexts((prev) => prev.map((x, j) => (j === i ? v : x)));
-                      setState("idle");
-                    }}
-                    onBlur={save}
-                  />
-                </label>
+                  <div className="flex-1 space-y-1.5">
+                    {bloquesSistema.map((b) => (
+                      <label key={b.clave} className="block">
+                        {bloquesSistema.length > 1 && (
+                          <span className="text-[11px] text-gray-600 mb-0.5 block">
+                            {BLOQUE_ETIQUETA[b.clave] || b.clave}
+                            {b.palabras?.[1] ? ` · hasta ${b.palabras[1]} palabras` : ""}
+                          </span>
+                        )}
+                        <textarea
+                          value={bloques[b.clave] || ""}
+                          rows={b.clave === "cuerpo" ? 3 : 2}
+                          className={inputCls}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setImgTexts((prev) =>
+                              prev.map((x, j) => (j === i ? { ...x, [b.clave]: v } : x))
+                            );
+                            setState("idle");
+                          }}
+                          onBlur={save}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           )}

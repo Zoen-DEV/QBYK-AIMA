@@ -19,6 +19,7 @@ const _FALLO: Record<string, string> = {
   mismo_mundo: "otro mundo visual",
   mismo_sistema_tipografico: "otra tipografía",
   mismo_grade: "otro color",
+  mismo_acento: "otro color de acento",
   sin_marco_ni_bandas: "marco o banda",
 };
 

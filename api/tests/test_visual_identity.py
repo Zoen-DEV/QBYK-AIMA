@@ -387,3 +387,105 @@ def test_los_reparos_tipograficos_salen_aunque_la_paleta_este_incompleta():
     ident = vi.normalizar({**_VALIDA, "paleta": ["#000000"],
                            "tipografia": "a clean sans, medium weight"})
     assert any("display" in r for r in vi.revisar_diseno(ident))
+
+
+# ── `escenarios`: el mundo, que es lo que faltaba ────────────────────────────
+
+
+def _con(**over):
+    """La identidad de la casa con los campos que el test quiera pisar."""
+    return vi.normalizar({**vi.identidad_system(), **over})
+
+
+def test_los_escenarios_son_opcionales():
+    # Vacío = el repertorio de la casa, que es como se generaba antes del campo. Una
+    # identidad guardada antes de esto no puede volverse inválida.
+    assert vi.validar(_con(escenarios=[])) == []
+
+
+def test_un_solo_mundo_no_es_un_repertorio():
+    """El job elige UNO y lo congela, así que con uno solo todos los posts de ese perfil
+    salen del mismo sitio — que es el defecto con otro traje."""
+    errores = vi.validar(_con(escenarios=["A workshop floor."]))
+    assert any("escenarios" in e for e in errores)
+
+
+def test_demasiados_mundos_tampoco():
+    errores = vi.validar(_con(escenarios=[f"Un sitio {i}." for i in range(vi.MAX_ESCENARIOS + 1)]))
+    assert any("escenarios" in e for e in errores)
+
+
+def test_un_mundo_con_personas_es_un_error():
+    # Misma razón que en `ritmo_carrusel`: el brief prohíbe personas como sujeto, así
+    # que el modelo resuelve la contradicción descartando lo que la identidad pedía.
+    errores = vi.validar(_con(escenarios=["A workshop floor.",
+                                          "A kitchen with a person at the window."]))
+    assert any("person" in e for e in errores)
+
+
+# ── `sistemas_texto`: cuántos niveles de texto imprime la marca ──────────────
+
+
+def test_el_repertorio_de_sistemas_es_opcional():
+    # Vacío = los de la casa, que es como se generaba antes del campo.
+    assert vi.validar(_con(sistemas_texto=[])) == []
+
+
+def test_un_sistema_inexistente_no_se_guarda():
+    """Caería al sistema base en silencio y la marca creería estar imprimiendo cuerpo.
+
+    Es el motivo de que la lista se IMPORTE de `prompt_architect` en vez de copiarse:
+    un catálogo duplicado se desincroniza sin que nadie se entere.
+    """
+    errores = vi.validar(_con(sistemas_texto=["titular", "inventado"]))
+    assert any("inventado" in e for e in errores)
+
+
+def test_los_sistemas_validos_salen_del_catalogo_del_arquitecto():
+    assert vi.SISTEMAS_TEXTO == vi.prompt_architect.sistemas_disponibles()
+    assert vi.validar(_con(sistemas_texto=list(vi.SISTEMAS_TEXTO))) == []
+
+
+def test_el_repertorio_no_admite_duplicados():
+    # El job elige uno, no los recorre: repetir solo sesga el sorteo.
+    assert vi.normalizar({**vi.identidad_system(),
+                          "sistemas_texto": ["titular", "titular"]})["sistemas_texto"] == ["titular"]
+
+
+def test_un_mundo_se_acota_en_caracteres_y_en_palabras():
+    """Los dos topes hacen falta: el bloqueo de mundo se emite en TODAS las piezas.
+
+    Solo con el de palabras, 22 palabras largas se comían 330 caracteres y el peor caso
+    se pasaba del techo del prompt — donde el validador lo tira entero y la imagen sale
+    sin bloque de texto.
+    """
+    largo_en_caracteres = "x" * (vi.MAX_ESCENARIO + 1)
+    largo_en_palabras = " ".join(["sitio"] * (vi.MAX_ESCENARIO_PALABRAS + 1))
+    assert any("caracteres" in e for e in vi.validar(
+        _con(escenarios=["A workshop floor.", largo_en_caracteres])))
+    assert any("palabras" in e for e in vi.validar(
+        _con(escenarios=["A workshop floor.", largo_en_palabras])))
+
+
+def test_un_repertorio_entero_de_mesas_es_un_reparo_y_no_un_error():
+    """Es exactamente el defecto reportado, pero el bodegón de estudio es una marca
+    defendible: se avisa, no se impide guardar."""
+    mesas = _con(escenarios=["A bare table under one lamp.",
+                             "An oak desk beside a window.",
+                             "A steel worktop, top light."])
+    assert vi.validar(mesas) == []
+    assert any("mesa" in r for r in vi.revisar_diseno(mesas))
+
+
+def test_un_repertorio_con_una_sola_mesa_no_da_reparo():
+    # El falso positivo que volvería inútil el aviso: una mesa entre varios mundos es
+    # justo el reparto que se buscaba.
+    mixto = _con(escenarios=["A bare table under one lamp.", "A workshop floor, concrete."])
+    assert [r for r in vi.revisar_diseno(mixto) if "mesa" in r] == []
+
+
+def test_la_identidad_de_la_casa_trae_sus_mundos_y_valida():
+    casa = vi.identidad_system()
+    assert len(casa["escenarios"]) >= vi.MIN_ESCENARIOS
+    assert vi.validar(casa) == []
+    assert vi.revisar_diseno(casa) == []

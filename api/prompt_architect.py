@@ -26,7 +26,14 @@ Reparto de responsabilidades (importante para entender el diseño):
   los respaldos de `architect.json` y el prompt sale igual de válido — solo menos
   afinado. **Generar nunca se interrumpe por esto.**
 - A la sección 3 la app le añade siempre, literal, la cláusula del lockup de póster:
-  las dos bandas reservadas para el tipo y el sujeto anclado en la banda central.
+  las dos bandas reservadas para el tipo y el sujeto entre ellas. La JERARQUÍA dentro
+  de ese esqueleto no es la misma en las dos piezas: en la portada manda la imagen
+  (el sujeto es el asunto y el titular lo acompaña) y en un slide de contenido manda
+  el TEXTO (el titular es el elemento mayor del cuadro y el sujeto queda subordinado,
+  bajo, pequeño). Una portada engancha con una imagen; un slide transmite, y lo que
+  transmite es lo que está escrito. Se declara en las secciones 1, 3 y 5 a la vez —
+  pieza, lockup y cuerpo— porque declararlo en una sola no alcanza: el modelo cumple
+  el porcentaje del titular y aun así fotografía un objeto que se lleva más cuadro.
 - En un carrusel, el rol del slide no es un genérico "contenido" sino un **beat** con
   función narrativa (`tension` → `desarrollo` → `prueba` → `remate`), y de él dependen
   la escala del titular, la presencia del acento y el plano. Los tres los escribe la
@@ -40,6 +47,7 @@ plantilla, el rubric y la marca viven en `api/prompts/*.json`, no aquí.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -87,7 +95,12 @@ class ResultadoPrompt:
 
     prompt: str
     secciones: dict[str, str] = field(default_factory=dict)
-    bloques: list[str] = field(default_factory=list)     # titular (+ kicker)
+    bloques: list[str] = field(default_factory=list)     # los strings impresos, en orden
+    # Los mismos strings pero con su clave de bloque (`titular`, `cuerpo`…), en el orden
+    # del sistema. Lo necesita el QA por nivel: un cuerpo de 30 palabras no se puede
+    # exigir carácter a carácter como un titular, así que hay que saber cuál es cuál.
+    bloques_por_clave: dict[str, str] = field(default_factory=dict)
+    sistema_texto: str = ""
     puntajes: dict[str, float] = field(default_factory=dict)
     iteraciones: int = 0                                  # reescrituras aplicadas
     usos: list[dict] = field(default_factory=list)        # usage_events del LLM
@@ -127,21 +140,28 @@ def _entero(cfg: dict, clave: str, defecto: int) -> int:
 # le da a cada posición una FUNCIÓN (tensión → desarrollo → prueba → remate) y hace
 # que de ella dependan las tres cosas que la app escribe y el modelo no puede pisar:
 # la escala del titular, la presencia del acento y el plano. Lo que NO cambia entre
-# beats es el esqueleto del lockup —titular arriba, apoyo al pie, sujeto en la banda
-# central—: unificarlo fue una corrección deliberada y es lo que hace que el set se
-# lea como un sistema.
+# beats es el esqueleto del lockup —titular arriba, apoyo al pie—: unificarlo fue una
+# corrección deliberada y es lo que hace que el set se lea como un sistema.
+#
+# Los cuatro planos subordinan el sujeto al tipo (va bajo y pequeño, ver `_clausula_aire`)
+# pero conservan su ESCALERA DE DISTANCIAS: macro → media → cenital → wide. Las dos cosas
+# van juntas y no es un detalle — subordinar el objeto sin conservar la escalera deja los
+# cuatro slides sin nada que los distinga salvo el texto, que es el carrusel que se lee
+# como una plantilla rellenada.
 
 # Respaldos mínimos por si `architect.json` falta entero: como en el resto del
 # módulo, sin config el prompt sale menos afinado pero igual de válido.
 _COMPOSICION_BEAT_FALLBACK = {
-    "tension": "SHOT — TENSION, the closest framing of the set: the subject fills the central "
-               "band edge to edge, its own falloff and defocus forming the clear zones.",
-    "desarrollo": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole in the "
-                  "central band, the set legible behind it, bare surface forming the clear zones.",
-    "prueba": "SHOT — EVIDENCE, shot square-on: one object alone, centred on a bare field that "
-              "forms the clear zones, nothing else competing in the frame.",
+    "tension": "SHOT — TENSION, the closest framing of the set: the subject crops hard against "
+               "the bottom edge under the type, its own falloff and defocus forming the clear "
+               "zone above.",
+    "desarrollo": "SHOT — DEVELOPMENT, a calm mid-distance view: the subject sits whole along "
+                  "the lower edge, the set legible behind it, bare surface forming the clear "
+                  "zone above.",
+    "prueba": "SHOT — EVIDENCE, shot square-on: one object alone in the lower band on a bare "
+              "field, the rest of the frame an empty clear zone, nothing competing with the type.",
     "remate": "SHOT — PAYOFF, the widest and deepest frame of the set: the subject reads small "
-              "in the central band, quiet space opening above and below it.",
+              "at the foot of the frame, a large quiet space opening above it for the type.",
 }
 _FUNCION_BEAT_FALLBACK = {
     "tension": "the tension — the problem, symptom or cost the reader recognises",
@@ -149,13 +169,383 @@ _FUNCION_BEAT_FALLBACK = {
     "prueba": "the evidence — the concrete figure, example or result that proves it",
     "remate": "the payoff — the line the reader would screenshot, still an idea from the source",
 }
+# Los cuatro decían dónde estaba el sujeto además de a qué distancia ("still life on a
+# bare surface", "flat overhead of one object on an empty field"), y eran una de las seis
+# fuentes del carrusel de mesas: el ritmo es DISTANCIA, altura de cámara y qué llena el
+# cuadro — el lugar lo declara el bloqueo de mundo, que además es igual en todas las piezas.
 _RITMO_FALLBACK = {
-    "tension": "Tight macro of a single worn surface or texture, hard raking light across it.",
-    "desarrollo": "Mid-distance still life on a bare surface, shallow focus, camera at object height.",
-    "prueba": "Flat overhead of one object centred on an empty field, single hard key light.",
-    "remate": "Wide low three-quarter view with strong foreground depth, the subject small in a "
-              "large space.",
+    "tension": "The tightest shot of the set: one texture fills the lower frame, its edges "
+               "cropped away.",
+    "desarrollo": "Reading distance, camera at the subject's own height, the thing whole and "
+                  "whatever holds it visible.",
+    "prueba": "Square to the subject, one thing isolated against the plainest plane of the "
+              "location, nothing else competing.",
+    "remate": "The widest and deepest shot of the set, the subject small inside the space it "
+              "belongs to.",
 }
+
+
+# ── Arco del carrusel y mundo de la pieza ─────────────────────────────────────
+#
+# Dos ejes que se eligen UNA vez por job y se aplican idénticos a las N piezas. Es el
+# patrón que el proyecto ya validó con el bloqueo de luz, y por el mismo motivo: lo que
+# es invariante dentro de un set no puede decidirse una vez por imagen, o el set deja de
+# ser un set. Quien elige y congela es `job_runner.make_job` —el único sitio donde se
+# construye el shape del job, así que los dos flujos lo heredan—; acá viven la elección
+# determinista y las cláusulas que se emiten.
+#
+# EL MUNDO (`escenario`) es de la MARCA. Es el campo que faltaba: `ritmo_carrusel` solo
+# dice a qué distancia y a qué altura se fotografía, nunca DÓNDE, así que dos identidades
+# con paleta y tipografía completamente distintas producían la misma foto — un objeto
+# sobre una mesa — porque el lugar estaba escrito en la capa dura y era siempre el mismo.
+#
+# EL ARCO (`arco_carrusel`) es ESTRUCTURA, como los beats: qué encadena las N imágenes
+# entre sí. Sin él, `continuidad_set` pedía "mismo cuarto, objeto protagonista DISTINTO",
+# que es una regla de CATÁLOGO y no de relato — y produce exactamente lo que se auditó:
+# cinco props sin relación sobre la misma madera. El camino de video ya lo hacía bien
+# ("keep a recurring anchor… chain the beats"); el de imagen se escribió al revés.
+#
+# LA FRONTERA ENTRE ARCO Y BEAT ES DURA: **el arco elige QUÉ hay delante de la cámara, el
+# beat elige CÓMO se fotografía.** Un `enlace` que hablara de distancia, altura o encuadre
+# colisionaría con la cláusula de plano del beat —que va pegada a ella en la misma
+# sección— y ante dos instrucciones de cámara contradictorias el modelo elige una. Es la
+# misma lección del paso 12.
+
+ARCOS = ("transformacion", "cadena", "recorrido", "escala")
+
+# Si el objeto protagonista VUELVE entre slides. Lo consultan el redactor (para escribir
+# las escenas encadenadas o distintas) y el lint (que no puede avisar de «escena repetida»
+# cuando la repetición es justo lo que el arco pide).
+_ARCO_FALLBACK = {
+    "transformacion": {
+        "sujeto": "recurrente",
+        "funcion": "the same hero object comes back in every slide with its STATE moved on — "
+                   "whole to broken, full to empty, one to many. The object recurs; its "
+                   "condition never does",
+        "enlace": "SET ARC — TRANSFORMATION: the cover's own hero object at a later state; same "
+                  "thing, different condition, and the change is visible.",
+    },
+    "cadena": {
+        "sujeto": "encadenado",
+        "funcion": "each slide opens on something the previous one left behind — what it "
+                   "produced, what it became, what it fed into — and names it explicitly",
+        "enlace": "SET ARC — CHAIN: the hero object is what the previous piece left behind — its "
+                  "product, its residue, what it fed into.",
+    },
+    "recorrido": {
+        "sujeto": "distinto",
+        "funcion": "one place gone through part by part, each slide a different corner of the "
+                   "SAME location",
+        "enlace": "SET ARC — WALKTHROUGH: a different corner of the same location, with its own "
+                  "hero object; the place is continuous, the part of it is new.",
+    },
+    "escala": {
+        "sujeto": "distinto",
+        "funcion": "pieces of one system: the loose part, the assembly it belongs to, the space "
+                   "it is installed in — every slide a different rung of the same thing",
+        "enlace": "SET ARC — SYSTEM: a different rung of the cover's own system — the loose part, "
+                  "the assembly, the installation; never the same thing twice.",
+    },
+}
+_SUJETO_ARCO_FALLBACK = "distinto"
+
+# Respaldo del repertorio de mundos por si `architect.json` falta entero. Como el del
+# archivo, NO es todo tabletop a propósito: el bodegón de mesa es una pieza legítima, pero
+# como una opción entre varias y no como el default invisible que nadie eligió.
+_ESCENARIOS_FALLBACK = (
+    "A working workshop: concrete floor, steel racking, tools left where they were used.",
+    "A lived-in interior: plaster walls, a deep window, worn board floor.",
+    "The edge of a built place, outdoors: wet asphalt, brick, painted metal.",
+    "A bare studio table under one lamp: the subject and its shadow, nothing else.",
+)
+
+
+def _indice_estable(valor: str, n: int) -> int:
+    """Índice reproducible en `[0, n)` a partir de una cadena.
+
+    Con `hash()` no serviría: para `str` está aleatorizado por proceso
+    (PYTHONHASHSEED), así que un reinicio del servidor le daría otro arco al mismo job
+    — y el prompt de una imagen tiene que poder reconstruirse igual al rehacerla desde
+    la revisión, meses después.
+    """
+    if n <= 0:
+        return 0
+    digest = hashlib.blake2b(str(valor or "").encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % n
+
+
+def arcos_disponibles() -> tuple[str, ...]:
+    """Los arcos declarados en `architect.json`, o los de respaldo. Fuente única."""
+    arcos = _cfg_arch().get("arcos")
+    if isinstance(arcos, dict):
+        validos = tuple(str(a).strip() for a in arcos if str(a).strip())
+        if validos:
+            return validos
+    return ARCOS
+
+
+def elegir_arco(semilla: str) -> str:
+    """El arco de ESTE carrusel, elegido de forma determinista desde `semilla`.
+
+    Rota entre los arcos declarados para que dos posts seguidos no cuenten igual, y es
+    reproducible a propósito (ver `_indice_estable`). Quien llama pasa el id del job y
+    **congela** el resultado en `params`: elegir dos veces sería elegir distinto.
+    """
+    disponibles = arcos_disponibles()
+    return disponibles[_indice_estable(f"arco:{semilla}", len(disponibles))]
+
+
+def escenarios_de(identidad: dict | None = None) -> list[str]:
+    """El repertorio de mundos aplicable: identidad → `brand.json` → `architect.json`.
+
+    La MISMA cadena de respaldo que `encuadre_beat`, y por el mismo motivo: si esta se
+    saltara un escalón, un job sin identidad propia declararía un mundo por un lado y
+    otro por el otro. Se cae de fuente en fuente, no campo a campo: un repertorio es una
+    lista de alternativas y mezclar las de dos marcas no produce una tercera marca.
+    """
+    ident = identidad if isinstance(identidad, dict) else {}
+    for fuente in (ident.get("escenarios"),
+                   prompt_config.brand().get("escenarios"),
+                   _cfg_arch().get("escenarios_respaldo")):
+        if isinstance(fuente, (list, tuple)):
+            limpios = [str(e).strip() for e in fuente if str(e).strip()]
+            if limpios:
+                return limpios
+    return list(_ESCENARIOS_FALLBACK)
+
+
+def elegir_escenario(semilla: str, identidad: dict | None = None) -> str:
+    """El mundo de ESTE job. Determinista y reproducible, como `elegir_arco`.
+
+    La semilla se sala distinto que la del arco: con la misma, un repertorio de cuatro
+    mundos y cuatro arcos quedarían emparejados uno a uno para siempre, y el taller
+    saldría siempre con transformación.
+    """
+    repertorio = escenarios_de(identidad)
+    if not repertorio:
+        return ""
+    return repertorio[_indice_estable(f"mundo:{semilla}", len(repertorio))]
+
+
+# ── Sistemas de texto: cuántos niveles lleva un slide ────────────────────────
+#
+# Mismo reparto que `ritmo_carrusel`, que es la frontera que este proyecto ya validó:
+# QUÉ bloques existen y dónde van es LAYOUT (universal, `architect.json`); cuál de los
+# sistemas usa esta marca es IDENTIDAD (repertorio en la identidad visual, el job
+# congela uno). Lo que corrigen: un slide solo sabía imprimir un titular, así que un
+# carrusel de cuatro tenía ~56 palabras para contar un video entero — con ese
+# presupuesto no se narra, solo se titula.
+#
+# SOLO EN LOS SLIDES: la portada mantiene su lockup de siempre y `normalizar_spec` lo
+# fuerza en un único sitio, para que ningún camino pueda pedirle otra cosa.
+
+SISTEMAS = ("titular", "titular_cuerpo", "etiqueta_titular_cuerpo")
+# Claves de bloque conocidas. El orden NO es el de emisión (ese lo dicta cada sistema):
+# es el orden en el que se muestran los campos y en el que el redactor los escribe.
+CLAVES_BLOQUE = ("etiqueta", "titular", "cuerpo", "apoyo")
+_SISTEMA_BASE = "titular"
+
+# Respaldo mínimo por si `architect.json` falta entero: reproduce el lockup histórico
+# (titular arriba, apoyo al pie) para que el módulo siga produciendo una pieza válida.
+_SISTEMA_FALLBACK = {
+    "nombre": "Titular",
+    "acento": "titular",
+    "encargo": "ONE printed idea per slide",
+    "bloques": [
+        {"clave": "titular", "zona": "zona", "palabras": [3, 8],
+         "cita": 'HEADLINE "{texto}" — the largest element in the frame, {alineacion} in {zona}',
+         "escala": "The headline stands 15-18% of the frame height per line, over 2-3 lines."},
+        {"clave": "apoyo", "zona": "zona_kicker", "palabras": [0, 8],
+         "cita": 'SECOND LINE "{texto}" at ~40% of the headline size, {alineacion} in {zona}',
+         "escala": "The second line runs at ~40% of the headline size, one line."},
+    ],
+}
+
+
+def sistemas_disponibles() -> tuple[str, ...]:
+    """Los sistemas declarados en `architect.json`, o los de respaldo. Fuente única.
+
+    La importa `visual_identity` para validar el repertorio de una identidad: la lista
+    se lee, nunca se copia (mismo criterio que `ROLES_RITMO = ROLES_BEAT`).
+    """
+    sistemas = _cfg_arch().get("sistemas_texto")
+    if isinstance(sistemas, dict):
+        validos = tuple(str(s).strip() for s in sistemas if str(s).strip())
+        if validos:
+            return validos
+    return SISTEMAS
+
+
+def _cfg_sistema(sistema: str) -> dict:
+    cfg = (_cfg_arch().get("sistemas_texto") or {}).get(str(sistema or "").strip())
+    if isinstance(cfg, dict) and isinstance(cfg.get("bloques"), list) and cfg["bloques"]:
+        return cfg
+    base = (_cfg_arch().get("sistemas_texto") or {}).get(_SISTEMA_BASE)
+    if isinstance(base, dict) and isinstance(base.get("bloques"), list) and base["bloques"]:
+        return base
+    return _SISTEMA_FALLBACK
+
+
+def bloques_sistema(sistema: str) -> list[dict]:
+    """La spec ordenada de los bloques de ese sistema: `[{clave, zona, palabras, …}]`.
+
+    Fuente única del contrato de un sistema: de acá salen los campos que pide el
+    redactor, los que dibujan las dos compuertas previas, los que cita la sección 4 y
+    los que compara el QA. Si cada uno lo dedujera por su cuenta, el slide se
+    escribiría con tres bloques y se imprimiría con dos.
+    """
+    salida = []
+    for b in _cfg_sistema(sistema).get("bloques") or []:
+        if isinstance(b, dict) and str(b.get("clave") or "").strip() in CLAVES_BLOQUE:
+            salida.append(dict(b, clave=str(b["clave"]).strip()))
+    return salida or list(_SISTEMA_FALLBACK["bloques"])
+
+
+def claves_sistema(sistema: str) -> list[str]:
+    """Solo las claves de bloque, en orden de emisión."""
+    return [b["clave"] for b in bloques_sistema(sistema)]
+
+
+def bloques_requeridos(sistema: str) -> list[str]:
+    """Los bloques que este sistema NECESITA para imprimir la pieza entera.
+
+    Un bloque es opcional cuando su mínimo de palabras es 0 (el `apoyo`: una pieza sin
+    segunda línea es una pieza legítima). Fuente única de «este slide está completo»,
+    que consultan el redactor —para pedir la reparación—, el lint y el arquitecto.
+    """
+    return [b["clave"] for b in bloques_sistema(sistema)
+            if _entero_lista(b.get("palabras"), 0, 0) > 0]
+
+
+def bloques_de_slide(valor, sistema: str) -> dict[str, str]:
+    """Lo que ESE slide trae, por clave, según el sistema. Acepta los dos contratos."""
+    return {c: t for c, t in separar_bloques(valor, sistema)}
+
+
+# A qué banda del renderizador de respaldo corresponde cada zona del brief. El overlay
+# no sabe de sistemas ni relee `architect.json`: recibe los bloques ya resueltos, para
+# que la plantilla y el prompt no puedan discrepar por leer la config dos veces.
+_BANDA_OVERLAY = {"zona": "alta", "zona_kicker": "pie",
+                  "zona_cuerpo": "cuerpo", "zona_etiqueta": "etiqueta"}
+
+
+def lockup_bloques(valor, sistema: str, *, caja_alta: bool) -> list[dict]:
+    """Los bloques de una pieza listos para `image_overlay`, en orden de emisión.
+
+    El renderizador de respaldo tiene que imprimir lo MISMO que el prompt le pide al
+    modelo —es la razón de ser de ese módulo—, así que la banda, el tamaño relativo y
+    la caja de cada bloque se resuelven acá, en el sitio que ya los define, y viajan
+    resueltos. Que el overlay volviera a deducirlos de `architect.json` es exactamente
+    la clase de doble lectura que acaba desincronizándose.
+    """
+    specs = {b["clave"]: b for b in bloques_sistema(sistema)}
+    salida = []
+    for clave, texto in separar_bloques(valor, sistema):
+        if not texto:
+            continue
+        spec = specs.get(clave) or {}
+        alta = caja_alta and spec.get("caja_alta", True)
+        salida.append({
+            "clave": clave,
+            "texto": texto.upper() if alta else texto,
+            "banda": _BANDA_OVERLAY.get(str(spec.get("zona") or "zona"), "alta"),
+            "escala_rel": float(spec.get("escala_rel") or 1.0),
+            "max_lineas": int(spec.get("max_lineas") or 3),
+        })
+    return salida
+
+
+def sistema_valido(sistema: str) -> str:
+    """El nombre normalizado, o `""` si no es un sistema del catálogo."""
+    s = str(sistema or "").strip().lower()
+    return s if s in sistemas_disponibles() else ""
+
+
+def datos_sistema(sistema: str) -> dict:
+    """Lo que las dos UI y el redactor necesitan saber del sistema, sin releer el JSON."""
+    cfg = _cfg_sistema(sistema)
+    return {
+        "sistema": sistema_valido(sistema) or _SISTEMA_BASE,
+        "nombre": str(cfg.get("nombre") or "").strip(),
+        "descripcion": str(cfg.get("descripcion") or "").strip(),
+        "encargo": str(cfg.get("encargo") or "").strip(),
+        "acento": str(cfg.get("acento") or "titular").strip(),
+        "bloques": [
+            {
+                "clave": b["clave"],
+                "palabras": [_entero_lista(b.get("palabras"), 0, 0),
+                             _entero_lista(b.get("palabras"), 1, 0)],
+            }
+            for b in bloques_sistema(sistema)
+        ],
+    }
+
+
+def _entero_lista(valor, i: int, defecto: int) -> int:
+    try:
+        return int(valor[i])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return defecto
+
+
+def sistemas_de(identidad: dict | None = None) -> list[str]:
+    """El repertorio de sistemas aplicable: identidad → `brand.json` → `architect.json`.
+
+    La MISMA cadena de respaldo que `escenarios_de`, y se cae de fuente en fuente y no
+    entrada a entrada por el mismo motivo: un repertorio es una lista de alternativas y
+    mezclar las de dos marcas no produce una tercera marca.
+    """
+    ident = identidad if isinstance(identidad, dict) else {}
+    for fuente in (ident.get("sistemas_texto"),
+                   prompt_config.brand().get("sistemas_texto"),
+                   _cfg_arch().get("sistemas_respaldo")):
+        if isinstance(fuente, (list, tuple)):
+            limpios = [s for s in (sistema_valido(x) for x in fuente) if s]
+            if limpios:
+                return limpios
+    return [_SISTEMA_BASE]
+
+
+def elegir_sistema(semilla: str, identidad: dict | None = None) -> str:
+    """El sistema de texto de ESTE job. Determinista y reproducible, como `elegir_arco`.
+
+    La semilla se sala distinto que las del arco y el mundo: con la misma, tres
+    repertorios del mismo tamaño quedarían emparejados uno a uno para siempre.
+    """
+    repertorio = sistemas_de(identidad)
+    if not repertorio:
+        return _SISTEMA_BASE
+    return repertorio[_indice_estable(f"texto:{semilla}", len(repertorio))]
+
+
+def _cfg_arco(arco: str) -> dict:
+    cfg = (_cfg_arch().get("arcos") or {}).get(arco)
+    if isinstance(cfg, dict) and cfg:
+        return cfg
+    return _ARCO_FALLBACK.get(arco) or {}
+
+
+def funcion_arco(arco: str) -> str:
+    """Qué encadena ese arco, en una frase. `""` si no es un arco conocido.
+
+    Es lo que hace que las escenas de los slides y sus imágenes se encarguen desde el
+    mismo sitio: `post_writer` se la pasa al redactor y `_clausula_arco` manda su
+    `enlace` al prompt de imagen. Mismo reparto que `funcion_beat`.
+    """
+    return str(_cfg_arco(arco).get("funcion") or "").strip()
+
+
+def sujeto_arco(arco: str) -> str:
+    """`"recurrente"` | `"encadenado"` | `"distinto"`: si el objeto protagonista vuelve.
+
+    Fuente única de la única regla del carrusel que este cambio invierte. El redactor
+    tenía prohibido repetir el sujeto («the same device seen closer… does NOT count as
+    different»), que es una regla de catálogo: en un arco de transformación el objeto
+    que vuelve ES la historia. El lint lo lee por el mismo motivo, para no avisar de una
+    repetición que se pidió a propósito.
+    """
+    valor = str(_cfg_arco(arco).get("sujeto") or "").strip().lower()
+    return valor or (_SUJETO_ARCO_FALLBACK if arco else "")
 
 
 def rol_base(rol: str) -> str:
@@ -297,10 +687,15 @@ def normalizar_spec(spec: dict) -> dict:
     """Valida y completa la entrada del arquitecto.
 
     Entrada esperada (las claves extra se ignoran):
-        {"contenido": {"tema", "angulo", "texto_exacto_a_renderizar", "rol_slide", "idioma"?},
+        {"contenido": {"tema", "angulo", "texto_exacto_a_renderizar" | "bloques",
+                       "rol_slide", "idioma"?},
          "marca": {"paleta", "tipografia", "tono_visual", "aspect_ratio"},
          "prompt_base": str,
-         "referencias": [str]?}
+         "referencias": [str]?,
+         "ritmo_carrusel": [str]?,
+         "sistema_texto": str?,      # el que el job congeló (ver `elegir_sistema`)
+         "arco_carrusel": str?,      # el que el job congeló (ver `elegir_arco`)
+         "escenario": str?}          # el mundo que el job congeló (`elegir_escenario`)
 
     Lo que falte en `marca`/`referencias` sale de `prompts/brand.json`. El texto a
     renderizar es obligatorio: sin él no hay pieza que construir (regla del módulo).
@@ -312,18 +707,38 @@ def normalizar_spec(spec: dict) -> dict:
     contenido = spec.get("contenido") if isinstance(spec.get("contenido"), dict) else {}
     marca = spec.get("marca") if isinstance(spec.get("marca"), dict) else {}
 
-    # El texto llega con las marcas de acento del usuario (**así**) o sin ellas. Se
-    # separan ACÁ, en el único punto por el que pasan todos los caminos: lo que sigue
-    # —prompt, validador, QA— ve siempre el texto limpio.
-    texto, acento = separar_acento(contenido.get("texto_exacto_a_renderizar"))
-    if not texto:
+    rol = str(contenido.get("rol_slide") or "portada").strip().lower()
+    if rol not in _ROLES:
+        rol = "portada"
+
+    # La PORTADA siempre lleva el lockup de siempre, sea cual sea el sistema del job:
+    # es la pieza que ya funcionaba y la que funda el set. Se decide acá, en el único
+    # punto por el que pasan todos los caminos, para que ninguno pueda pedirle otra cosa.
+    sistema = (_SISTEMA_BASE if rol_base(rol) == "portada"
+               else sistema_valido(spec.get("sistema_texto")) or _SISTEMA_BASE)
+
+    # Los bloques llegan por uno de los dos contratos (dict nuevo o str de siempre) y
+    # `separar_bloques` es el único que sabe repartirlos. Traen las marcas de acento del
+    # usuario (**así**) o no; se quitan ACÁ, así que lo que sigue —prompt, validador,
+    # QA, plantilla— ve siempre el texto limpio y los asteriscos no pueden imprimirse.
+    crudos = (contenido.get("bloques") if isinstance(contenido.get("bloques"), dict)
+              else contenido.get("texto_exacto_a_renderizar"))
+    bloques: dict[str, str] = {}
+    acentos: dict[str, str] = {}
+    for clave, crudo in separar_bloques(crudos, sistema):
+        bloques[clave], acentos[clave] = separar_acento(crudo)
+    if not any(bloques.values()):
         raise PromptInvalido([
             "falta `contenido.texto_exacto_a_renderizar` — el texto nunca se omite"
         ])
 
-    rol = str(contenido.get("rol_slide") or "portada").strip().lower()
-    if rol not in _ROLES:
-        rol = "portada"
+    # Un acento por pieza y vive donde el sistema dice (el titular). Si el usuario marcó
+    # en otro bloque se respeta igual —marcar es una decisión suya y ya era el
+    # comportamiento cuando la pieza era un solo string—, pero el bloque del sistema
+    # manda cuando los dos traen marca.
+    clave_acento = str(_cfg_sistema(sistema).get("acento") or "titular").strip()
+    acento = acentos.get(clave_acento) or next((a for a in acentos.values() if a), "")
+    texto = " ".join(t for t in bloques.values() if t)
 
     aspect = (str(marca.get("aspect_ratio") or "").strip()
               or str(marca_def.get("aspect_ratio") or "").strip()
@@ -341,11 +756,25 @@ def normalizar_spec(spec: dict) -> dict:
     if not ritmo:
         ritmo = marca_def.get("ritmo_carrusel") or []
 
+    # Los dos ejes que el job congela al crearse. **Vacío significa "lo de siempre"**, no
+    # "en blanco": sin escenario no se emite el bloqueo de mundo y sin arco la cláusula de
+    # continuidad recupera su segunda mitad de antes (`continuidad_sin_arco`), así que un
+    # job anterior a esta versión —o una llamada directa al arquitecto— genera igual que
+    # generaba. No se eligen acá a propósito: elegir en el punto donde se construye el
+    # prompt sería elegir una vez POR IMAGEN, que es justo el defecto que esto corrige.
+    arco = str(spec.get("arco_carrusel") or "").strip().lower()
+    if arco not in arcos_disponibles():
+        arco = ""
+
     return {
         "contenido": {
             "tema": str(contenido.get("tema") or "").strip(),
             "angulo": str(contenido.get("angulo") or "").strip(),
             "texto_exacto_a_renderizar": texto,
+            # Los bloques ya repartidos y limpios, en el orden de emisión del sistema.
+            # Es el contrato con todo lo que hay aguas abajo (sección 4, sección 5, QA
+            # por nivel, plantilla de respaldo): la clave dice QUÉ es cada string.
+            "bloques": bloques,
             # Fragmento que va en color de acento. Vacío = lo elige el modelo.
             "acento": acento,
             # Escena de la portada, solo en los slides: es el ancla de continuidad
@@ -380,6 +809,9 @@ def normalizar_spec(spec: dict) -> dict:
         # blanco tiene que dejar su hueco y caer al respaldo de ESE beat, no correr
         # el siguiente a su sitio.
         "ritmo_carrusel": [str(r).strip() for r in ritmo] if isinstance(ritmo, (list, tuple)) else [],
+        "sistema_texto": sistema,
+        "arco_carrusel": arco,
+        "escenario": str(spec.get("escenario") or "").strip(),
     }
 
 
@@ -434,6 +866,45 @@ def dividir_texto(texto: str, max_palabras: int = 0) -> tuple[str, str]:
 def _bloques(texto: str) -> list[str]:
     titular, kicker = dividir_texto(texto)
     return [b for b in (titular, kicker) if b]
+
+
+def separar_bloques(valor, sistema: str = "") -> list[tuple[str, str]]:
+    """`str | dict` → `[(clave, texto)]` en el orden de emisión del sistema.
+
+    Punto ÚNICO por el que pasan los dos contratos de entrada, y tiene que serlo: el
+    prompt, la plantilla de respaldo, el QA y las dos compuertas previas cuentan los
+    bloques de un slide, y si cada uno los dedujera por su cuenta el slide se
+    escribiría con tres y se imprimiría con dos.
+
+    - **dict** — el contrato nuevo (`{"etiqueta": …, "titular": …, "cuerpo": …}`).
+      Se lee bloque a bloque y **los huecos se conservan**: un `cuerpo` vacío deja su
+      hueco en vez de correr el siguiente a su sitio, igual que los campos indexados
+      de la compuerta previa.
+    - **str** — el contrato de siempre, y sigue valiendo: el texto va al `titular` y
+      lo que quede detrás de la raya espaciada baja al bloque de texto secundario del
+      sistema (su `cuerpo` si lo tiene, si no su `apoyo`). Un job anterior a los
+      sistemas, o un texto escrito a mano en la revisión, se reparten como se
+      repartían. La `etiqueta` nunca se rellena así: es un campo explícito y
+      adivinarla desde una frase produciría un rótulo inventado.
+
+    Devuelve los bloques **con sus marcas de acento intactas**: quitarlas es trabajo de
+    `normalizar_spec`, que es quien sabe cuál de ellos las lleva.
+    """
+    specs = bloques_sistema(sistema)
+    claves = [b["clave"] for b in specs]
+    topes = {b["clave"]: _entero_lista(b.get("palabras"), 1, _MAX_PALABRAS_BLOQUE)
+             for b in specs}
+
+    if isinstance(valor, dict):
+        return [(c, " ".join(str(valor.get(c) or "").split())) for c in claves]
+
+    texto = " ".join(str(valor or "").split())
+    secundario = next((c for c in ("cuerpo", "apoyo") if c in claves), "")
+    titular, resto = dividir_texto(texto, topes.get("titular", _MAX_PALABRAS_BLOQUE))
+    reparto = {"titular": titular}
+    if secundario:
+        reparto[secundario] = resto
+    return [(c, reparto.get(c, "")) for c in claves]
 
 
 def pide_caja_alta(tipografia: str) -> bool:
@@ -553,6 +1024,10 @@ def _zona(norm: dict) -> dict:
     return {
         "zona": z.get("zona") or "the upper band, below an 8% top margin and above the 42% height line",
         "zona_kicker": z.get("zona_kicker") or "the bottom band, above an 8% bottom margin",
+        # Las dos bandas que estrenaron los sistemas de texto. Tienen que estar acá o el
+        # bloque que las pide cae a la del titular y el cuerpo se imprime encima de él.
+        "zona_etiqueta": z.get("zona_etiqueta") or "the very top of the upper band, on the 8% top margin",
+        "zona_cuerpo": z.get("zona_cuerpo") or "directly under the headline, inside the same upper band",
         "alineacion": z.get("alineacion") or "flush left from the 8% side margin",
         "ancho": z.get("ancho") or "up to 84% of the frame width",
         "margen": z.get("margen") or "an 8% safe margin on all four sides",
@@ -563,42 +1038,55 @@ def _tiene_acentos(texto: str) -> bool:
     return bool(re.search(r"[áéíóúüñÁÉÍÓÚÜÑàèìòùâêîôûçÇ]", texto))
 
 
-def _seccion_texto(norm: dict, bloques: list[str], *, refuerzo: bool = False,
+def _cita_bloque(spec_bloque: dict, texto: str, z: dict) -> str:
+    """Una línea de la sección 4: el string literal con su tamaño y su banda.
+
+    La posición y el tamaño viajan acá, DENTRO de la cita, y no en el detalle
+    compartido: son lo único que de verdad cambia entre un bloque y otro.
+    """
+    plantilla = str(spec_bloque.get("cita") or
+                    'TEXT "{texto}" — {alineacion} in {zona}')
+    zona = z.get(str(spec_bloque.get("zona") or "zona")) or z.get("zona") or ""
+    try:
+        return plantilla.format(texto=texto, zona=zona, alineacion=z.get("alineacion", ""),
+                                ancho=z.get("ancho", ""), margen=z.get("margen", ""))
+    except (KeyError, IndexError):
+        return f'TEXT "{texto}"'
+
+
+def _seccion_texto(norm: dict, bloques: list[tuple[str, str]], *, refuerzo: bool = False,
                    cortes: list[str] | None = None) -> str:
-    """Sección 4: el bloque de texto. Es la razón de ser del módulo — se arma a mano."""
+    """Sección 4: el bloque de texto. Es la razón de ser del módulo — se arma a mano.
+
+    `bloques` son los pares `(clave, texto)` NO vacíos del sistema, ya en su caja
+    final. Se emiten como una lista con una cita por bloque más un detalle compartido:
+    el idioma, las tildes, la copia carácter a carácter y el área segura valen para
+    todos los strings, y repetirlos por bloque triplicaba la parte cara de la sección
+    sin decir nada nuevo. Es lo que hace asequible el tercer nivel de texto.
+    """
     cfg_txt = _cfg_arch().get("texto") or {}
     z = _zona(norm)
     idiomas = _cfg_arch().get("idiomas") or {}
     codigo = norm["contenido"]["idioma"]
     idioma = idiomas.get(codigo) or codigo.upper()
-    titular = bloques[0]
-    kicker = bloques[1] if len(bloques) > 1 else ""
+    specs = {b["clave"]: b for b in bloques_sistema(norm.get("sistema_texto") or _SISTEMA_BASE)}
 
-    if kicker:
-        base = (cfg_txt.get("instruccion_con_kicker")
-                or 'render this exact text: "{titular}" as the headline, and directly under it, at '
-                   'about half its size, this exact kicker: "{kicker}"')
-        instruccion = base.format(titular=titular, kicker=kicker)
-    else:
-        base = cfg_txt.get("instruccion") or 'render this exact text: "{titular}"'
-        instruccion = base.format(titular=titular)
+    apertura = str(cfg_txt.get("apertura") or
+                   "render these exact strings, and no other words anywhere in the image —")
+    citas = [_cita_bloque(specs.get(clave) or {}, texto, z) for clave, texto in bloques]
 
     acentos = (cfg_txt.get("detalle_acentos")
                or "keep every accented character exactly as written") if _tiene_acentos(
-        " ".join(bloques)) else (cfg_txt.get("detalle_sin_acentos") or "no accented characters in this string")
+        " ".join(t for _, t in bloques)) else (
+        cfg_txt.get("detalle_sin_acentos") or "no accented characters in this string")
     detalle = (cfg_txt.get("detalle") or
-               "Language: {idioma}. Reproduce every character literally ({acentos}). The headline sits "
-               "in the reserved clear zone: {zona}, {alineacion}, spanning {ancho}. SAFE AREA: every "
-               "glyph, accent and descender sits fully inside {margen} — nothing touches, overlaps or is "
-               "cut by a frame edge. These are the ONLY words in the image.").format(
+               "Language: {idioma}; {acentos}. Copy each string character by character — never "
+               "translate, abbreviate or hyphenate, and set every glyph in the case supplied. Each "
+               "block spans {ancho}. SAFE AREA: every glyph, accent and descender sits whole inside "
+               "{margen} — nothing touches or is cut by a frame edge.").format(
         idioma=idioma, acentos=acentos, **z)
-    partes = [f"{instruccion}. {detalle}"]
-    if kicker:
-        # La banda baja se declara aparte: sin esto el modelo pega la segunda línea
-        # debajo del titular y la pieza vuelve a leerse como foto + caption.
-        partes.append((cfg_txt.get("detalle_kicker") or
-                       "The second line locks into {zona_kicker}, {alineacion}, inside the same safe "
-                       "area.").format(**z))
+
+    partes = [f"{apertura} {'; '.join(citas)}. {detalle}"]
     # Cortes de línea dictados: el modelo los decide según lo que le quepa, no según lo
     # que la frase dice, y de ahí salen las viudas ("EN" solo en la tercera línea, al
     # 14% del alto). Las etiquetas son instrucción, nunca contenido — hay que decirlo o
@@ -678,49 +1166,77 @@ def sin_layout(valor: str) -> str:
     return ", ".join(limpios) if limpios else v
 
 
-def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
+def _escala_bloque(spec_bloque: dict, rol: str) -> str:
+    """La escala de un bloque para este rol.
+
+    Se declara como string (igual en todos los beats) o como tabla por rol: la
+    variación por BEAT solo tiene sitio donde el titular está solo en la banda, y ese
+    es el sistema `titular`. Con un cuerpo debajo, el titular no puede oscilar entre el
+    15 y el 20% sin dejar al cuerpo fuera de su banda.
+    """
+    escala = spec_bloque.get("escala")
+    if isinstance(escala, dict):
+        return str(escala.get(rol) or escala.get(rol_base(rol)) or escala.get("portada") or "").strip()
+    return str(escala or "").strip()
+
+
+def _seccion_tipografia(norm: dict, bloques: list[tuple[str, str]]) -> str:
     """Sección 5: la tipografía, escrita por la app.
 
     Dejó de ser creativa a propósito. Lo que la hacía verse genérica no era el
     modelo sino el brief: la familia salía del LLM (distinta en cada post) y nadie
     declaraba la ESCALA, así que el modelo ponía cuerpo de pie de foto. Acá la
-    familia y el acento son marca (`brand.json`) y la escala es layout por rol
-    (`architect.json`): un titular al 13-16% del alto es lo que separa un póster de
-    un caption.
+    familia y el acento son marca (`brand.json`) y la escala es layout por bloque
+    y por rol (`architect.json`): un titular al 13-16% del alto es lo que separa un
+    póster de un caption.
     """
     cfg_tip = _cfg_arch().get("tipografia") or {}
     m = norm["marca"]
     rol = norm["contenido"]["rol_slide"]
-    escalas = cfg_tip.get("escala") or {}
-    escala = (escalas.get(rol) or escalas.get(rol_base(rol)) or escalas.get("portada")
-              or "Each headline line stands 13-16% of the frame height, broken over 2-3 lines.")
+    specs = {b["clave"]: b for b in bloques_sistema(norm.get("sistema_texto") or _SISTEMA_BASE)}
+    # Solo la de los bloques que ESTA pieza imprime: declarar la escala de un cuerpo que
+    # no existe le pide al modelo un párrafo que nadie le dio.
+    escala = " ".join(e for e in (_escala_bloque(specs.get(c) or {}, rol) for c, _ in bloques) if e)
+    if not escala:
+        escala = "The headline stands 13-16% of the frame height per line, over 2-3 lines."
     # Un acento que aparece en TODOS los slides deja de ser un acento: el beat que lo
     # calla (la tensión) es lo que hace que el color se note en los que lo llevan. Solo
     # se calla la elección AUTOMÁTICA — un span marcado a mano por el usuario manda
     # siempre, que es la única palanca que tiene sobre la jerarquía del titular.
     omitido = cfg_tip.get("acento_omitido")
     sin_acento_auto = rol in [str(r).strip().lower() for r in omitido] if isinstance(omitido, list) else False
-    acento = ""
-    if m["color_acento"]:
-        # El span elegido a mano en la revisión previa manda sobre la elección
-        # automática: es la única palanca del usuario sobre la jerarquía del titular.
-        elegido = norm["contenido"].get("acento") or ""
-        if elegido:
-            plantilla_ac = (cfg_tip.get("acento_explicito") or
-                            'Exactly this fragment — "{acento}" — in {color_acento}; every other '
-                            "word stays in the headline color.")
-            acento = plantilla_ac.format(acento=elegido, color_acento=m["color_acento"])
-        elif not sin_acento_auto:
-            acento = (cfg_tip.get("acento") or
-                      "Exactly one span — the single most load-bearing word of the quoted string — in "
-                      "{color_acento}; every other word stays in the headline color.").format(
-                color_acento=tinta(m["color_acento"]))
+    color = tinta(m["color_texto"]) or "light type over the dark areas of the frame"
+    # El span elegido a mano en la revisión previa manda sobre la elección automática:
+    # es la única palanca del usuario sobre la jerarquía del titular.
+    elegido = norm["contenido"].get("acento") or ""
+    if m["color_acento"] and elegido:
+        # `tinta` también acá, y no es cosmético: la rama automática reducía el color a
+        # nombre + hex y esta lo pegaba crudo, así que el MISMO acento se le describía
+        # al modelo de dos maneras distintas según quién lo hubiera elegido — y dos
+        # formulaciones de un color son dos colores.
+        acento = (cfg_tip.get("acento_explicito") or
+                  'Exactly this fragment — "{acento}" — in {color_acento}; every other '
+                  "word stays in the headline color.").format(
+            acento=elegido, color_acento=tinta(m["color_acento"]))
+    elif m["color_acento"] and not sin_acento_auto:
+        acento = (cfg_tip.get("acento") or
+                  "Exactly one span — the single most load-bearing word of the quoted string — in "
+                  "{color_acento}; every other word stays in the headline color.").format(
+            color_acento=tinta(m["color_acento"]))
+    else:
+        # NO emitir nada no es lo mismo que prohibirlo. Mientras el beat omitido se
+        # limitaba a callar la cláusula, el modelo pintaba igual una palabra y elegía el
+        # color por su cuenta: es una de las tres causas del carrusel con un acento
+        # distinto en cada slide. El silencio no es una prohibición.
+        acento = (cfg_tip.get("acento_ninguno") or
+                  "Every word in {color_texto}: no highlighted word and no second colour anywhere "
+                  "in the type.").format(color_texto=color)
     datos = {
         # La familia pasa por el filtro de layout y el color se reduce a TINTA: esta
         # sección habla del tipo, no de sobre qué se apoya (ver el bloque de arriba).
         "display": sin_layout(m["tipografia"]) or "ultra-condensed heavy display grotesque in ALL CAPS",
         "escala": escala,
-        "color": tinta(m["color_texto"]) or "light type over the dark areas of the frame",
+        "color": color,
         "acento": acento,
     }
     plantilla = (cfg_tip.get("plantilla") or
@@ -730,7 +1246,8 @@ def _seccion_tipografia(norm: dict, bloques: list[str]) -> str:
         seccion = plantilla.format(**datos)
     except (KeyError, IndexError):
         seccion = f"{datos['display']}. {datos['escala']} {datos['color']}. {acento}"
-    # La familia de la segunda línea solo se declara si hay segunda línea.
+    # La familia secundaria solo se declara si la pieza imprime algún bloque que no sea
+    # el titular: es la que compone el apoyo, el cuerpo y la etiqueta.
     if len(bloques) > 1 and m["tipografia_secundaria"]:
         seccion += " " + (cfg_tip.get("secundaria") or "Second line: {secundaria}.").format(
             secundaria=sin_layout(m["tipografia_secundaria"]))
@@ -772,10 +1289,13 @@ def _clausula_aire(norm: dict) -> str:
     y el mismo carrusel salía con unos slides a sangre y otros enmarcados. Ahora el
     sangrado se declara y el aire se nombra por sus medios fotográficos.
 
-    En un slide con beat el lockup va en su versión CORTA: el beat ya nombra de qué
-    está hecho el aire en ese plano concreto (el falloff de la propia masa, la
-    superficie desnuda, el campo vacío), así que la versión larga lo repetiría en
-    genérico y costaría ~180 caracteres del presupuesto del brief.
+    En un slide con beat el lockup NO es esta cláusula acortada sino su inversa: el
+    titular se lleva los dos tercios altos y el sujeto queda subordinado debajo. La
+    portada vende con una imagen; el slide transmite, y lo que transmite es el texto.
+    El esqueleto (titular arriba, apoyo al pie, sangrado a los cuatro bordes) es el
+    mismo en las dos — la inversión se declara como jerarquía de TAMAÑO, no moviendo
+    las bandas de sitio, porque son las bandas compartidas lo que hace que el set se
+    lea como un sistema.
     """
     arch = _cfg_arch()
     es_beat = norm["contenido"]["rol_slide"] in ROLES_BEAT
@@ -786,6 +1306,9 @@ def _clausula_aire(norm: dict) -> str:
                  "(shadow, defocus, bare surface), never panels of flat colour; anchor the subject in "
                  "the central band between them, lit so its silhouette separates from the type; they "
                  "overlap only where the frame falls to near-black.")
+    # Ojo con el respaldo de arriba: es el de la PORTADA. Un slide que caiga a él (config
+    # rota) sale con la jerarquía vieja —sujeto en la banda central— en vez de con la
+    # invertida. Es degradar, no romper: el prompt sigue siendo válido.
     partes = (plantilla.format(**_zona(norm)), _clausula_beat(norm), _clausula_set(norm))
     return " ".join(p for p in partes if p)
 
@@ -855,15 +1378,113 @@ def _clausula_luz(norm: dict) -> str:
         return ""
 
 
+def _clausula_paleta(norm: dict) -> str:
+    """Bloqueo de paleta que la app PREFIJA a la sección 6, detrás del de luz.
+
+    Tercero de la familia (`_clausula_luz`, `_clausula_mundo`) y por el motivo de
+    siempre: lo invariante dentro de un job no puede decidirse una vez por imagen. La
+    sección 6 la escribe el LLM por pieza y su instrucción le pedía literalmente
+    "Name the brand hex values for the palette", así que la paleta se REDACTABA N
+    veces, cada vez con otras palabras. El defecto que producía es el que se reportó y
+    se ve de un vistazo: en un mismo carrusel, cada slide con el acento de un color
+    distinto.
+
+    Es una de las tres causas de ese defecto, y la única que vive fuera de la sección 5
+    (las otras dos: el beat que callaba el acento sin prohibirlo y la rama de acento
+    explícito que se saltaba `tinta`). Como contrapartida el LLM tiene prohibido nombrar
+    colores y el respaldo dejó de arrastrar la paleta: se declara una sola vez, acá.
+
+    Sin paleta no se emite: degradar, nunca romper.
+    """
+    m = norm["marca"]
+    paleta = (f"{m['paleta_nombres']} ({m['paleta']})" if m["paleta_nombres"] and m["paleta"]
+              else m["paleta"] or m["paleta_nombres"])
+    if not paleta:
+        return ""
+    plantilla = (_cfg_arch().get("paleta_bloqueada") or
+                 "PALETTE LOCK — the same colours in every piece of this set, no other hue "
+                 "anywhere: {paleta}.")
+    try:
+        return " ".join(plantilla.format(paleta=paleta).split())
+    except (KeyError, IndexError):
+        return ""
+
+
+def _clausula_mundo(norm: dict) -> str:
+    """Bloqueo de mundo que la app PREFIJA siempre a la sección 2 (sujeto).
+
+    Hermano del bloqueo de luz y por exactamente el mismo motivo. La luz se arregló al
+    ver que cinco piezas del mismo carrusel salían con cinco esquemas distintos; el
+    LUGAR tenía el mismo defecto con otro traje —cada imagen inventaba el suyo y la
+    continuidad se intentaba citando la escena de la portada, que es una copia y no un
+    ancla—, más uno peor: como el lugar no lo podía declarar nadie, lo acababa poniendo
+    el vocabulario de la capa dura, que decía «apoyado en una superficie» en todas
+    partes. De ahí los carruseles de mesas, iguales con cualquier identidad.
+
+    Va PREFIJADO y no dentro de las secciones creativas para que la poda de
+    `_ajustar_longitud` no lo toque: tiene que salir byte a byte idéntico en la portada
+    y en los N slides, o no es un bloqueo.
+
+    Vacío = no se emite y el prompt sale como antes de que existieran los mundos.
+    """
+    escenario = _recortar(str(norm.get("escenario") or "").strip(),
+                          _entero(_validacion_cfg(), "mundo_palabras", 22))
+    if not escenario:
+        return ""
+    plantilla = (_cfg_arch().get("mundo_bloqueado") or
+                 "WORLD LOCK — the same location in every piece of this set: {escenario} The "
+                 "subject belongs to that place and is held by something in it.")
+    try:
+        return " ".join(plantilla.format(escenario=escenario).split())
+    except (KeyError, IndexError):
+        return ""
+
+
+def _clausula_arco(norm: dict) -> str:
+    """Qué encadena este slide con los demás. Solo en los slides, detrás de la continuidad.
+
+    Es la segunda mitad de la continuidad de set, la que dice lo que tiene que CAMBIAR.
+    Antes era una constante —«a DIFFERENT hero object, camera position and framing»— y
+    esa constante es una regla de catálogo: garantiza que las piezas no se repitan y a
+    la vez impide que se relacionen, que es la definición de cinco props sueltos sobre
+    la misma mesa. Ahora sale del arco que el job congeló, y en dos de los cuatro el
+    objeto protagonista VUELVE a propósito.
+
+    Sin arco se emite la constante de antes (`continuidad_sin_arco`): un job anterior a
+    esta versión tiene que generar como generaba, no peor.
+
+    Ojo con lo que NO puede decir: nada de distancia, altura ni encuadre. Eso es del
+    beat, cuya cláusula va pegada justo delante en la misma sección, y ante dos
+    instrucciones de cámara contradictorias el modelo elige una.
+    """
+    if rol_base(norm["contenido"]["rol_slide"]) != "contenido":
+        return ""
+    arch = _cfg_arch()
+    arco = str(norm.get("arco_carrusel") or "").strip()
+    if not arco:
+        return str(arch.get("continuidad_sin_arco") or
+                   "A DIFFERENT hero object, camera position and framing from the cover.").strip()
+    enlace = str(_cfg_arco(arco).get("enlace") or "").strip()
+    if not enlace:
+        return ""
+    return _recortar(enlace, _entero(_validacion_cfg(), "arco_palabras", 26))
+
+
 def _clausula_set(norm: dict) -> str:
-    """Continuidad del carrusel, solo en los slides: mismo mundo, objeto distinto.
+    """Continuidad del carrusel, solo en los slides: lo que se comparte + lo que cambia.
 
     Es el reemplazo textual de lo que antes se intentaba pasando la portada en
     `medias`. Aquello no era una referencia de estilo sino image-to-image, así que
-    devolvía la portada re-encuadrada; esto pide explícitamente las dos mitades —lo
-    que se comparte y lo que tiene que cambiar—, que es lo que un director de arte
-    le diría a un fotógrafo. La escena de la portada se recorta: entra como ancla,
-    no como un segundo brief que se coma el presupuesto de caracteres.
+    devolvía la portada re-encuadrada; esto pide explícitamente las dos mitades, que
+    es lo que un director de arte le diría a un fotógrafo. La primera la escribe esta
+    cláusula; la segunda sale del arco (`_clausula_arco`).
+
+    **Dejó de citar la escena de la portada**, y es una mejora antes que un ahorro:
+    citarla era re-derivar el mundo compartido a partir de UNA pieza —una copia, no un
+    ancla—. Ahora el mundo lo declara `_clausula_mundo` byte a byte idéntico en todas
+    las piezas, portada incluida, que es exactamente lo que esto aproximaba. De paso
+    libera el presupuesto que paga el bloqueo de mundo, y con él desaparece el único
+    tope de palabras que esta cláusula necesitaba.
     """
     c = norm["contenido"]
     # La comparación va contra `rol_base`, NUNCA contra el literal "contenido": desde
@@ -872,23 +1493,13 @@ def _clausula_set(norm: dict) -> str:
     # slides de carrusel sin un solo error — y con ella se fue lo único que declaraba
     # el mundo compartido. Es el fallo que produjo carruseles con cinco localizaciones
     # distintas y, a la vez, el objeto de la portada repetido en tres piezas.
-    if rol_base(c["rol_slide"]) != "contenido" or not c.get("escena_portada"):
+    if rol_base(c["rol_slide"]) != "contenido":
         return ""
     arch = _cfg_arch()
-    plantilla = (arch.get("continuidad_set") or
-                 "SET CONTINUITY: same location, surfaces, light setup and palette as the carousel "
-                 "cover ({escena_portada}), but a DIFFERENT hero object, camera position and framing "
-                 "— never the cover restaged or re-cropped.")
-    # La cita de la portada es lo único variable de esta cláusula, y solo la pagan los
-    # slides: con 18 palabras el peor caso (slide con kicker) se pasaba del techo aun
-    # podando las creativas al mínimo, y entonces el validador tira el prompt entero.
-    # Basta con nombrar el sitio, la superficie y la luz — el resto es el brief de la
-    # portada comiéndose el presupuesto del slide.
-    tope = _entero(_validacion_cfg(), "continuidad_set_palabras", 12)
-    try:
-        return plantilla.format(escena_portada=_recortar(c["escena_portada"], tope).rstrip("."))
-    except (KeyError, IndexError):
-        return ""
+    compartido = str(arch.get("continuidad_set") or
+                     "SET CONTINUITY: same location, surfaces, light and palette as the rest of "
+                     "this carousel; never the cover restaged or re-cropped.").strip()
+    return " ".join(p for p in (compartido, _clausula_arco(norm)) if p)
 
 
 # ── Secciones creativas: respaldo determinista ────────────────────────────────
@@ -897,9 +1508,12 @@ def _respaldos(norm: dict) -> dict[str, str]:
     """Secciones creativas sin LLM. Deben bastar para pasar el validador."""
     r = _cfg_arch().get("respaldos") or {}
     c, m = norm["contenido"], norm["marca"]
+    # Sin decir «resting on a worn surface», que es lo que decía: el respaldo del sujeto
+    # no puede elegir el mundo, porque el mundo lo declara `_clausula_mundo` y esta frase
+    # llegaba antes. Era el escalón más silencioso de los seis que producían la mesa.
     base = norm["prompt_base"] or (
-        f"A single concrete object that embodies {c['tema'] or 'the topic'}, resting on a worn "
-        "surface and casting a soft contact shadow."
+        f"A single concrete object that embodies {c['tema'] or 'the topic'}, held by whatever "
+        "in this location would hold it and casting a contact shadow there."
     )
     datos = {
         "prompt_base": base,
@@ -923,8 +1537,11 @@ def _respaldos(norm: dict) -> dict[str, str]:
     # `tipografia` no está: la escribe siempre la app (`_seccion_tipografia`).
     return {
         "sujeto": _fmt("sujeto", base),
-        "composicion": _fmt("composicion", "One clear focal hierarchy: the subject centred in the "
-                                           "middle band, secondary elements falling away in depth."),
+        # Sin decir DÓNDE se apoya el sujeto: eso lo declara siempre `_clausula_aire`,
+        # y con distinta jerarquía según sea portada o slide. Un respaldo que lo dijera
+        # abriría la sección 3 contradiciendo a su propio lockup dos frases después.
+        "composicion": _fmt("composicion", "One clear focal hierarchy: a single subject reading "
+                                           "clean against depth that falls away behind it."),
         "luz": _fmt("luz", f"Single hard source raking from above, deep falloff into near-black, "
                            f"visible contact shadow; palette held to {m['paleta']}."),
         "estilo": _fmt("estilo", m["tono_visual"] or "cinematic poster still"),
@@ -1081,7 +1698,39 @@ def _linea_beat(rol: str) -> list[str]:
     if funcion:
         linea += f" — {funcion}"
     return [linea + ". The app appends this beat's shot scale and framing verbatim: describe "
-                    "the subject and its scene, never the camera distance or the type zones."]
+                    "the subject and its scene, never the camera distance or the type zones.",
+            # Sin esta línea el modelo escribe el sujeto como protagonista —es lo que se
+            # le pide en la portada— y la sección 2 acaba contradiciendo a la 3, que lo
+            # subordina. La 3 gana (es determinista), pero el brief se lee incoherente y
+            # el modelo de imagen resuelve la contradicción como quiere.
+            "On a content slide the TYPE is the subject of the piece: the photographed object "
+            "is support, held low and small under the headline. Pick something that still reads "
+            "at that size, and never describe it as filling or dominating the frame."]
+
+
+def _linea_mundo(norm: dict) -> list[str]:
+    """El mundo y el arco, para el arquitecto: dónde estamos y qué encadena esta pieza.
+
+    Las dos cosas se emiten en el prompt final por su cuenta (`_clausula_mundo` y
+    `_clausula_arco`), pero además hay que DECÍRSELAS al modelo que escribe la sección
+    del sujeto: si no, escribe un objeto para un lugar que no conoce y el bloqueo de
+    mundo —prefijado a esa misma sección— acaba contradiciéndolo dentro de la frase.
+    Es la misma razón por la que el beat viaja en `_linea_beat` además de en la 3.
+    """
+    lineas: list[str] = []
+    escenario = str(norm.get("escenario") or "").strip()
+    if escenario:
+        lineas.append(
+            f"SET LOCATION (fixed for every piece of this set, the app states it verbatim — "
+            f"put the subject where THIS place would keep it, and never restate the place "
+            f"itself): {escenario}"
+        )
+    arco = str(norm.get("arco_carrusel") or "").strip()
+    funcion = funcion_arco(arco) if arco else ""
+    if funcion and rol_base(norm["contenido"]["rol_slide"]) == "contenido":
+        lineas.append(f"CAROUSEL ARC: {arco} — {funcion}. The app appends this arc's link "
+                      "clause verbatim; write a subject that obeys it.")
+    return lineas
 
 
 def _mensaje_arquitecto(norm: dict) -> str:
@@ -1109,6 +1758,10 @@ def _mensaje_arquitecto(norm: dict) -> str:
          "US currency.").format(idioma=idioma),
         f"SLIDE ROLE: {c['rol_slide']}",
         *_linea_beat(c["rol_slide"]),
+        # El mundo se le DICE al modelo además de emitirse en el prompt. Sin esto escribe
+        # el sujeto para un lugar que no conoce y el WORLD LOCK, que va prefijado a su
+        # propia sección, acaba contradiciéndolo dentro de la misma frase.
+        *_linea_mundo(norm),
         f"ASPECT RATIO: {m['aspect_ratio']}",
         f"BRAND PALETTE: {m['paleta_nombres']} ({m['paleta']})" if m["paleta_nombres"]
         else f"BRAND PALETTE: {m['paleta']}",
@@ -1128,9 +1781,16 @@ def _mensaje_arquitecto(norm: dict) -> str:
     # Igual que en `_clausula_set`: contra `rol_base` y nunca contra el literal
     # "contenido", porque los slides llegan con el nombre de su beat.
     if rol_base(c["rol_slide"]) == "contenido" and c.get("escena_portada"):
+        # Qué se le permite tomar de la portada lo decide el ARCO, no una constante. Con
+        # «never its hero object» pegado a todo slide, un arco de transformación —donde el
+        # objeto que vuelve ES la historia— quedaba prohibido en el mismo brief que lo pide.
+        arco = str(norm.get("arco_carrusel") or "")
+        vuelve = sujeto_arco(arco) in ("recurrente", "encadenado") if arco else False
+        regla = ("reuse the WORLD and carry its hero object forward as the set arc asks"
+                 if vuelve else "reuse the WORLD, never its hero object or its framing")
         datos.append(
-            "CAROUSEL COVER ALREADY SHOT (same set, same light, same palette — reuse the WORLD, "
-            f"never its hero object or its framing): {c['escena_portada']}"
+            f"CAROUSEL COVER ALREADY SHOT (same set, same light, same palette — {regla}): "
+            f"{c['escena_portada']}"
         )
     return instruccion + "\n\n" + "\n".join(datos)
 
@@ -1159,7 +1819,13 @@ def _mensaje_critico(prompt: str) -> str:
 def _secciones_desde_llm(data: dict, norm: dict) -> dict[str, str]:
     """Toma del JSON del modelo solo las claves creativas, recortadas y limpias."""
     max_pal = _entero(_validacion_cfg(), "max_palabras_seccion", _MAX_PALABRAS_SECCION)
-    texto = norm["contenido"]["texto_exacto_a_renderizar"]
+    # La cadena entera Y bloque a bloque: desde los sistemas de texto el "texto de la
+    # pieza" son 2-3 strings, y el modelo cuela unas veces el conjunto y otras uno solo.
+    # Buscar solo una de las dos formas deja pasar la otra, y entonces el render saca el
+    # texto dos veces. De más largo a más corto, para no dejar restos del grande.
+    textos = sorted({norm["contenido"]["texto_exacto_a_renderizar"],
+                     *(t for t in norm["contenido"].get("bloques", {}).values() if t)},
+                    key=len, reverse=True)
     out: dict[str, str] = {}
     for clave in _CLAVES_CREATIVAS:
         valor = data.get(clave)
@@ -1168,7 +1834,11 @@ def _secciones_desde_llm(data: dict, norm: dict) -> dict[str, str]:
         limpio = " ".join(valor.split())
         # El modelo a veces cuela el texto de la pieza dentro de una sección creativa;
         # ahí duplicaría el bloque de la sección 4 y el render saca el texto dos veces.
-        limpio = limpio.replace(f'"{texto}"', "").replace(texto, "").strip()
+        for texto in textos:
+            if texto:
+                limpio = re.sub(rf'"{re.escape(texto)}"', "", limpio, flags=re.I)
+                limpio = re.sub(re.escape(texto), "", limpio, flags=re.I)
+        limpio = " ".join(limpio.split()).strip()
         if limpio:
             out[clave] = _recortar(limpio, max_pal)
     return out
@@ -1190,11 +1860,16 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
     prompt válido (config rota) o si falta el texto a renderizar.
     """
     norm = normalizar_spec(spec)
-    bloques = _bloques(norm["contenido"]["texto_exacto_a_renderizar"])
+    sistema = norm["sistema_texto"]
+    specs = {b["clave"]: b for b in bloques_sistema(sistema)}
+    pares = [(c, t) for c, t in norm["contenido"]["bloques"].items() if t]
     avisos: list[str] = []
     usos: list[dict] = []
-    if len(bloques) > 1:
-        avisos.append("el texto se dividió en titular + subtítulo por longitud")
+    faltan = [c for c in claves_sistema(sistema)
+              if not norm["contenido"]["bloques"].get(c)
+              and _entero_lista((specs.get(c) or {}).get("palabras"), 0, 0) > 0]
+    if faltan:
+        avisos.append(f"el sistema «{sistema}» pide bloques que llegaron vacíos: {', '.join(faltan)}")
 
     # Caja alta: si la identidad la declara, el texto se cita YA en mayúsculas. Se
     # transforma acá, en el único punto por el que pasan las tres cosas que tienen que
@@ -1202,20 +1877,42 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
     # esté en el prompt y lo que se devuelve en `ResultadoPrompt.bloques`—. Pedirle una
     # caja al modelo y darle la contraria entre comillas es la contradicción de la que
     # salía el slide en caja baja.
+    #
+    # NO se aplica al cuerpo: `pide_caja_alta` mira la familia de DISPLAY, que es la del
+    # titular, y un párrafo de 30 palabras al 5% del alto en caja alta es ilegible. Cada
+    # bloque declara si la respeta, y la plantilla de Pillow lee la misma bandera.
     if pide_caja_alta(norm["marca"]["tipografia"]):
-        bloques = [b.upper() for b in bloques]
+        pares = [(c, t.upper() if (specs.get(c) or {}).get("caja_alta", True) else t)
+                 for c, t in pares]
         # El acento se busca dentro del titular, así que tiene que ir en la misma caja.
-        norm["contenido"]["acento"] = norm["contenido"]["acento"].upper()
+        if (specs.get(str(_cfg_sistema(sistema).get("acento") or "titular"))
+                or {}).get("caja_alta", True):
+            norm["contenido"]["acento"] = norm["contenido"]["acento"].upper()
+    # `norm["contenido"]["bloques"]` se queda con la caja ORIGINAL a propósito: es lo que
+    # `_secciones_desde_llm` busca para sacar el texto de la pieza de una sección creativa,
+    # y el modelo lo devuelve como se lo dimos, no en mayúsculas. Lo que se imprime son
+    # `pares`.
+    bloques = [t for _, t in pares]
 
-    # Cortes de línea: se calculan una sola vez, sobre el titular ya en su caja final.
+    # Cortes de línea: se calculan una sola vez, sobre el TITULAR ya en su caja final.
+    # Solo sobre él a propósito — es el bloque cuyas viudas se ven a esa escala; dictarle
+    # las líneas a un cuerpo de cuatro renglones solo gastaría presupuesto.
+    #
+    # Y los sistemas CON CUERPO los apagan: la viuda que esta cláusula corrige —una
+    # palabra sola en la tercera línea, al 14% del alto— es un defecto de titular largo a
+    # tamaño de póster, y ahí el titular baja a 6 palabras sobre 1-2 líneas. Pagar 140
+    # caracteres fijos por un defecto que ese sistema no puede tener es justo lo que hay
+    # que recortar antes de tocar el techo del prompt.
     cortes: list[str] = []
-    if bloques and getattr(cfg, "image_line_breaks", True):
-        cortes = lineas_titular(bloques[0])
+    titular = next((t for c, t in pares if c == "titular"), "")
+    if (titular and getattr(cfg, "image_line_breaks", True)
+            and _cfg_sistema(sistema).get("cortes", True)):
+        cortes = lineas_titular(titular)
 
     fijas = {
         "pieza": _seccion_pieza(norm, refuerzo_sangrado=refuerzo_sangrado),
-        "texto": _seccion_texto(norm, bloques, refuerzo=refuerzo_texto, cortes=cortes),
-        "tipografia": _seccion_tipografia(norm, bloques),
+        "texto": _seccion_texto(norm, pares, refuerzo=refuerzo_texto, cortes=cortes),
+        "tipografia": _seccion_tipografia(norm, pares),
         "negativos": _seccion_negativos(norm),
     }
     respaldo = _respaldos(norm)
@@ -1250,11 +1947,18 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
         # La cláusula de aire negativo la pone SIEMPRE la app: es la que garantiza
         # el hueco limpio donde va el texto, y es criterio de validación.
         completas["composicion"] = f"{completas.get('composicion', '').strip()} {_clausula_aire(norm)}".strip()
-        # El bloqueo de luz va PREFIJADO (la composición lo lleva detrás): es lo
-        # invariante del set y tiene que leerse antes que el detalle de esta escena.
-        # Al pegarse acá y no en las creativas, la poda no lo toca — que es el punto:
-        # tiene que salir byte a byte igual en las N piezas del job.
-        completas["luz"] = f"{_clausula_luz(norm)} {completas.get('luz', '').strip()}".strip()
+        # Los bloqueos de luz y de PALETA van PREFIJADOS (lo que escribió el LLM va
+        # detrás): son lo invariante del set y tienen que leerse antes que el detalle de
+        # esta escena. Al pegarse acá y no en las creativas, la poda no los toca — que es
+        # el punto: tienen que salir byte a byte iguales en las N piezas del job.
+        completas["luz"] = " ".join(p for p in (_clausula_luz(norm), _clausula_paleta(norm),
+                                                completas.get("luz", "").strip()) if p)
+        # El bloqueo de mundo va prefijado a la sección 2 por el mismo motivo que el de
+        # luz al de la 6: es lo invariante del set, tiene que leerse antes que el detalle
+        # de este sujeto y la poda no puede tocarlo. Las dos piezas más caras de la
+        # coherencia —dónde estamos y cómo está iluminado— quedan así fuera del alcance
+        # tanto del LLM como del recorte.
+        completas["sujeto"] = f"{_clausula_mundo(norm)} {completas.get('sujeto', '').strip()}".strip()
         return ensamblar(completas), completas
 
     prompt, secciones, recortado = _ajustar_longitud(creativas, _armar)
@@ -1276,6 +1980,7 @@ def construir(spec: dict, *, cfg=None, usar_llm: bool = True, autocritica: bool 
         avisos.append(f"adjetivos vacíos en el prompt: {', '.join(vacios)}")
 
     resultado = ResultadoPrompt(prompt=prompt, secciones=secciones, bloques=bloques,
+                                bloques_por_clave=dict(pares), sistema_texto=sistema,
                                 usos=usos, avisos=avisos, fuente=fuente)
 
     if autocritica and cfg is not None and llm_json.disponible(cfg):

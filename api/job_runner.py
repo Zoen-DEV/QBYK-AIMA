@@ -99,9 +99,27 @@ def make_job(cfg, params: dict, *, upload_bytes: bytes = b"", upload_filename: s
     `params["identidad_visual"]` es la identidad visual **congelada** al crear el job
     (la resuelve quien llama; ver `_identidad`). Ausente o vacía = la de la casa, y el
     job se comporta exactamente igual que antes de que existieran las identidades.
+
+    El **arco del carrusel**, el **mundo** y el **sistema de texto** se eligen aquí, y
+    aquí precisamente porque este es el único sitio donde se construye el shape del job:
+    los dos flujos los heredan gratis, y elegirlos una sola vez es la mitad del asunto
+    —son invariantes del SET, así que decidirlos en el punto donde se construye cada
+    prompt sería decidirlos una vez por imagen, que es el defecto que vienen a corregir—.
+    Quedan congelados en `params` como la identidad: sobreviven a la compuerta previa, a
+    un reinicio del stream y a rehacer un slide suelto meses después.
     """
+    job_id = str(uuid.uuid4())
+    identidad = (params.get("identidad_visual")
+                 if isinstance(params.get("identidad_visual"), dict) else {})
+    params.setdefault("arco_carrusel", parch.elegir_arco(job_id))
+    params.setdefault("escenario_visual", parch.elegir_escenario(job_id, identidad))
+    # El sistema de texto se congela con los otros dos y por lo mismo: es la FORMA de
+    # los slides, así que elegirlo por imagen daría un carrusel con estructuras
+    # distintas en cada pieza. Y además tiene que estar antes de la escritura, no solo
+    # de la generación: el redactor necesita saber qué bloques escribir.
+    params.setdefault("sistema_texto", parch.elegir_sistema(job_id, identidad))
     return {
-        "id": str(uuid.uuid4()),
+        "id": job_id,
         "status": "running",
         "flow": flow,
         "batch_id": batch_id,
@@ -280,8 +298,38 @@ def _identidad(job: dict) -> dict:
     return ident if isinstance(ident, dict) else {}
 
 
-def _lockup_plantilla(cfg, src: str, *, texto: str, rol: str,
-                      identidad: dict | None = None) -> dict | None:
+def _arco(job: dict) -> str:
+    """El arco del carrusel congelado en el job (`""` = ninguno).
+
+    Único lector desde el pipeline, igual que `_identidad`. Vacío significa "lo de
+    siempre": el prompt recupera la instrucción de objeto distinto que era constante
+    antes de los arcos, así que un job creado antes de esta versión genera igual.
+    """
+    return str((job.get("params") or {}).get("arco_carrusel") or "")
+
+
+def _escenario(job: dict) -> str:
+    """El mundo congelado en el job (`""` = no se emite el bloqueo de mundo).
+
+    Se congela al crear el job y no se vuelve a elegir: es lo que hace que las N piezas
+    compartan localización de verdad. Resolverlo en cada imagen daría un mundo por
+    pieza, que es exactamente lo que pasaba cuando no lo declaraba nadie.
+    """
+    return str((job.get("params") or {}).get("escenario_visual") or "")
+
+
+def _sistema(job: dict) -> str:
+    """El sistema de texto congelado en el job (`""` = el lockup de siempre).
+
+    Hermano de `_arco` y `_escenario`, y único lector desde el pipeline. Vacío significa
+    "lo de siempre": titular + apoyo, que es como se imprimían los slides antes de que
+    existieran los sistemas.
+    """
+    return parch.sistema_valido((job.get("params") or {}).get("sistema_texto"))
+
+
+def _lockup_plantilla(cfg, src: str, *, texto, rol: str,
+                      identidad: dict | None = None, sistema: str = "") -> dict | None:
     """Texto que hay que DIBUJAR sobre `src`, o None si no hay que dibujar nada.
 
     Solo lo llevan las plantillas de respaldo. Cuando la imagen sale del modelo, el
@@ -297,19 +345,29 @@ def _lockup_plantilla(cfg, src: str, *, texto: str, rol: str,
     """
     if not _text_in_prompt(cfg) or not improv.es_plantilla(src):
         return None
-    limpio, acento = parch.separar_acento(texto or "")
-    if not limpio.strip():
-        return None
-    titular, kicker = parch.dividir_texto(limpio)
     # La identidad activa del job manda; sin ella, la de la casa. Los colores tienen que
     # ser los MISMOS que gobiernan las imágenes generadas o la pieza de respaldo se
     # leería de otra marca.
     marca = (identidad if isinstance(identidad, dict) and identidad
              else prompt_config.brand())
     paleta = marca.get("paleta") if isinstance(marca.get("paleta"), list) else []
+    # La PORTADA usa siempre el lockup de siempre, igual que en `normalizar_spec`: si
+    # acá se resolviera distinto, la portada de respaldo llevaría bloques que su versión
+    # generada no tiene.
+    sistema = "" if parch.rol_base(rol) == "portada" else parch.sistema_valido(sistema)
+    # Las marcas de acento se quitan bloque a bloque, con la misma función que el prompt.
+    crudos = ({c: parch.separar_acento(t)[0] for c, t in texto.items()}
+              if isinstance(texto, dict) else parch.separar_acento(texto or "")[0])
+    acento = parch.separar_acento(
+        " ".join(str(v) for v in texto.values()) if isinstance(texto, dict) else texto or "")[1]
+    bloques = parch.lockup_bloques(
+        crudos, sistema, caja_alta=parch.pide_caja_alta(marca.get("tipografia") or ""))
+    if not bloques:
+        return None
     return {
-        "titular": titular,
-        "kicker": kicker,
+        # Los bloques ya resueltos (banda, tamaño relativo y caja): el overlay no relee
+        # la config, así que la plantilla y el prompt no pueden discrepar.
+        "bloques": bloques,
         "acento": acento,
         # El renderizador de plantilla solo conoce los dos roles de siempre: un beat
         # se le pasa como `contenido`, que es el que tiene su escala de cuerpo. Sin
@@ -323,15 +381,16 @@ def _lockup_plantilla(cfg, src: str, *, texto: str, rol: str,
     }
 
 
-async def _render_imagen(src: str, *, cfg, texto: str, rol: str,
-                         historia: bool = False, identidad: dict | None = None) -> bytes:
+async def _render_imagen(src: str, *, cfg, texto, rol: str, historia: bool = False,
+                         identidad: dict | None = None, sistema: str = "") -> bytes:
     """Prepara la imagen publicable: recorte al aspecto de la red (+ texto si es plantilla).
 
     Punto único del recorte para los dos flujos y para la regeneración de una imagen
     suelta: quien llama pasa siempre el copy de esa imagen y aquí se decide si hay
     que dibujarlo (`_lockup_plantilla`) o si ya viene impreso por el modelo.
     """
-    lockup = _lockup_plantilla(cfg, src, texto=texto, rol=rol, identidad=identidad)
+    lockup = _lockup_plantilla(cfg, src, texto=texto, rol=rol, identidad=identidad,
+                               sistema=sistema)
     return await _run(ov.render_story if historia else ov.render_feed, src, lockup)
 
 
@@ -509,6 +568,17 @@ _IMAGE_SPACE_VERTICAL = (
     "falloff, defocus, bare surface), never a band of flat colour — subject anchored "
     "in the central band."
 )
+# El slide de contenido invierte la jerarquía: el titular es el elemento mayor y el
+# sujeto queda subordinado debajo (secciones 1, 3 y 5 del brief). Este texto es la capa
+# blanda —el `prompt_base` que el arquitecto le enseña al LLM como "BASE PROMPT (weak,
+# to rewrite)"— y no manda sobre nada, pero si dijera lo de la portada el brief se
+# contradiría a sí mismo en su punto de partida.
+_IMAGE_SPACE_SLIDE = (
+    "Full-bleed photograph to all four edges, type-led: the poster headline owns the "
+    "upper two thirds — quiet photograph there (shadow falloff, defocus, bare surface), "
+    "never a band of flat colour — with the subject subordinate to it, held low in the "
+    "frame and small enough that the type stays the dominant mass."
+)
 _IMAGE_FULL_FRAME = (
     "Compose the full frame edge to edge with deliberate balance: no empty band "
     "reserved for text, no dead space."
@@ -527,14 +597,20 @@ _IMAGE_FULL_FRAME_VERTICAL = (
 # repite, literal, para que el prompt base no contradiga al brief.
 
 
-def _image_space_clause(vertical: bool, con_texto: bool = False) -> str:
+def _image_space_clause(vertical: bool, con_texto: bool = False, slide: bool = False) -> str:
     """Qué pedirle a la composición según la imagen vaya a llevar texto o no.
 
     `con_texto` lo pasa el llamador cuando hay texto que renderizar: la pieza
     necesita entonces sus bandas calmas para el tipo. Sin texto se pide el cuadro
     lleno, sin área reservada esperando algo que no va a llegar.
+
+    `slide` distingue un slide de contenido de la portada: los dos reservan las mismas
+    bandas, pero en el slide el tipo es el elemento principal y el sujeto va debajo.
+    Solo aplica con `con_texto`: sin texto que imprimir no hay jerarquía que invertir.
     """
     if con_texto:
+        if slide and not vertical:
+            return _IMAGE_SPACE_SLIDE
         return _IMAGE_SPACE_VERTICAL if vertical else _IMAGE_SPACE_FEED
     return _IMAGE_FULL_FRAME_VERTICAL if vertical else _IMAGE_FULL_FRAME
 
@@ -550,7 +626,8 @@ def _image_style(posts: dict) -> str:
 
 
 def _compose_image_prompt(scene: str, *, style: str = "", framing: str = "",
-                          vertical: bool = False, con_texto: bool = False) -> str:
+                          vertical: bool = False, con_texto: bool = False,
+                          slide: bool = False) -> str:
     """Escena + encuadre + dirección de arte + composición + anclaje físico + sin texto.
 
     Con `con_texto=True` el resultado NO lleva el "sin texto": la imagen va a llevar
@@ -561,7 +638,7 @@ def _compose_image_prompt(scene: str, *, style: str = "", framing: str = "",
         (scene or "").strip(),
         (framing or "").strip(),
         (style or "").strip() or _IMAGE_LOOK,
-        _image_space_clause(vertical, con_texto),
+        _image_space_clause(vertical, con_texto, slide=slide),
         _GROUNDING_SUFFIX,
     ]
     if not con_texto:
@@ -614,7 +691,7 @@ def _slide_image_prompts(posts: dict, content: dict, n_info: int,
         prompts.append(_compose_image_prompt(
             scene, style=style,
             framing=parch.encuadre_beat(_rol_slide(i, n_info), identidad),
-            con_texto=con_texto,
+            con_texto=con_texto, slide=True,
         ))
     return prompts
 
@@ -651,7 +728,11 @@ def _copy_de_imagenes(posts: dict, cfg, *, n_info: int, is_carousel: bool,
     """
     image_text = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else None
     llm_hook = (image_text or {}).get("hook", "").strip()
-    llm_slides = [s for s in (image_text or {}).get("slides", []) if s.strip()]
+    # Un slide es un string (contrato de siempre) o un dict de bloques: los dos viajan
+    # tal cual hasta `separar_bloques`, que es el único que sabe repartirlos.
+    llm_slides = [s for s in (image_text or {}).get("slides", [])
+                  if (s.strip() if isinstance(s, str) else any(str(v).strip()
+                                                               for v in (s or {}).values()))]
     avisos: list[str] = []
 
     # Hook: el image_text del LLM para todas las redes; si falta, la 1ª línea del caption.
@@ -666,7 +747,7 @@ def _copy_de_imagenes(posts: dict, cfg, *, n_info: int, is_carousel: bool,
 
     # Slides de info: exactamente una idea cerrada por slide. Lo que falte se rellena
     # con las líneas del caption (NUNCA con un "mira el video" genérico).
-    slides: list[str] = []
+    slides: list = []
     if is_carousel:
         heur = _extract_body_lines(posts.get("instagram_text", ""), max_lines=n_info)
         for i in range(n_info):
@@ -734,9 +815,10 @@ def _marca_post(posts: dict, *, aspect: str, identidad: dict | None = None) -> d
     return marca
 
 
-def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: str,
+def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto,
                    rol: str, aspect: str, lang: str = "es", refuerzo: bool = False,
-                   refuerzo_sangrado: bool = False, identidad: dict | None = None):
+                   refuerzo_sangrado: bool = False, identidad: dict | None = None,
+                   arco: str = "", escenario: str = "", sistema: str = ""):
     """Prompt final de UNA imagen. Devuelve `(prompt, resultado_del_arquitecto|None)`.
 
     Sin texto que renderizar —o con la capa de arquitectura apagada— devuelve el
@@ -744,8 +826,13 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
     imágenes que no llevan copy. Si el arquitecto falla por lo que sea, también se
     devuelve el base: generar nunca se interrumpe por esto.
     """
-    texto = (texto or "").strip()
-    if not texto or not _text_in_prompt(cfg) or not getattr(cfg, "prompt_architect", True):
+    # El texto llega como string (contrato de siempre) o como dict de bloques. Los dos
+    # viajan a `contenido` sin tocarlos: `normalizar_spec` es el único que los reparte.
+    bloques = texto if isinstance(texto, dict) else None
+    texto = "" if bloques else (texto or "").strip()
+    if not (texto or any(str(v).strip() for v in (bloques or {}).values())):
+        return prompt_base, None
+    if not _text_in_prompt(cfg) or not getattr(cfg, "prompt_architect", True):
         return prompt_base, None
     # `angulo` es el enfoque de ESTA imagen. En los slides era la escena de la PORTADA,
     # así que a cada slide se le pedía —sin querer— el sujeto de la portada: una segunda
@@ -759,12 +846,17 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
             "angulo": "" if es_slide else escena_portada,
             "escena_portada": escena_portada if es_slide else "",
             "texto_exacto_a_renderizar": texto,
+            **({"bloques": bloques} if bloques else {}),
             "rol_slide": rol,
             "idioma": lang,
         },
         "marca": _marca_post(posts, aspect=aspect, identidad=identidad),
         "prompt_base": prompt_base,
     }
+    # El sistema de texto congelado, como el arco y el mundo: no se elige acá porque
+    # este punto corre una vez POR IMAGEN. La portada lo ignora en `normalizar_spec`.
+    if sistema:
+        spec["sistema_texto"] = sistema
     # Las referencias de dirección de arte NO viajan en `marca`: `normalizar_spec` las
     # lee del nivel de arriba de la spec. Vacío = las de `brand.json`, como siempre.
     referencias = identidad.get("referencias") if isinstance(identidad, dict) else None
@@ -776,6 +868,14 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
     ritmo = identidad.get("ritmo_carrusel") if isinstance(identidad, dict) else None
     if ritmo:
         spec["ritmo_carrusel"] = list(ritmo)
+    # Los dos ejes que el job congeló al crearse. Viajan al nivel de arriba, como las
+    # referencias y el ritmo, y NO se eligen aquí: este punto corre una vez POR IMAGEN,
+    # así que elegir acá daría un arco y un mundo distintos a cada pieza del carrusel —
+    # justo lo contrario de lo que son. Vacíos = el prompt sale como antes de existir.
+    if arco:
+        spec["arco_carrusel"] = arco
+    if escenario:
+        spec["escenario"] = escenario
     try:
         res = parch.construir(
             spec, cfg=cfg,
@@ -789,7 +889,7 @@ def _prompt_imagen(cfg, *, prompt_base: str, posts: dict, content: dict, texto: 
 
 
 async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: dict,
-                       content: dict, texto: str, rol: str, aspect: str, lang: str = "es",
+                       content: dict, texto, rol: str, aspect: str, lang: str = "es",
                        refuerzo: bool = False, refuerzo_sangrado: bool = False) -> str:
     """`_prompt_imagen` + traza: guarda el prompt final en el job, lo loguea y cobra el LLM.
 
@@ -801,6 +901,7 @@ async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: 
         _prompt_imagen, cfg, prompt_base=prompt_base, posts=posts, content=content,
         texto=texto, rol=rol, aspect=aspect, lang=lang, refuerzo=refuerzo,
         refuerzo_sangrado=refuerzo_sangrado, identidad=_identidad(job),
+        arco=_arco(job), escenario=_escenario(job), sistema=_sistema(job),
     )
     job["images"]["prompts"][subkey] = prompt
     print(f"   [prompt {subkey}]\n{prompt}")
@@ -814,7 +915,7 @@ async def _prompt_para(job: dict, cfg, *, subkey: str, prompt_base: str, posts: 
 
 
 async def _verificar_texto(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src: str,
-                           texto: str, rehacer) -> str:
+                           texto, rehacer, rol: str = "portada") -> str:
     """QA post-generación: ¿la imagen dice exactamente lo que tenía que decir?
 
     Un modelo de visión lee el texto impreso y lo compara con el esperado (acentos
@@ -822,14 +923,22 @@ async def _verificar_texto(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src
     instrucción de texto reforzada, hasta el máximo de `prompts/qa_vision.json`.
     Cada intento queda registrado en `job["images"]["qa"][subkey]`.
 
+    La comparación va POR BLOQUE, y por eso hace falta saber cuál es cuál: un titular
+    se exige exacto y un cuerpo de 30 palabras por similitud. Medirlos igual haría que
+    cada errata del cuerpo regenerase la imagen entera, que es caro y además inútil.
+
     Best-effort: sin modelo de visión, con plantilla local o ante cualquier fallo se
     devuelve la imagen que ya había. Nunca interrumpe la generación.
     """
     # Las marcas de acento (**así**) son notación del usuario, no parte del copy: el
     # modelo imprime el texto sin ellas, así que el QA tiene que comparar contra el
     # texto limpio o toda imagen con acento marcado se leería como error de render.
-    texto = parch.separar_acento(texto)[0].strip()
-    if not src or not texto or not _text_in_prompt(cfg) or not getattr(cfg, "image_text_qa", True):
+    # La portada ignora el sistema, igual que en el prompt y en la plantilla.
+    sistema = "" if parch.rol_base(rol) == "portada" else _sistema(job)
+    bloques = [(c, parch.separar_acento(t)[0].strip())
+               for c, t in parch.separar_bloques(texto, sistema)]
+    bloques = [(c, t) for c, t in bloques if t]
+    if not src or not bloques or not _text_in_prompt(cfg) or not getattr(cfg, "image_text_qa", True):
         return src
     if not iqa.disponible(cfg):
         return src
@@ -838,7 +947,7 @@ async def _verificar_texto(job: dict, q: asyncio.Queue, cfg, *, subkey: str, src
     maximo = iqa.max_intentos()
     intento = 0
     while True:
-        res = await _run(iqa.verificar, src, texto, cfg=cfg)
+        res = await _run(iqa.verificar, src, bloques, cfg=cfg)
         registro.append({
             "intento": intento + 1, "ok": res.ok, "verificado": res.verificado,
             "texto_visto": res.texto_visto, "motivo": res.motivo, "recortado": res.recortado,
@@ -2173,6 +2282,7 @@ async def _run_media_phase(job: dict):
                     if texto_slide:
                         slide_url = await _verificar_texto(
                             job, q, cfg, subkey=fname, src=slide_url, texto=texto_slide,
+                            rol=_rol_slide(i, n_info),
                             rehacer=lambda _r=_rehacer_slide: _r(_texto_ok=True))
                         image_warnings.extend(provider.pop_warnings())
                     slide_url = await _verificar_bandas(
@@ -2187,7 +2297,8 @@ async def _run_media_phase(job: dict):
                         if not _HAS_OVERLAY:
                             return
                         png = await _render_imagen(src, cfg=cfg, texto=_texto,
-                                                   rol="contenido", identidad=_identidad(job))
+                                                   rol="contenido", identidad=_identidad(job),
+                                                   sistema=_sistema(job))
                         png = await _match_cover_grade(png, image_bytes.get("ig-0"), cfg)
                         image_bytes[_key] = png
                         _save_image(job["id"], _key, png)
@@ -2508,7 +2619,7 @@ async def regenerate_image(job: dict, subkey: str) -> dict:
     # Mismos QA que en la generación normal: primero el texto impreso y su recorte,
     # después las bandas sobre la imagen que haya quedado.
     src = await _verificar_texto(job, q, cfg, subkey=subkey, src=src, texto=texto,
-                                 rehacer=_rehacer)
+                                 rol=rol, rehacer=_rehacer)
     src = await _verificar_bandas(job, q, cfg, subkey=subkey, src=src,
                                   rehacer=lambda: _rehacer(refuerzo=False, sangrado=True))
     avisos = provider.pop_warnings()
@@ -2531,7 +2642,7 @@ async def regenerate_image(job: dict, subkey: str) -> dict:
     png = None
     if _HAS_OVERLAY:
         png = await _render_imagen(src, cfg=cfg, texto=texto, rol=rol, historia=es_historia,
-                                   identidad=_identidad(job))
+                                   identidad=_identidad(job), sistema=_sistema(job))
         if not (es_portada or es_historia):
             # El slide nuevo se iguala a la portada, igual que en la generación.
             png = await _match_cover_grade(png, image_bytes.get("ig-0"), cfg)

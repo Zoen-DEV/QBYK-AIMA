@@ -108,7 +108,29 @@ def test_avisa_cuando_no_hay_direccion_de_arte():
 def test_avisa_cuando_falta_copy_de_los_slides():
     p = _posts(image_text={"hook": "Ahorrar sin sufrir", "slides": ["Idea uno"]})
     msg = " ".join(_msgs(pl.revisar(p, n_info=3, is_carousel=True), "image_slides"))
-    assert "1 frase(s) para 3" in msg
+    # Nombra el bloque y las posiciones: «faltan frases» no dice dónde escribir, y la
+    # compuerta previa tiene un campo por bloque justo al lado del aviso.
+    assert "Falta el titular en 2 de 3" in msg and "3, 4" in msg
+
+
+def test_avisa_del_bloque_que_falta_y_no_solo_del_slide_vacio():
+    """El recuento viejo (`len(slides) < n_info`) solo veía el slide entero vacío.
+
+    Con un sistema de dos niveles, N slides con titular y sin cuerpo son N piezas que
+    se generan, se publican y salen medio vacías, sin un solo error en el camino.
+    """
+    p = _posts(image_text={"hook": "Ahorrar sin sufrir",
+                           "slides": [{"titular": f"Idea {i}"} for i in range(3)]})
+    msg = " ".join(_msgs(pl.revisar(p, n_info=3, is_carousel=True,
+                                    sistema="titular_cuerpo"), "image_slides"))
+    assert "Ningún slide trae su cuerpo" in msg
+    # Y con los cuerpos escritos, ni un aviso: el umbral no puede ser ruidoso.
+    completos = _posts(image_text={
+        "hook": "Ahorrar sin sufrir",
+        "slides": [{"titular": f"Idea {i}", "cuerpo": "Lo que dice la fuente."}
+                   for i in range(3)]})
+    assert not _msgs(pl.revisar(completos, n_info=3, is_carousel=True,
+                                sistema="titular_cuerpo"), "image_slides")
 
 
 def test_avisa_cuando_no_hay_escena_de_portada():
@@ -321,3 +343,73 @@ def test_el_lint_no_avisa_de_la_identidad_cuando_el_job_no_lleva_imagenes():
     ident = {**_IDENTIDAD_OK, "tipografia": "Inter, medium"}
     assert _msgs(pl.revisar(_posts(), quiere_imagenes=False, quiere_video=True,
                             identidad=ident), "identidad") == []
+
+
+# ── El lint tiene que saber qué arco cuenta este carrusel ────────────────────
+#
+# El aviso de «escena repetida» existe porque un carrusel de cinco fotos casi iguales es
+# el defecto clásico. Pero con un arco de sujeto RECURRENTE la repetición es el encargo:
+# el mismo objeto vuelve y lo que cambia es su estado. Un aviso que se dispara siempre se
+# acaba ignorando, y con él se ignoran los que sí importan.
+
+_ESCENA_A = "A coiled ethernet cable on the concrete floor beside a steel rack."
+_ESCENA_B = "The same coiled cable, now unplugged and hanging from a hook on the wall."
+
+
+def _repetidas(avisos: list[dict]) -> list[dict]:
+    return [a for a in avisos if "repetida" in a["mensaje"] or "palabra por palabra" in a["mensaje"]]
+
+
+def test_con_arco_de_sujeto_recurrente_dos_escenas_parecidas_no_avisan():
+    posts = {"image_prompt": _ESCENA_A, "image_slide_prompts": [_ESCENA_B],
+             "image_style": "hard key light, 50mm, fine grain"}
+    avisos = pl.revisar(posts, n_info=1, is_carousel=True, arco="transformacion")
+    assert _repetidas(avisos) == []
+
+
+def test_sin_arco_recurrente_las_mismas_escenas_si_avisan():
+    """El control del test de arriba: el umbral no se relajó para todo el mundo."""
+    posts = {"image_prompt": _ESCENA_A, "image_slide_prompts": [_ESCENA_A + " Slightly closer."],
+             "image_style": "hard key light, 50mm, fine grain"}
+    assert _repetidas(pl.revisar(posts, n_info=1, is_carousel=True, arco="recorrido"))
+
+
+def test_con_arco_recurrente_dos_escenas_identicas_siguen_avisando():
+    """Repetirse no es lo mismo que no cambiar nada.
+
+    El arco pide el mismo objeto con el ESTADO cambiado: si las dos escenas son la misma
+    frase no hay nada que mostrar y el slide sale repetido de verdad.
+    """
+    posts = {"image_prompt": _ESCENA_A, "image_slide_prompts": [_ESCENA_A],
+             "image_style": "hard key light, 50mm, fine grain"}
+    avisos = _repetidas(pl.revisar(posts, n_info=1, is_carousel=True, arco="transformacion"))
+    assert avisos and "ESTADO" in avisos[0]["mensaje"]
+
+
+def test_el_canario_cubre_el_enlace_del_arco_y_el_bloqueo_de_mundo(monkeypatch):
+    """La regresión que este canario existe para atrapar ya ocurrió una vez.
+
+    `_clausula_set` comparaba el rol contra el literal "contenido" y los slides llegan
+    con el nombre de su beat: dejó de emitirse en TODOS los slides sin un solo error en
+    el log. Las dos cláusulas nuevas se caerían igual de calladas.
+    """
+    posts = {"image_prompt": _ESCENA_A, "image_slide_prompts": [_ESCENA_B],
+             "image_style": "hard key light, 50mm, fine grain"}
+    sano = pl.revisar(posts, n_info=1, is_carousel=True, arco="transformacion",
+                      escenario="A workshop floor, concrete and steel.")
+    assert [a for a in sano if "fallo del código" in a["mensaje"]] == []
+
+    monkeypatch.setattr(pl.parch, "_clausula_mundo", lambda norm: "")
+    roto = pl.revisar(posts, n_info=1, is_carousel=True, arco="transformacion",
+                      escenario="A workshop floor, concrete and steel.")
+    assert [a for a in roto if "bloqueo de mundo" in a["mensaje"]]
+
+
+def test_un_reparo_de_mundos_de_la_identidad_llega_a_la_compuerta():
+    """Las identidades guardadas no se revalidan al leerlas: si el repertorio entero es
+    una mesa, esto es lo único que se lo dice a quien está a punto de generar."""
+    identidad = {**vi.identidad_system(),
+                 "escenarios": ["A bare table under one lamp.", "An oak desk by a window."]}
+    avisos = pl.revisar({"image_prompt": _ESCENA_A, "image_style": "hard key light"},
+                        n_info=0, is_carousel=False, identidad=identidad)
+    assert [a for a in avisos if "mesa" in a["mensaje"]]

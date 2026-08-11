@@ -20,11 +20,22 @@
     "product-launch keynote stills: one object, one hard light, black surround"
   ],
 
-  "_comment_ritmo_carrusel": "Cómo fotografía ESTA marca cada beat del carrusel. La lista está ORDENADA por los beats de architect.json: [tension, desarrollo, prueba, remate] — la posición es el beat, así que reordenarla le da a cada slide el plano de otro. Es lo único del carrusel que es marca: la FUNCIÓN de cada slide (tensión → desarrollo → prueba → remate) es estructura y vive en architect.json, pero recorrer esa escalera con macros de textura o con naturalezas muertas abiertas produce dos carruseles que no se parecen. Campo OPCIONAL: lo que falte cae al `ritmo` del beat en architect.json, beat a beat. No nombra paleta ni luz —de eso ya se ocupan `paleta` y `tono_visual`—: solo distancia, altura de cámara y qué llena el cuadro.",
+  "_comment_escenarios": "DÓNDE fotografía esta marca. Es el campo que faltaba: `ritmo_carrusel` dice a qué distancia y a qué altura, pero durante meses no había forma de que una identidad dijera en QUÉ MUNDO, así que todas las marcas producían la misma foto —un objeto sobre una mesa— por muy distintas que fueran su paleta y su tipografía. El job elige UNO de esta lista al crearse y lo congela en `params.escenario_visual`; desde ahí se emite como WORLD LOCK, idéntico en la portada y en todos los slides. Que sean varios y no uno es deliberado: la marca se reconoce igual en los cuatro y así dos posts seguidos de la casa no salen del mismo sitio. El bodegón de mesa sigue en la lista —es una pieza legítima— pero como uno de cuatro. Campo OPCIONAL: sin él se cae a `escenarios_respaldo` de architect.json. No nombra paleta ni luz: de eso ya se ocupan `paleta` y `tono_visual`.",
+  "escenarios": [
+    "A workshop after hours: poured concrete floor, steel racking, tools and cable left where they were used, the edges falling into shadow.",
+    "A bare room with one window: plaster walls, worn board floor, only the objects the room already contains, deep shadow.",
+    "The threshold of a building at night: wet asphalt, painted metal, brick, light pooling on the ground.",
+    "A dark studio table under a single lamp: one clean surface, nothing on it but the subject and its shadow."
+  ],
+
+  "_comment_ritmo_carrusel": "Cómo fotografía ESTA marca cada beat del carrusel. La lista está ORDENADA por los beats de architect.json: [tension, desarrollo, prueba, remate] — la posición es el beat, así que reordenarla le da a cada slide el plano de otro. Es lo único del carrusel que es marca: la FUNCIÓN de cada slide (tensión → desarrollo → prueba → remate) es estructura y vive en architect.json, pero recorrer esa escalera con macros de textura o con naturalezas muertas abiertas produce dos carruseles que no se parecen. Campo OPCIONAL: lo que falte cae al `ritmo` del beat en architect.json, beat a beat. No nombra paleta, luz NI LUGAR —de eso se ocupan `paleta`, `tono_visual` y `escenarios`—: solo distancia, altura de cámara y qué llena el cuadro. Decía «still life on a bare table» y «flat overhead of one object on an empty field», o sea que nombraba el mundo sin permiso y lo nombraba siempre igual: era una de las seis fuentes del carrusel de mesas.",
   "ritmo_carrusel": [
-    "Tight macro of a single worn surface, the object cropped hard by the frame edges.",
-    "Mid-distance still life on a bare table, the object whole, camera at its own height.",
-    "Flat overhead of one object centred on an empty field, shot square to the surface.",
-    "Wide low three-quarter view, the object small against a large dark space, deep foreground."
-  ]
+    "The closest shot of the set: one worn texture fills the lower frame, its edges cropped away.",
+    "Reading distance, camera at the subject's own height, the thing whole and whatever holds it in frame.",
+    "Square to the subject, it alone against the plainest plane of the place, nothing else competing.",
+    "The widest and deepest shot, the subject small and low in the space it belongs to."
+  ],
+
+  "_comment_sistemas_texto": "REPERTORIO de sistemas de texto de la casa: cuántos niveles de texto llevan los slides. El catálogo (qué bloques existen, dónde van y a qué escala) es layout y vive en architect.json → `sistemas_texto`; acá solo se elige CUÁLES usa esta marca. Es un repertorio y no un sistema único a propósito, igual que `escenarios`: el job congela uno al crearse (`params.sistema_texto`), así que la marca se reconoce igual en los tres pero dos carruseles seguidos no salen con la misma estructura de textos. Campo OPCIONAL: sin él manda `sistemas_respaldo` de architect.json. La PORTADA no lo usa nunca — siempre lleva titular + apoyo, que es la pieza que ya funcionaba y la que funda el set.",
+  "sistemas_texto": ["titular", "titular_cuerpo", "etiqueta_titular_cuerpo"]
 }

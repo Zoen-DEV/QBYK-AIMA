@@ -36,7 +36,7 @@ import prompt_config
 _MAX_LADO = 900
 _CALIDAD_JPEG = 80
 _MAX_BYTES_TOTAL = 12 * 1024 * 1024
-_VEREDICTOS = ("mismo_mundo", "mismo_sistema_tipografico", "mismo_grade",
+_VEREDICTOS = ("mismo_mundo", "mismo_sistema_tipografico", "mismo_grade", "mismo_acento",
                "sin_marco_ni_bandas")
 
 
@@ -74,7 +74,7 @@ def _entero(clave: str, defecto: int) -> int:
 
 
 def veredictos() -> tuple[str, ...]:
-    """Los cuatro veredictos, del archivo de prompt (con respaldo).
+    """Los veredictos del conjunto, del archivo de prompt (con respaldo).
 
     Fuente única: con ellos se arma el JSON que se pide Y se lee el que llega, así que
     no pueden separarse.

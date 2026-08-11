@@ -7,6 +7,7 @@ fallar limpio.
 """
 
 import io
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -325,6 +326,30 @@ def test_el_encuadre_pide_una_pieza_de_diseñador_no_una_descripcion_de_las_foto
     assert "production quality" in sistema
 
 
+def test_el_encuadre_no_le_dicta_la_caja_ni_la_escala_a_la_identidad():
+    """Por qué todas las identidades salían con la misma tipografía.
+
+    No era el generador: era este encuadre. Pedía la pieza con el titular «at 9-16% of
+    the frame height, all caps», así que toda identidad extraída nacía en caja alta y
+    la diferencia entre marcas quedaba reducida al adjetivo. La escala es LAYOUT y la
+    fija `architect.json` —repetirla acá además se desincroniza—; la caja es una
+    decisión de la marca. Es un canario, igual que el de los campos visuales vacíos:
+    el defecto no da ningún error, solo devuelve siempre la misma respuesta.
+    """
+    sistema = ie._sistema(prompt_config.identity_extract())
+    # La caja se pide explícitamente como decisión, no se da por supuesta.
+    assert "do not default to all caps" in sistema.lower()
+    # Y ninguna cifra de alto: la escala es layout y su fuente única es architect.json.
+    assert not re.search(r"\d+\s*-\s*\d+% of the frame height", sistema)
+    # Y la otra mitad del arreglo: un abanico NOMBRADO de clases. Pedir «elige la clase
+    # que el registro pide» sin ofrecer opciones devuelve siempre la respuesta segura,
+    # que es exactamente lo que ya se había aprendido con las estructuras de copy.
+    bajo = sistema.lower()
+    clases = [c for c in ("condensed", "extended", "didone", "slab", "geometric",
+                          "stencil", "monospaced") if c in bajo]
+    assert len(clases) >= 5, clases
+
+
 def test_sin_archivo_de_prompt_el_sistema_sigue_siendo_util():
     """`prompt_config.load` devuelve {} ante un archivo ausente o roto y eso no puede
     dejar al extractor sin criterio."""
@@ -414,3 +439,35 @@ def test_endpoint_funciona_solo_con_perplexity(cliente, monkeypatch, modelo):
     res = cliente.post("/identities/extract", files=_multipart(6))
     assert res.status_code == 200
     assert res.json()["identity_json"] == vi.normalizar(_IDENTIDAD)
+
+
+# ── `escenarios`: el mundo se extrae del moodboard como los demás campos ─────
+
+
+def test_la_regla_de_mundos_sale_de_las_constantes_del_validador():
+    """Escritas dos veces se desincronizan: es la regla de la casa en este módulo.
+
+    Pedirle al modelo un rango distinto del que aplica `visual_identity.validar` sería
+    pedirle que falle, y el reintento se gastaría en un error que no cometió.
+    """
+    reglas = ie._reglas_esquema()
+    assert "`escenarios`" in reglas
+    assert f"{vi.MIN_ESCENARIOS}-{vi.MAX_ESCENARIOS}" in reglas
+    assert f"{vi.MAX_ESCENARIO_PALABRAS} words" in reglas
+
+
+def test_la_regla_de_mundos_prohibe_el_repertorio_de_mesas_y_las_personas():
+    # Los dos modos conocidos de arruinar el campo: cuatro variantes de una mesa (el
+    # defecto que el campo existe para corregir) y un mundo escrito alrededor de alguien
+    # (contradice el brief, que prohíbe personas como sujeto).
+    reglas = ie._reglas_esquema().lower()
+    assert "variants of a table" in reglas
+    assert all(p in reglas for p in vi.PALABRAS_MESA[:4])
+    assert "never write a person into a location" in reglas
+
+
+def test_el_encuadre_le_pide_al_modelo_leer_los_lugares_del_set():
+    # La parte creativa vive en el JSON del prompt, no en el código: es el «cómo mirar»
+    # el moodboard, igual que para la paleta o la tipografía.
+    criterio = " ".join(prompt_config.identity_extract().get("criterio") or []).lower()
+    assert "escenarios:" in criterio
