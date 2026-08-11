@@ -4,7 +4,7 @@ Recibe de 5 a 10 fotos y devuelve un JSON que cumple **exactamente** el esquema 
 `visual_identity` — el mismo que gobierna `prompts/brand.json`. Sin campos nuevos: lo
 que sale de aquí tiene que poder entrar en el pipeline sin que nadie lo traduzca.
 
-Tres decisiones que vale la pena no deshacer:
+Cuatro decisiones que vale la pena no deshacer:
 
 - **Las fotos se revisan ANTES de llamar al modelo.** Cantidad, formato y peso se
   comprueban con `revisar_fotos`, que es pura y no toca la red: subir 4 u 11 fotos
@@ -14,9 +14,23 @@ Tres decisiones que vale la pena no deshacer:
   mismo contrato que aplica el validador: escritas dos veces se desincronizan en cuanto
   alguien mueva un límite. El JSON de prompt aporta el encuadre creativo, igual que en
   `prompt_architect` la app escribe las secciones que no se delegan.
-- **Un solo reintento, con los errores del validador como feedback.** Si el segundo
-  intento tampoco valida se falla limpio: nada a medias entra a la base, y las fotos
-  siguen en el navegador para volver a intentarlo sin re-subirlas.
+- **Se extrae con ojo de diseñador, no de notario.** Describir con fidelidad un set de
+  fotos de teléfono produce una identidad de fotos de teléfono, y de ahí salen piezas
+  de aficionado por muy bien que esté el prompt de generación. El encuadre del JSON le
+  pide al modelo lo que hace un director de arte con el moodboard del cliente: leer la
+  INTENCIÓN del set y especificarla a calidad de producción —fiel en lo que es
+  identidad (familia de color, luz, materiales, registro), sin heredar los accidentes
+  de la referencia (flash directo, balance de blancos mezclado, fondo con ruido)—, y
+  con cada campo escrito como instrucción de rodaje, que es como lo va a leer el modelo
+  de imagen. Lo que sí se puede comprobar sobre los hex —contraste del titular,
+  saturación del acento— lo escribe la app en `_reglas_diseno` con los mismos números
+  que aplica `visual_identity.revisar_diseno`, por el mismo motivo que el esquema.
+- **Un solo reintento, con lo que falló como feedback.** Si el segundo intento tampoco
+  valida se falla limpio: nada a medias entra a la base, y las fotos siguen en el
+  navegador para volver a intentarlo sin re-subirlas. Un **reparo de diseño** no es un
+  fallo de esquema: también gasta el reintento, pero si sobrevive NO tumba la
+  extracción — sale como aviso junto al editor, que es donde el usuario puede corregir
+  el color en dos segundos.
 
 Las fotos NO se guardan en ningún sitio: se reducen en memoria, se mandan al modelo y
 se descartan al terminar el request.
@@ -180,7 +194,10 @@ def _reglas_esquema() -> str:
         "the hex of the THIRD, written inside the phrase — e.g. "
         '"bone white (#EDEAE0) on the near-black" and "acid lime (#C9F227)".',
         "4. `tipografia` / `tipografia_secundaria`: describe a type family CLASS "
-        "(weight, width, case, tracking), never a specific licensed font name.",
+        "(weight, width, case, tracking), never a specific licensed font name. NEVER "
+        "name a neutral interface sans (" + ", ".join(vi.FAMILIAS_UI_PROHIBIDAS) + "): "
+        "at poster scale those give the 'caption pasted on a photo' look and the "
+        "response is rejected. The case is part of the class you choose, not a default.",
         "5. `tono_visual`: the photographic treatment ONLY — light, contrast, depth, "
         "texture, surround. Do NOT name any colour here: the palette already has its "
         "own fields and two palettes in one prompt fight each other.",
@@ -189,29 +206,129 @@ def _reglas_esquema() -> str:
         f"{vi.MAX_REFERENCIA} characters each.",
         '7. `aspect_ratio`: "width:height" — use "4:5" unless the set is clearly '
         "another format.",
-        f"8. Every text field is at most {vi.MAX_TEXTO} characters.",
-        "9. Write every value in English: these strings are injected verbatim into an "
+        f"8. `ritmo_carrusel`: an ORDERED list of {vi.MAX_RITMO} shots — never more — one per "
+        f"carousel beat, in this exact order: [{', '.join(vi.ROLES_RITMO)}] — the "
+        "position IS the beat. Each is at most "
+        f"{vi.MAX_RITMO_ITEM} characters and names ONLY shot distance, camera height and "
+        "what fills the frame (the palette and the light already have their own fields). "
+        "The four must be genuinely different distances: the tension is the tightest shot "
+        "of the set, the payoff the widest and deepest. The hero of every piece is an "
+        "OBJECT: never write a person into a shot (" + ", ".join(vi.PALABRAS_PERSONA)
+        + "). The image brief forbids people as the main subject, so a shot that asks for "
+        "one is a contradiction the model resolves by dropping that shot entirely — and "
+        "the carousel loses its shot ladder.",
+        f"9. `escenarios`: {vi.MIN_ESCENARIOS}-{vi.MAX_ESCENARIOS} LOCATIONS this brand shoots "
+        f"in — never more, never one. Each is at most {vi.MAX_ESCENARIO_PALABRAS} words and "
+        "names the place, its surfaces and its materials: a location, not a scene and not a "
+        "subject. One piece of the set is generated per job from ONE of these, held identical "
+        "across every image of that job, so a repertoire of one makes every post of this brand "
+        "come out of the same room. They must be genuinely different places, and NOT all "
+        "variants of a table (" + ", ".join(vi.PALABRAS_MESA[:4]) + "): a tabletop still life "
+        "is one legitimate world, but a repertoire made only of tabletops is how every brand "
+        "ends up producing the same photograph. Never write a person into a location ("
+        + ", ".join(vi.PALABRAS_PERSONA[:4]) + "), and never restate the palette or the light — "
+        "they have their own fields.",
+        f"10. `sistemas_texto`: {vi.MIN_SISTEMAS}-{vi.MAX_SISTEMAS} names, chosen ONLY from "
+        f"this list: {', '.join(vi.SISTEMAS_TEXTO)}. This is how many TEXT LEVELS the content "
+        "slides of this brand print — `titular` is one big headline per slide, "
+        "`titular_cuerpo` adds a paragraph of body copy under it, and "
+        "`etiqueta_titular_cuerpo` adds a small label above and moves the body to the foot. "
+        "Pick from what the reference set actually does: a moodboard of bold single "
+        "statements is `titular`; one where the pieces explain something, with small text "
+        "under the headline, wants a body. Each job freezes ONE of them, so two of the "
+        "brand's carousels do not come out with the same text structure. A name outside "
+        "that list is rejected.",
+        f"11. Every text field is at most {vi.MAX_TEXTO} characters — around "
+        f"{vi.MAX_TEXTO // 7} words. Spend that budget on concrete facts: dense, not long.",
+        "12. Write every value in English: these strings are injected verbatim into an "
         "image-generation prompt that is written in English.",
     ])
 
 
+def _reglas_diseno() -> str:
+    """Las reglas de diseño que la app COMPRUEBA sobre los hex devueltos.
+
+    Mismo motivo que `_reglas_esquema`: los números salen de las constantes que aplica
+    `visual_identity.revisar_diseno`, para que lo que se pide y lo que se comprueba no
+    puedan separarse. El criterio de diseño que no se comprueba —cómo mirar el set, qué
+    es una buena referencia— es encuadre creativo y vive en el JSON del prompt.
+    """
+    return "\n".join([
+        "DESIGN RULES — these are checked in code against the hex values you return, "
+        "because a palette that fails them prints an unreadable poster:",
+        f"A. The type colour (2nd) must reach at least {vi.CONTRASTE_MIN}:1 WCAG "
+        "contrast against the background colour (1st). A headline at 2:1 is not a mood, "
+        "it is a poster nobody can read.",
+        f"B. The accent (3rd) must be a saturated hue — at least "
+        f"{round(vi.SATURACION_ACENTO_MIN * 100)}% HSV saturation. A third neutral is "
+        "not an accent.",
+        "C. The accent must read as a different colour from BOTH the background and the "
+        "type colour — by hue and chroma, not only by lightness.",
+        "D. `tipografia` must declare that it is a DISPLAY class — name at least one of: "
+        + ", ".join(vi.MARCAS_DISPLAY) + ". Without weight, width or case declared the "
+        "model sets the headline at caption size.",
+        "E. `tipografia_secundaria` must not ask for "
+        + " or ".join(f'"{s}"' for s in vi.SECUNDARIA_DEBIL)
+        + ": a kicker in regular weight and mixed case is what makes the piece read as a "
+        "photo with a caption instead of a poster.",
+    ])
+
+
+# Defaults mínimos: el encuadre bueno vive en el JSON y estos solo tienen que dejar el
+# extractor en pie si el archivo falta o está roto (`prompt_config.load` → `{}`).
+_SISTEMA_POR_DEFECTO = (
+    "You are a senior graphic designer, art director of a poster studio. Read these "
+    "reference photographs and specify the identity they are reaching for, at "
+    "production quality: faithful to the set, free of its snapshot accidents. Every "
+    "value is injected verbatim into a production image prompt, so write shootable "
+    "instructions, never appreciations. Answer with JSON only."
+)
+_CRITERIO_POR_DEFECTO = (
+    "paleta: three ROLES, not the three most frequent colours — the field the subjects "
+    "sit on, the near-neutral the headline is read in, the one saturated accent.",
+    "tipografia: the class of face that holds a headline at poster scale — name the "
+    "class, its weight, width and CASE; never a neutral UI sans, never caps by default.",
+    "tono_visual: a repeatable lighting recipe that leaves quiet areas for the type.",
+)
+_PROHIBICIONES_POR_DEFECTO = (
+    "empty adjectives: beautiful, modern, stunning, vibrant, sleek.",
+    "licensed font names and real brand names: describe the class, never the trademark.",
+    "anything you cannot point to in the photographs.",
+)
+
+
+def _vinetas(valor, por_defecto) -> str:
+    items = valor if isinstance(valor, list) else list(por_defecto)
+    return "\n".join(f"- {str(x).strip()}" for x in items if str(x).strip())
+
+
 def _sistema(cfg_ex: dict) -> str:
-    encuadre = (cfg_ex.get("sistema") or
-                "You are a brand art director. Name the visual identity that these "
-                "reference photographs already share. Answer with JSON only.")
-    return f"{encuadre}\n\n{_reglas_esquema()}"
+    """Encuadre creativo (JSON) + reglas duras (app).
+
+    El orden importa: primero con qué ojo se mira, después qué es innegociable. Las
+    reglas van al final porque son lo último que lee el modelo antes de responder.
+    """
+    bloques = [cfg_ex.get("sistema") or _SISTEMA_POR_DEFECTO]
+    criterio = _vinetas(cfg_ex.get("criterio"), _CRITERIO_POR_DEFECTO)
+    if criterio:
+        bloques.append(f"HOW TO READ THE SET, FIELD BY FIELD:\n{criterio}")
+    prohibiciones = _vinetas(cfg_ex.get("prohibiciones"), _PROHIBICIONES_POR_DEFECTO)
+    if prohibiciones:
+        bloques.append(f"NEVER:\n{prohibiciones}")
+    bloques += [_reglas_esquema(), _reglas_diseno()]
+    return "\n\n".join(bloques)
 
 
 def _mensaje(cfg_ex: dict, n: int) -> str:
     plantilla = (cfg_ex.get("instruccion") or
                  "Extract the visual identity shared by these {n} reference photographs "
-                 "of one brand.")
+                 "of one brand, and specify it at production quality.")
     return plantilla.format(n=n)
 
 
 def _mensaje_reintento(cfg_ex: dict, errores: list[str], previo: dict) -> str:
     plantilla = (cfg_ex.get("reintento") or
-                 "The JSON you returned was rejected by the validator:\n{errores}\n\n"
+                 "The JSON you returned did not pass review:\n{errores}\n\n"
                  "This is what you returned:\n{previo}\n\nFix exactly those problems, "
                  "change nothing else, and return the complete corrected JSON object.")
     return plantilla.format(
@@ -232,7 +349,8 @@ def extraer(fotos: list[tuple[bytes, str]], *, cfg) -> ResultadoExtraccion:
 
     Síncrona como el resto de `llm_json`: quien llama la despacha a un hilo.
     Lanza `FotosInvalidas` (sin gastar nada), `ExtraccionNoDisponible` o
-    `ExtraccionInvalida` si el modelo no acierta ni con el reintento.
+    `ExtraccionInvalida` si el modelo no acierta ni con el reintento. Un reparo de
+    **diseño** que sobreviva al reintento no lanza: vuelve en `avisos`.
     """
     errores_fotos = revisar_fotos(fotos)
     if errores_fotos:
@@ -256,6 +374,11 @@ def extraer(fotos: list[tuple[bytes, str]], *, cfg) -> ResultadoExtraccion:
     usos: list[dict] = []
     avisos: list[str] = []
     ultimos: list[str] = []
+    # Red de seguridad: la última identidad que sí cumplió el esquema aunque arrastre
+    # un reparo de diseño. Sin esto, un segundo intento peor que el primero (válido de
+    # diseño pero roto de esquema) tiraría una identidad perfectamente utilizable.
+    mejor: dict | None = None
+    reparos_mejor: list[str] = []
 
     for intento in range(1, _INTENTOS + 1):
         data, uso = llm_json.complete_json_vision_multi(
@@ -264,13 +387,32 @@ def extraer(fotos: list[tuple[bytes, str]], *, cfg) -> ResultadoExtraccion:
             usos.append(uso)
         identidad = vi.normalizar(data)
         errores = vi.validar(identidad)
+        # Los reparos de diseño solo se miran sobre una identidad que ya valida: sobre
+        # una paleta rota dirían lo mismo dos veces y con peores palabras.
+        reparos = vi.revisar_diseno(identidad) if not errores else []
         if not errores:
-            return ResultadoExtraccion(identidad=identidad, usos=usos, avisos=avisos,
-                                       intentos=intento)
-        ultimos = errores
+            if not reparos:
+                return ResultadoExtraccion(identidad=identidad, usos=usos, avisos=avisos,
+                                           intentos=intento)
+            mejor, reparos_mejor = identidad, reparos
+
+        ultimos = errores or reparos
         if intento < _INTENTOS:
-            avisos.append(f"La primera extracción no validó ({'; '.join(errores)}); se reintentó.")
-            mensaje = _mensaje_reintento(cfg_ex, errores, data if isinstance(data, dict) else {})
+            motivo = "no validó" if errores else "no cumplía el criterio de diseño"
+            avisos.append(f"La primera extracción {motivo} ({'; '.join(ultimos)}); se reintentó.")
+            mensaje = _mensaje_reintento(cfg_ex, ultimos, data if isinstance(data, dict) else {})
+
+    if mejor is not None:
+        # Válida contra el esquema, con un reparo de diseño que el modelo no resolvió.
+        # Se devuelve avisando en vez de fallar: el editor está a la vista y cambiar un
+        # hex ahí es más rápido —y más barato— que otra llamada al modelo.
+        avisos.append(
+            "El modelo no resolvió este reparo de diseño: " + "; ".join(reparos_mejor) +
+            ". Corrígelo en el editor antes de guardar: la pieza de respaldo se dibuja "
+            "con estos colores."
+        )
+        return ResultadoExtraccion(identidad=mejor, usos=usos, avisos=avisos,
+                                   intentos=_INTENTOS)
 
     raise ExtraccionInvalida(
         "El modelo no consiguió describir la identidad con el formato esperado. "

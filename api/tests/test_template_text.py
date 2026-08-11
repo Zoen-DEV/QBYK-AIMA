@@ -108,8 +108,13 @@ def test_el_lockup_solo_sale_para_las_plantillas():
                                 texto=_HOOK, rol="portada") is None
     lock = jr._lockup_plantilla(cfg, improv._template_file(1, 1), texto=_HOOK, rol="portada")
     assert lock is not None
-    # Mismo reparto titular/kicker que recibe el modelo en su prompt.
-    assert (lock["titular"], lock["kicker"]) == parch.dividir_texto(_HOOK)
+    # Mismo reparto titular/kicker —y la misma caja— que recibe el modelo en su prompt.
+    assert _textos(lock) == [b.upper() for b in parch.dividir_texto(_HOOK)]
+
+
+def _textos(lock: dict) -> list[str]:
+    """Los strings que la plantilla va a dibujar, en orden de bloque."""
+    return [b["texto"] for b in lock["bloques"]]
 
 
 def test_la_notacion_del_usuario_nunca_se_imprime():
@@ -118,14 +123,73 @@ def test_la_notacion_del_usuario_nunca_se_imprime():
                                 texto="Ecualizar **cambia** todo — y no cuesta nada",
                                 rol="contenido")
     assert lock["acento"] == "cambia"
-    assert "**" not in lock["titular"] + lock["kicker"]
-    assert lock["titular"] == "Ecualizar cambia todo"      # la raya marca el corte
-    assert lock["kicker"] == "y no cuesta nada"
+    assert "**" not in "".join(_textos(lock))
+    # La raya marca el corte y tampoco se imprime.
+    assert _textos(lock) == ["ECUALIZAR CAMBIA TODO", "Y NO CUESTA NADA"]
+
+
+def test_los_bloques_del_sistema_llegan_a_la_plantilla():
+    """La razón de ser de este módulo: la pieza dice lo mismo salga por donde salga.
+
+    Si el respaldo siguiera imprimiendo solo titular + apoyo, un slide de un sistema
+    con cuerpo saldría a medias justo cuando el modelo no está disponible.
+    """
+    lock = jr._lockup_plantilla(
+        _cfg(), improv._template_file(1, 1), rol="desarrollo",
+        sistema="etiqueta_titular_cuerpo",
+        texto={"etiqueta": "02", "titular": "El coste sube",
+               "cuerpo": "Cada salto de contexto multiplica el gasto."})
+    assert [b["clave"] for b in lock["bloques"]] == ["etiqueta", "titular", "cuerpo"]
+    # El cuerpo NO se pasa a caja alta aunque la identidad sea de caja alta: a ese
+    # tamaño un párrafo en mayúsculas es ilegible (misma regla que el prompt).
+    assert lock["bloques"][1]["texto"] == "EL COSTE SUBE"
+    assert lock["bloques"][2]["texto"] == "Cada salto de contexto multiplica el gasto."
+    # Y cada bloque llega con su banda resuelta: el overlay no relee la config.
+    assert [b["banda"] for b in lock["bloques"]] == ["etiqueta", "alta", "pie"]
+
+
+def test_la_portada_ignora_el_sistema_tambien_en_la_plantilla():
+    # Mismo criterio que `normalizar_spec`: si acá se resolviera distinto, la portada
+    # de respaldo llevaría bloques que su versión generada no tiene.
+    lock = jr._lockup_plantilla(_cfg(), improv._template_file(1, 1), rol="portada",
+                                sistema="etiqueta_titular_cuerpo", texto=_HOOK)
+    assert [b["clave"] for b in lock["bloques"]] == ["titular", "apoyo"]
 
 
 def test_sin_texto_que_decir_no_se_dibuja_nada():
     assert jr._lockup_plantilla(_cfg(), improv._template_file(1, 1),
                                 texto="   ", rol="portada") is None
+
+
+def test_la_caja_la_decide_la_identidad_y_no_el_renderizador():
+    """La caja alta dejó de ser una constante del proyecto.
+
+    Mientras todas las identidades eran caja alta, que `image_overlay` forzara
+    `.upper()` daba igual. Desde que una identidad puede declararse en caja mixta, esa
+    llamada haría que la pieza de respaldo contradijera a la generada — que es
+    exactamente lo que este módulo existe para evitar. La decisión se toma una sola
+    vez, con la misma función que cita el texto en el prompt.
+    """
+    caps = {"tipografia": "ultra-condensed heavy grotesque, ALL CAPS, tight tracking"}
+    mixta = {"tipografia": "high-contrast Didone display serif, mixed case, tight tracking"}
+    plantilla = improv._template_file(1, 1)
+    titular = parch.dividir_texto(_HOOK)[0]
+    assert _textos(jr._lockup_plantilla(_cfg(), plantilla, texto=_HOOK, rol="portada",
+                                        identidad=caps))[0] == titular.upper()
+    assert _textos(jr._lockup_plantilla(_cfg(), plantilla, texto=_HOOK, rol="portada",
+                                        identidad=mixta))[0] == titular
+
+
+def test_una_identidad_en_caja_mixta_no_se_dibuja_en_mayusculas():
+    # El otro extremo del mismo contrato: que el flag llegue hasta el píxel.
+    base = Image.new("RGB", (400, 500), (20, 20, 20))
+    lock = {"titular": "El acceso", "kicker": "", "acento": "", "rol": "portada",
+            "color_texto": "#EDEAE0", "color_acento": "#C9F227"}
+    mixta = ov._dibujar_texto(base.copy(), dict(lock, caja_alta=False))
+    alta = ov._dibujar_texto(base.copy(), dict(lock, caja_alta=True))
+    assert mixta.tobytes() != alta.tobytes()
+    # Sin el campo se comporta como siempre: caja alta.
+    assert ov._dibujar_texto(base.copy(), lock).tobytes() == alta.tobytes()
 
 
 # ── La fase de imágenes (los dos flujos) ─────────────────────────────────────
@@ -220,4 +284,4 @@ async def test_rehacer_un_slide_caido_a_plantilla_lo_dibuja(entorno):
     # Dice lo mismo que decía: rehacer no puede cambiar el copy del slide.
     esperado = jr._lockup_plantilla(job["_cfg"], improv._template_file(2, 1),
                                     texto=_SLIDES[1], rol="contenido")
-    assert esperado["titular"].lower().startswith("costes")
+    assert _textos(esperado)[0].lower().startswith("costes")

@@ -11,6 +11,7 @@ camino viejo como fallback cuando el modelo no entrega escena.
 import pytest
 
 import job_runner as jr
+import prompt_architect as parch
 
 _CONTENT = {"title": "Cómo ahorrar sin sufrir"}
 _SCENE = "A chipped ceramic jar of coins on a kitchen windowsill."
@@ -106,26 +107,57 @@ def test_slide_prompts_never_carry_text_into_the_image():
     assert all(p.endswith(jr._NO_TEXT_SUFFIX) for p in prompts)
 
 
-def test_cada_slide_recibe_su_encuadre_por_posicion():
-    # El encuadre lo fija la POSICIÓN del slide, no el LLM: da ritmo al set.
+def test_cada_slide_recibe_el_plano_de_su_beat():
+    # El plano lo fija el BEAT que le toca al slide por posición, no el LLM: es lo
+    # que le da al set una secuencia (tensión → desarrollo → remate) en vez de tres
+    # versiones del mismo cuadro.
     posts = {"image_prompt": _SCENE, "image_slide_prompts": ["A.", "B.", "C."]}
     prompts = jr._slide_image_prompts(posts, _CONTENT, 3)
-    for i in range(3):
-        assert jr._SLIDE_FRAMINGS[i] in prompts[i]
+    for i, rol in enumerate(parch.roles_carrusel(3)):
+        assert parch.encuadre_beat(rol) in prompts[i]
 
 
-def test_los_encuadres_ciclan_cuando_hay_mas_slides_que_encuadres():
-    prompts = jr._slide_image_prompts({"image_prompt": _SCENE}, _CONTENT, len(jr._SLIDE_FRAMINGS) + 1)
-    assert jr._SLIDE_FRAMINGS[0] in prompts[len(jr._SLIDE_FRAMINGS)]
+def test_los_planos_de_dos_slides_seguidos_son_distintos():
+    prompts = jr._slide_image_prompts({"image_prompt": _SCENE}, _CONTENT, 4)
+    planos = [parch.encuadre_beat(r) for r in parch.roles_carrusel(4)]
+    assert len(set(planos)) == 4          # cuatro beats, cuatro distancias
+    assert all(planos[i] in prompts[i] for i in range(4))
+
+
+def test_el_ritmo_de_la_identidad_pisa_el_de_la_casa():
+    # El beat es estructura y la ejecución fotográfica es marca: la identidad activa
+    # decide con qué plano se recorre la escalera.
+    ident = {"ritmo_carrusel": ["Extreme macro of wet slate.", "Table-height still life.",
+                                "Overhead of one tool.", "Wide room, subject tiny."]}
+    prompts = jr._slide_image_prompts({"image_prompt": _SCENE}, _CONTENT, 4, identidad=ident)
+    assert "Extreme macro of wet slate." in prompts[0]
+    assert "Wide room, subject tiny." in prompts[3]
+
+
+def test_un_hueco_del_ritmo_cae_al_respaldo_de_ese_beat():
+    # La posición es el beat: vaciar el segundo no puede correr el tercero a su sitio.
+    # El hueco cae al `ritmo` de ESE beat en architect.json, no al de la casa: la
+    # identidad de la casa solo entra cuando el ritmo llega vacío ENTERO.
+    ident = {"ritmo_carrusel": ["Extreme macro of wet slate.", "", "Overhead of one tool."]}
+    prompts = jr._slide_image_prompts({"image_prompt": _SCENE}, _CONTENT, 4, identidad=ident)
+    assert "Extreme macro of wet slate." in prompts[0]
+    assert "Overhead of one tool." in prompts[2]
+    assert parch._cfg_arch()["roles"]["desarrollo"]["ritmo"] in prompts[1]
 
 
 def test_el_ultimo_slide_es_de_info_como_los_del_centro():
     # El carrusel ya no cierra con créditos: el último slide sale de su propia escena
-    # del LLM y de la escalera de encuadres, exactamente igual que los del centro.
+    # del LLM y del plano de su beat, exactamente igual que los del centro.
     posts = {"image_prompt": _SCENE, "image_slide_prompts": ["Scene A.", "Scene B.", "Scene C."]}
     prompts = jr._slide_image_prompts(posts, _CONTENT, 3)
     assert prompts[-1].startswith("Scene C.")
-    assert jr._SLIDE_FRAMINGS[2] in prompts[-1]
+    assert parch.encuadre_beat("remate") in prompts[-1]
+
+
+def test_rehacer_un_slide_no_le_cambia_el_beat():
+    # `regenerate_image` recalcula el rol por índice: si contara otra secuencia, el
+    # slide rehecho saldría con el plano y la escala de otro momento del carrusel.
+    assert [jr._rol_slide(i, 4) for i in range(4)] == parch.roles_carrusel(4)
 
 
 # ── La portada como CONTEXTO del slide, no como su encargo ────────────────────
@@ -152,6 +184,12 @@ def _spec_de(rol: str) -> dict:
     visto = {}
 
     class _Parch:
+        """El módulo real, con `construir` interceptado: lo demás (`rol_base`,
+        `encuadre_beat`) tiene que seguir resolviendo de verdad."""
+
+        def __getattr__(self, nombre):
+            return getattr(parch, nombre)
+
         @staticmethod
         def construir(spec, **kw):
             visto.update(spec)

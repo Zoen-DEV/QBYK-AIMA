@@ -74,7 +74,9 @@ def test_modelo_sin_soporte_de_referencia_la_ignora():
 
 
 def test_el_prompt_se_recorta_al_limite_del_server():
-    p = hfmcp._image_params("x" * 5000, "4:5", "nano_banana_pro")
+    # La entrada se deriva del propio tope: escrita a mano se queda corta en cuanto el
+    # tope sube (pasó al añadirse el bloqueo de mundo) y el test dejaba de probar el corte.
+    p = hfmcp._image_params("x" * (hfmcp._MAX_PROMPT_CHARS + 200), "4:5", "nano_banana_pro")
     assert len(p["prompt"]) == hfmcp._MAX_PROMPT_CHARS
 
 

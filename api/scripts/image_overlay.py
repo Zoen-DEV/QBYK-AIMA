@@ -32,6 +32,7 @@ API pública:
 
   {"titular": str, "kicker": str, "acento": str,
    "rol": "portada" | "contenido",
+   "caja_alta": bool,                          # opcional, default True (la caja es de la identidad)
    "color_texto": str, "color_acento": str}    # admiten "#RRGGBB" o una frase que lo contenga
 
 `src` puede ser una URL http(s) (salida del proveedor) o una ruta local (plantilla de
@@ -129,16 +130,29 @@ def _to_png_bytes(img: Image.Image) -> bytes:
 
 _MARGEN = 0.08          # área segura: el mismo 8% por lado que declara el brief
 _ANCHO = 0.84           # ancho máximo del bloque de texto (84% del cuadro)
-# Cuerpo del titular como fracción del alto. Queda algo por debajo del 13-16% que el
-# brief le pide al modelo porque acá el texto cae sobre una foto genérica que no
-# reservó aire para él: pasarse de cuerpo lo empuja contra el sujeto de la plantilla.
-_CUERPO = {"portada": 0.135, "contenido": 0.105}
+# Cuerpo del titular como fracción del alto. Queda algo por debajo de lo que el brief
+# le pide al modelo (13-16% en portada, 15-20% en slide) porque acá el texto cae sobre
+# una foto genérica que no reservó aire para él: pasarse de cuerpo lo empuja contra el
+# sujeto de la plantilla.
+# El slide va POR ENCIMA de la portada, igual que en el brief: en un slide de contenido
+# el tipo es el elemento principal y la imagen lo soporta. Si acá se quedara la
+# jerarquía vieja (portada 0.135 / contenido 0.105), la pieza diría una cosa cuando la
+# genera el modelo y la contraria cuando cae a plantilla.
+_CUERPO = {"portada": 0.135, "contenido": 0.155}
 _CUERPO_MIN = 0.050     # por debajo de esto ya no es un póster, es un pie de foto
 _CUERPO_KICKER = 0.45   # la segunda línea, ~la mitad del titular (igual que en el prompt)
 _MAX_LINEAS = 3
+# Aire entre dos bloques apilados (etiqueta→titular, titular→cuerpo), en fracción del
+# alto. Los bloques que van al pie se anclan al margen inferior y no lo usan.
+_AIRE = 0.025
+_PESO_CUERPO = 400      # el cuerpo va en peso de lectura, no de display
 _INTERLINEA = 0.92      # "set solid": el display se compone con la interlínea cerrada
-# Hasta dónde puede bajar el titular: la banda alta del lockup, por rol.
-_BANDA_ALTA = {"portada": 0.42, "contenido": 0.38}
+# Hasta dónde puede bajar el titular: la banda alta del lockup, por rol. Los dos valores
+# son los mismos que `zonas_texto` declara en el brief (`prompts/architect.json`), y el
+# del slide es el mayor porque ahí el titular manda: 3 líneas al 0.155 del alto no caben
+# en el 38% viejo, así que `_encajar` lo habría bajado de cuerpo hasta deshacer el
+# cambio en silencio.
+_BANDA_ALTA = {"portada": 0.42, "contenido": 0.68}
 
 _COLOR_TEXTO = (237, 234, 224)   # respaldo si la marca no trae un hex legible
 _HEX_RE = re.compile(r"#([0-9a-fA-F]{6})")
@@ -325,19 +339,48 @@ def _scrim(img: Image.Image, bandas: list[tuple[int, int]], *, fuerza: int = 170
     return out
 
 
+def _bloques_de(texto: dict) -> list[dict]:
+    """Los bloques a dibujar. Acepta el contrato nuevo y el de siempre.
+
+    El nuevo (`bloques`) llega ya resuelto desde `prompt_architect.lockup_bloques`:
+    banda, tamaño relativo y caja. El viejo (`titular` + `kicker`) se sigue aceptando
+    porque es lo que produce cualquier llamada que no conozca los sistemas de texto, y
+    porque una portada no lleva sistema.
+    """
+    bloques = texto.get("bloques")
+    if isinstance(bloques, list) and bloques:
+        return [b for b in bloques if isinstance(b, dict) and str(b.get("texto") or "").strip()]
+    caja = (lambda s: s.upper()) if texto.get("caja_alta", True) else (lambda s: s)
+    salida = []
+    for clave, banda, rel, lineas in (("titular", "alta", 1.0, _MAX_LINEAS),
+                                      ("kicker", "pie", _CUERPO_KICKER, 2)):
+        crudo = " ".join(str(texto.get(clave) or "").split())
+        if crudo:
+            salida.append({"clave": clave, "texto": caja(crudo), "banda": banda,
+                           "escala_rel": rel, "max_lineas": lineas})
+    # Sin titular, el que haya sube a la banda alta: un bloque suelto al pie se lee
+    # como un pie de foto y la pieza se queda sin nada arriba.
+    if salida and salida[0]["banda"] != "alta":
+        salida[0] = dict(salida[0], banda="alta", escala_rel=1.0, max_lineas=_MAX_LINEAS)
+    return salida
+
+
 def _dibujar_texto(img: Image.Image, texto: dict) -> Image.Image:
     """Compone el lockup de marca sobre la plantilla ya recortada.
+
+    Dibuja los bloques que declare el sistema de texto de la pieza —etiqueta, titular,
+    cuerpo, apoyo— en sus bandas: los apilados van desde el margen superior hacia abajo
+    y los del pie anclados al margen inferior. Que el cuerpo se ancle al pie o cuelgue
+    del titular no lo decide este módulo: viene resuelto en `banda`, del mismo sitio que
+    lo declara el prompt.
 
     Best-effort de punta a punta: cualquier fallo devuelve la imagen tal cual. Una
     plantilla sin texto es un post pobre; una excepción acá es un post perdido.
     """
     try:
-        titular = " ".join((texto.get("titular") or "").split()).upper()
-        kicker = " ".join((texto.get("kicker") or "").split()).upper()
-        if not titular and not kicker:
+        bloques = _bloques_de(texto)
+        if not bloques:
             return img
-        if not titular:                      # sin titular, el kicker sube a titular
-            titular, kicker = kicker, ""
 
         w, h = img.size
         mx, my = round(w * _MARGEN), round(h * _MARGEN)
@@ -350,41 +393,62 @@ def _dibujar_texto(img: Image.Image, texto: dict) -> Image.Image:
         draw = ImageDraw.Draw(img)
         cuerpo = int(h * _CUERPO[rol])
         cuerpo_min = int(h * _CUERPO_MIN)
-        lineas, font, alto = _bloque(
-            titular, font_maker=lambda s: _fuente(s, peso=_PESO_TITULAR), cuerpo=cuerpo,
-            cuerpo_min=cuerpo_min, ancho=ancho, alto_max=int(h * _BANDA_ALTA[rol]) - my,
-            max_lineas=_MAX_LINEAS, draw=draw,
-        )
-        avance = int(_alto_linea(font) * _INTERLINEA)
-
-        bandas = [(my, my + alto)]
-        lineas_k: list[list[str]] = []
-        font_k = None
-        alto_k = 0
-        if kicker:
-            # La segunda línea se ancla al pie, no debajo del titular: eso es lo que
-            # separa el póster de una foto con caption (misma regla que el prompt).
-            lineas_k, font_k, alto_k = _bloque(
-                kicker, font_maker=lambda s: _fuente(s, peso=_PESO_KICKER),
-                cuerpo=max(cuerpo_min, int(_cuerpo_de(font, cuerpo) * _CUERPO_KICKER)),
-                cuerpo_min=max(12, cuerpo_min // 2), ancho=ancho,
-                alto_max=int(h * 0.22), max_lineas=2, draw=draw,
+        aire = int(h * _AIRE)
+        # Todo lo que se apila arriba comparte la banda alta del lockup, así que su alto
+        # disponible se va gastando: el titular es el que manda y los demás se ajustan a
+        # lo que quede. Sin esto, una etiqueta y un cuerpo empujaban el titular fuera de
+        # su banda y `_bloque` lo bajaba de cuerpo hasta deshacer la jerarquía.
+        disponible = int(h * _BANDA_ALTA[rol]) - my
+        arriba, pie = [], []
+        for b in bloques:
+            # El tamaño sale de `escala_rel`, que lo declara el SISTEMA: el titular no
+            # mide lo mismo solo por ser titular — con un cuerpo debajo baja al 82% para
+            # dejarle su banda, igual que en el brief. El peso va por CLAVE y no por
+            # tamaño: un titular pequeño sigue siendo display, y un cuerpo grande sigue
+            # siendo texto de lectura.
+            rel = float(b.get("escala_rel") or 1.0)
+            clave = b.get("clave") or "titular"
+            es_titular = clave in ("titular", "text")
+            peso = (_PESO_TITULAR if es_titular
+                    else _PESO_CUERPO if clave == "cuerpo" else _PESO_KICKER)
+            al_pie = b.get("banda") == "pie"
+            lineas, font, alto = _bloque(
+                b["texto"], font_maker=lambda s, _p=peso: _fuente(s, peso=_p),
+                cuerpo=max(cuerpo_min if es_titular else 12, int(cuerpo * rel)),
+                cuerpo_min=cuerpo_min if es_titular else max(12, cuerpo_min // 2),
+                ancho=ancho,
+                alto_max=int(h * 0.28) if al_pie else max(aire, disponible),
+                max_lineas=int(b.get("max_lineas") or _MAX_LINEAS), draw=draw,
             )
-            bandas.append((h - my - alto_k, h - my))
+            destino = pie if al_pie else arriba
+            destino.append((lineas, font, alto))
+            if not al_pie:
+                disponible = max(aire, disponible - alto - aire)
+
+        # Posiciones: los apilados bajan desde el margen; los del pie suben desde abajo.
+        colocados, bandas = [], []
+        y = my
+        for lineas, font, alto in arriba:
+            colocados.append((lineas, font, y))
+            bandas.append((y, y + alto))
+            y += alto + aire
+        y = h - my
+        for lineas, font, alto in reversed(pie):
+            y -= alto
+            colocados.append((lineas, font, y))
+            bandas.append((y, y + alto))
+            y -= aire
 
         img = _scrim(img, bandas)
         draw = ImageDraw.Draw(img)
-        # El acento se busca en los dos bloques: `dividir_texto` puede haber dejado la
-        # palabra marcada en la segunda línea, y ahí también es la que manda.
+        # El acento se busca en TODOS los bloques: el reparto puede haber dejado la
+        # palabra marcada en cualquiera de ellos, y ahí también es la que manda.
         marcado = texto.get("acento") or ""
-        _dibujar_bloque(draw, lineas, font, x=mx, y=my, avance=avance, color=color,
-                        color_acento=acento,
-                        indices=_indices_acento([p for l in lineas for p in l], marcado))
-        if lineas_k and font_k is not None:
-            _dibujar_bloque(draw, lineas_k, font_k, x=mx, y=h - my - alto_k,
-                            avance=int(_alto_linea(font_k) * _INTERLINEA), color=color,
+        for lineas, font, y0 in colocados:
+            _dibujar_bloque(draw, lineas, font, x=mx, y=y0,
+                            avance=int(_alto_linea(font) * _INTERLINEA), color=color,
                             color_acento=acento,
-                            indices=_indices_acento([p for l in lineas_k for p in l], marcado))
+                            indices=_indices_acento([p for l in lineas for p in l], marcado))
         return img
     except Exception as e:
         print(f"   [aviso] No se pudo dibujar el texto sobre la plantilla: {e}")
@@ -416,6 +480,150 @@ def render_story(src: str, texto: dict | None = None) -> bytes:
     if texto:
         img = _dibujar_texto(img, texto)
     return _to_png_bytes(img)
+
+
+# ── Detector de bandas planas y marcos ─────────────────────────────────────────
+#
+# El passe-partout y el letterbox se atacan en tres frentes porque el defecto tiene
+# tres orígenes y ya volvió dos veces por atacar solo uno. Los otros dos son prompt
+# —el sangrado declarado en positivo en las secciones 1 y 3, y el saneo de lo que la
+# identidad escribe en la sección 5—; este es el único que convierte la regla en algo
+# COMPROBABLE. El prompt ya falló dos veces; una comprobación sobre el píxel, no.
+#
+# La idea que hace que esto funcione y no genere falsos positivos: **un letterbox no
+# es "una zona oscura", es un ESCALÓN**. Una escena nocturna legítima tiene una banda
+# alta oscura y de baja varianza —y es correcta, es justo el aire donde se apoya el
+# titular—. Lo que delata a la banda pintada es que termina de golpe: hasta la fila k
+# no pasa nada y en la k+1 aparece la fotografía entera. Sin escalón no hay banda.
+
+# Varianza por fila/columna por debajo de la cual la línea se considera PLANA. Se
+# calibró contra las imágenes reales de `api/outputs/` (carruseles y portadas ya
+# generados, con y sin passe-partout): las líneas de una fotografía real —incluso un
+# cielo nocturno o un fondo desenfocado— quedan muy por encima, porque siempre traen
+# grano y viñeteo.
+_VARIANZA_PLANA = 12.0
+# Salto de media (de 255) contra la línea anterior que marca el borde de la banda.
+_SALTO_MIN = 14.0
+# ...o un salto de varianza: una barra negra sobre una escena nocturna puede no mover
+# la media y sí disparar la textura. Es el caso que la media sola no ve.
+_SALTO_VARIANZA = 8.0
+# Hasta dónde se busca la banda: el primer 25% del lado. Más adentro ya no es un
+# marco, es composición.
+_FRANJA = 0.25
+# Una banda tiene que ser un elemento de diseño, no dos píxeles de compresión.
+_BANDA_MIN = 0.015
+# Diferencia de medias por debajo de la cual los cuatro bordes son "el mismo color",
+# que es lo que distingue un marco de cuatro casualidades.
+_TOLERANCIA_MARCO = 12.0
+
+_BORDES = ("arriba", "abajo", "izquierda", "derecha")
+
+
+def _lineas(img: "Image.Image", *, vertical: bool) -> tuple[list[float], list[float]]:
+    """Medias y varianzas por fila (`vertical=True`) o por columna.
+
+    Se reduce la imagen a una tira de 1 px de ancho/alto usando el propio remuestreo de
+    Pillow para las medias, y se calcula la varianza sobre una miniatura: es O(píxeles)
+    una sola vez y evita traer numpy solo para esto.
+    """
+    gris = img.convert("L")
+    if vertical:
+        largo = gris.height
+        lado = min(gris.width, 128)
+        chico = gris.resize((lado, largo), Image.BILINEAR)
+    else:
+        largo = gris.width
+        lado = min(gris.height, 128)
+        chico = gris.resize((largo, lado), Image.BILINEAR)
+    # `tobytes()` sobre una imagen "L" ya devuelve los píxeles en orden de filas, y a
+    # diferencia de `getdata()` no está deprecado.
+    px = chico.tobytes()
+    medias: list[float] = []
+    varianzas: list[float] = []
+    for i in range(largo):
+        if vertical:
+            linea = px[i * lado:(i + 1) * lado]
+        else:
+            linea = px[i::largo]
+        n = len(linea) or 1
+        media = sum(linea) / n
+        medias.append(media)
+        varianzas.append(sum((v - media) ** 2 for v in linea) / n)
+    return medias, varianzas
+
+
+def _banda(medias: list[float], varianzas: list[float], *, desde_el_final: bool) -> float:
+    """Media de la banda plana de ese borde, o `-1.0` si no hay banda.
+
+    Devuelve la media (y no un booleano) porque el marco necesita comparar los cuatro
+    bordes entre sí: cuatro bandas del mismo color son un passe-partout; cuatro bandas
+    de colores distintos son cuatro escenas que casualmente empiezan planas.
+    """
+    n = len(medias)
+    if n < 8:
+        return -1.0
+    orden = range(n - 1, -1, -1) if desde_el_final else range(n)
+    idx = list(orden)
+    limite = max(2, int(n * _FRANJA))
+    corrido = 0
+    while corrido < limite and varianzas[idx[corrido]] < _VARIANZA_PLANA:
+        corrido += 1
+    if corrido < max(2, int(n * _BANDA_MIN)) or corrido >= limite:
+        # Sin banda, o plana hasta tan adentro que ya no es un borde: en los dos casos
+        # falta el escalón, que es lo único que distingue una banda pintada de una
+        # zona tranquila legítima de la fotografía.
+        return -1.0
+    dentro, ultima = idx[corrido], idx[corrido - 1]
+    salto_media = abs(medias[dentro] - medias[ultima])
+    salto_var = varianzas[dentro] > _VARIANZA_PLANA * _SALTO_VARIANZA
+    if salto_media < _SALTO_MIN and not salto_var:
+        return -1.0
+    return sum(medias[i] for i in idx[:corrido]) / corrido
+
+
+def bytes_crudos(src: str) -> bytes:
+    """Los bytes tal como los devolvió el proveedor (o la plantilla local).
+
+    Sin recorte, sin overlay y sin grade: es lo que hace falta para juzgar lo que hizo
+    el MODELO. `render_feed` no sirve para esto — recorta al 4:5 y puede dibujar texto.
+    """
+    if _is_local_path(src):
+        return Path(src).read_bytes()
+    req = urllib.request.Request(src, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as r:
+        return r.read()
+
+
+def bordes_planos(png: bytes) -> list[str]:
+    """Qué bordes de la imagen son una banda de color plano.
+
+    Devuelve `["arriba", "abajo"]` (letterbox), `["marco"]` (passe-partout en los
+    cuatro lados) o `[]`. Se mide sobre la imagen **cruda del proveedor**, antes del
+    overlay y del grade: así se juzga lo que hizo el modelo, no lo que hizo Pillow.
+
+    Best-effort: cualquier problema devuelve `[]`. Este detector no puede interrumpir
+    una generación — como mucho deja de avisar.
+    """
+    try:
+        img = Image.open(io.BytesIO(png))
+        medias_v, var_v = _lineas(img, vertical=True)
+        medias_h, var_h = _lineas(img, vertical=False)
+        bandas = {
+            "arriba": _banda(medias_v, var_v, desde_el_final=False),
+            "abajo": _banda(medias_v, var_v, desde_el_final=True),
+            "izquierda": _banda(medias_h, var_h, desde_el_final=False),
+            "derecha": _banda(medias_h, var_h, desde_el_final=True),
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"   [aviso] No se pudo revisar los bordes de la imagen: {e}")
+        return []
+
+    presentes = [b for b in _BORDES if bandas[b] >= 0]
+    if len(presentes) == 4:
+        valores = [bandas[b] for b in _BORDES]
+        if max(valores) - min(valores) <= _TOLERANCIA_MARCO:
+            return ["marco"]
+    return presentes
 
 
 # ── Grade común del carrusel ───────────────────────────────────────────────────

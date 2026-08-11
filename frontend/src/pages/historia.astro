@@ -2,6 +2,7 @@
 import Base from "../layouts/Base.astro";
 import BackLink from "../components/BackLink.astro";
 import VoicePicker from "../components/VoicePicker.astro";
+import IdentityPicker from "../components/IdentityPicker.astro";
 ---
 
 <Base title="Nueva Historia">
@@ -96,6 +97,9 @@ import VoicePicker from "../components/VoicePicker.astro";
             </select>
             <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed">Estilo de las plantillas de imagen (modo plantillas o respaldo de Higgsfield).</span>
           </label>
+
+          <!-- Identidad visual de la historia (vacío = la activa del perfil) -->
+          <IdentityPicker />
 
           <!-- Modelos de video y voz (solo aplican a formato = video) -->
           <div class="grid grid-cols-2 gap-4 hidden" id="modelo-video-wrap">
@@ -273,6 +277,8 @@ import VoicePicker from "../components/VoicePicker.astro";
   const fuenteImagenWrap = document.getElementById("fuente-imagen-wrap") as HTMLElement;
   const modeloImagenWrap = document.getElementById("modelo-imagen-wrap") as HTMLElement;
   const templateSetWrap = document.getElementById("template-set-wrap") as HTMLElement;
+  // La identidad visual solo pinta imágenes: en historia de video no aplica.
+  const identidadWrap = document.getElementById("identidad-picker") as HTMLElement;
   const modeloVideoWrap = document.getElementById("modelo-video-wrap") as HTMLElement;
   const voiceConfigWrap = document.getElementById("voice-config-wrap") as HTMLElement;
 
@@ -341,6 +347,8 @@ import VoicePicker from "../components/VoicePicker.astro";
     modeloImagenWrap.classList.toggle("pointer-events-none", !isImagen);
     templateSetWrap.classList.toggle("opacity-40", !isImagen);
     templateSetWrap.classList.toggle("pointer-events-none", !isImagen);
+    identidadWrap?.classList.toggle("opacity-40", !isImagen);
+    identidadWrap?.classList.toggle("pointer-events-none", !isImagen);
     modeloVideoWrap.classList.toggle("hidden", isImagen);
     voiceConfigWrap.classList.toggle("hidden", isImagen);
   };

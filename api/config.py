@@ -73,6 +73,27 @@ class Config:
     # QA de visión post-generación: comprueba que el texto impreso coincide con el
     # esperado (acentos incluidos) y reintenta reforzando la instrucción.
     image_text_qa: bool = True
+    # QA de bandas: mira la imagen CRUDA del proveedor (antes del overlay y del grade)
+    # y detecta el passe-partout y el letterbox — la banda de color liso que el modelo
+    # pinta cuando resuelve mal la ambigüedad del aire negativo. No usa modelo ni
+    # créditos: es Pillow (`image_overlay.bordes_planos`). Es el único de los tres
+    # frentes contra ese defecto que no es prompt, y por eso existe: el prompt ya falló
+    # dos veces. UN solo reintento (no dos como el de texto): el defecto es binario y
+    # regenerar cuesta créditos de verdad.
+    image_band_qa: bool = True
+    # Cortes de línea dictados: la sección 4 le dice al modelo por dónde partir el
+    # titular en vez de dejar que lo decida por lo que le quepa (de ahí las viudas —
+    # "EN" solo en la tercera línea, al 14% del alto del cuadro). Va tras un flag
+    # porque toca la sección que sostiene el QA de texto: si `image_text_qa` empeora
+    # su tasa de acierto con esto encendido, se apaga. La exactitud del texto vale
+    # más que la elegancia del corte.
+    image_line_breaks: bool = True
+    # QA de CONJUNTO (api/image_set_qa.py): una llamada de visión que ve las N piezas
+    # del carrusel JUNTAS y dice cuáles rompen el set. Es la única comprobación capaz
+    # de detectar que cinco imágenes no se parecen entre sí — ningún QA por imagen
+    # puede—, y por tanto la única que evita que la calidad del set se degrade sin que
+    # nadie se entere. Cuesta una llamada de visión por carrusel: por eso es un flag.
+    image_set_qa: bool = True
     # Coherencia del carrusel.
     #   - image_reference_slides: pasa la PORTADA en `medias` al generar cada slide.
     #     APAGADO por defecto, y no es una preferencia estética: en el catálogo en vivo
@@ -180,6 +201,12 @@ def load_config() -> Config:
         prompt_architect_critique=(os.environ.get("PROMPT_ARCHITECT_CRITIQUE", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         image_text_qa=(os.environ.get("IMAGE_TEXT_QA", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_band_qa=(os.environ.get("IMAGE_BAND_QA", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_line_breaks=(os.environ.get("IMAGE_LINE_BREAKS", "") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        image_set_qa=(os.environ.get("IMAGE_SET_QA", "") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
         # Apagado por defecto: con los modelos actuales `medias` es image-to-image y
         # clona la portada en cada slide (ver el comentario del dataclass).

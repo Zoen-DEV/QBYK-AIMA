@@ -9,7 +9,8 @@ parte en dos, porque no todo lo que se guarda vale lo mismo:
   dejaría a alguien mirando una identidad que no existe.
 - **`activa()` nunca falla.** Es lo que lee el pipeline al crear un job, y ahí sí manda
   la regla vieja: ante cualquier problema devuelve la identidad system y la generación
-  sigue exactamente como hoy.
+  sigue exactamente como hoy. `elegida()` —la identidad que el formulario eligió para
+  ESE post— hereda la misma regla y cae a la activa.
 
 La identidad **system no es una fila**: se sirve desde `prompts/brand.json`
 (`visual_identity.fila_system`). Por eso no se puede eliminar ni editar —no hay nada
@@ -155,6 +156,29 @@ async def activa(user_id: str) -> dict:
     fila = vi.fila_system()
     fila["is_default"] = True
     return fila
+
+
+async def elegida(user_id: str, identity_id: str | None) -> dict:
+    """La identidad con la que sale un post: la que se eligió al crearlo, o la activa.
+
+    Es el punto por el que entran los DOS flujos desde que el formulario deja elegir
+    la identidad post a post. **Vacío significa "la de siempre"** —la activa del
+    perfil—, que es exactamente lo que hacían los dos flujos antes de que el campo
+    existiera.
+
+    Y como `activa`, **nunca lanza**: un id que ya no existe (la identidad se borró
+    entre que se pintó el formulario y se envió, o no hay base para leerla) no puede
+    tumbar la creación del job; se cae a la activa y el post sale con el look que el
+    perfil tenía puesto.
+    """
+    elegido = str(identity_id or "").strip()
+    if elegido:
+        try:
+            return await obtener(user_id, elegido)
+        except Exception:  # noqa: BLE001 — la creación del job no se cae por esto
+            logger.warning("La identidad %s no está disponible para %s; se usa la activa",
+                           elegido, user_id, exc_info=True)
+    return await activa(user_id)
 
 
 # ── Escritura ─────────────────────────────────────────────────────────────────

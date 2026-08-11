@@ -145,6 +145,22 @@ def test_el_image_style_del_post_sigue_ganando_al_tono_visual():
     assert marca["tono_visual"] == "hard raking light, deep falloff"
 
 
+def test_pero_la_luz_no_la_pisa_el_image_style():
+    """El matiz de la regla anterior. El tratamiento fotográfico es creatividad por
+    pieza; el esquema de iluminación es lo que hace que las N piezas de un job
+    parezcan del mismo día, así que sale de la identidad y viaja aparte."""
+    marca = jr._marca_post({"image_style": "hard raking light, deep falloff"},
+                           aspect="4:5", identidad=_IDENTIDAD)
+    assert marca["luz_identidad"] == "overcast daylight, flat shadows"
+
+
+def test_la_luz_de_la_identidad_llega_al_bloqueo_del_prompt():
+    prompt = _prompt(_IDENTIDAD, posts={"image_style": "hard raking light, deep falloff"})
+    luz = [l for l in prompt.splitlines() if l.startswith("6.")][0]
+    assert "LIGHT LOCK" in luz
+    assert "overcast daylight" in luz.split("LIGHT LOCK")[1]
+
+
 def test_sin_image_style_manda_el_tono_visual_de_la_identidad():
     assert jr._marca_post({}, aspect="4:5", identidad=_IDENTIDAD)["tono_visual"] \
         == "overcast daylight, flat shadows"
@@ -229,6 +245,48 @@ def test_el_flujo_individual_congela_la_identidad_activa(sin_pipeline, identidad
     assert params["identidad_visual"] == vi.normalizar(_IDENTIDAD)
     assert params["identidad_visual_id"] == creada["id"]
     assert params["identidad_visual_nombre"] == "Mía"
+
+
+def test_el_flujo_individual_congela_la_identidad_elegida_en_el_form(sin_pipeline, identidades):
+    """El campo del formulario gana a la activa: es la elección de ESTE post."""
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "La activa", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        otra = c.post("/identities", json={
+            "name": "La elegida",
+            "identity_json": {**_IDENTIDAD, "paleta": ["#FFFFFF", "#222222", "#0055FF"],
+                              "paleta_nombres": ["white", "charcoal", "blue"],
+                              "color_texto": "charcoal (#222222)",
+                              "color_acento": "blue (#0055FF)"},
+        }).json()
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": otra["id"]})
+    assert res.status_code == 200
+    params = sin_pipeline[0]
+    assert params["identidad_visual_id"] == otra["id"]
+    assert params["identidad_visual_nombre"] == "La elegida"
+    assert params["identidad_visual"]["paleta"] == ["#FFFFFF", "#222222", "#0055FF"]
+
+
+def test_el_flujo_individual_puede_elegir_la_de_la_casa(sin_pipeline, identidades):
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "Mía", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": vi.SYSTEM_ID})
+    assert res.status_code == 200
+    assert sin_pipeline[0]["identidad_visual"] == vi.identidad_system()
+
+
+def test_una_identidad_que_ya_no_existe_no_tumba_la_creacion(sin_pipeline, identidades):
+    """Se borró entre que se pintó el formulario y se envió: se genera con la activa."""
+    with TestClient(api.app) as c:
+        creada = c.post("/identities", json={"name": "Mía", "identity_json": _IDENTIDAD,
+                                             "activar": True}).json()
+        res = c.post("/jobs", data={"source_type": "manual", "manual_text": "hola",
+                                    "identidad_visual_id": "no-existe"})
+    assert res.status_code == 200
+    assert sin_pipeline[0]["identidad_visual_id"] == creada["id"]
 
 
 def test_el_flujo_individual_sin_identidad_propia_congela_la_de_la_casa(sin_pipeline, sin_base):
@@ -317,6 +375,33 @@ def test_el_sheet_congela_la_identidad_al_subirlo(monkeypatch, identidades):
     assert lanzados[0]["identidad_params"]["identidad_visual"] == vi.normalizar(_IDENTIDAD)
 
 
+def test_el_lote_congela_la_identidad_elegida_en_la_ui(monkeypatch, identidades):
+    """La identidad del lote se elige en la UI (no es una columna del sheet) y pisa a
+    la activa, igual que las cuentas y el dry-run."""
+    lanzados: list[dict] = []
+    monkeypatch.setattr(api, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(api.sheets, "parse_sheet", lambda data, nombre: (
+        [{"source": "manual", "label": "fila", "schedule_dt": None, "params": {},
+          "upload_bytes": None, "upload_filename": None}], []))
+
+    async def _run_batch(batch, jobs):
+        lanzados.append(batch)
+
+    monkeypatch.setattr(api, "run_batch", _run_batch)
+
+    with TestClient(api.app) as c:
+        c.post("/identities", json={"name": "La activa", "identity_json": _IDENTIDAD,
+                                    "activar": True})
+        elegida = c.post("/identities", json={"name": "La elegida",
+                                              "identity_json": _IDENTIDAD}).json()
+        res = c.post("/sheets/jobs", files={"sheet_file": ("posts.xlsx", b"xx")},
+                     data={"identidad_visual_id": elegida["id"]})
+
+    assert res.status_code == 200
+    assert lanzados[0]["identidad_params"]["identidad_visual_id"] == elegida["id"]
+    assert lanzados[0]["identidad_params"]["identidad_visual_nombre"] == "La elegida"
+
+
 # ── Cambiar de identidad cambia el prompt (el criterio de aceptación) ─────────
 
 def test_dos_identidades_producen_prompts_distintos():
@@ -326,3 +411,107 @@ def test_dos_identidades_producen_prompts_distintos():
     assert _prompt(_IDENTIDAD) != _prompt(otra)
     assert "#0055FF" in _prompt(otra)
     assert "#0055FF" not in _prompt(_IDENTIDAD)
+
+
+# ── El arco y el mundo: los otros dos ejes que se congelan al crear el job ────
+#
+# Mismo patrón que la identidad y por el mismo motivo: son invariantes del SET, así que
+# elegirlos donde se construye cada prompt sería elegirlos una vez por imagen. Se eligen
+# en `make_job`, que es el único sitio donde se arma el shape del job — y por eso los
+# dos flujos los heredan sin que ninguno de los dos tenga que acordarse.
+
+
+def test_make_job_congela_el_arco_y_el_mundo():
+    job = jr.make_job(_Cfg(), {"source_type": "manual"})
+    assert job["params"]["arco_carrusel"] in pa.arcos_disponibles()
+    assert job["params"]["escenario_visual"] in pa.escenarios_de()
+
+
+def test_el_mundo_congelado_sale_del_repertorio_de_la_identidad():
+    propios = ["A flooded quarry at dawn, granite and standing water.",
+               "A tiled municipal pool, drained, ladders and lane markings."]
+    job = jr.make_job(_Cfg(), {"identidad_visual": {**_IDENTIDAD, "escenarios": propios}})
+    assert job["params"]["escenario_visual"] in propios
+
+
+def test_dos_jobs_seguidos_no_cuentan_la_misma_historia():
+    """La razón de ser de la rotación: «no siempre lo mismo» tiene que ser verdad.
+
+    Se mira sobre muchos jobs porque la elección es determinista por id, no alterna: lo
+    que se exige es que el repertorio se recorra, no que dos consecutivos difieran.
+    """
+    jobs = [jr.make_job(_Cfg(), {}) for _ in range(200)]
+    assert {j["params"]["arco_carrusel"] for j in jobs} == set(pa.arcos_disponibles())
+    assert {j["params"]["escenario_visual"] for j in jobs} == set(pa.escenarios_de())
+
+
+def test_el_arco_y_el_mundo_congelados_llegan_al_prompt():
+    job = jr.make_job(_Cfg(), {"arco_carrusel": "transformacion",
+                               "escenario_visual": "A workshop floor, concrete and steel racking."})
+    prompt, _ = jr._prompt_imagen(
+        _Cfg(), prompt_base="A coiled cable.", posts={}, content={"title": "x"},
+        texto=_TEXTO, rol="desarrollo", aspect="4:5",
+        arco=jr._arco(job), escenario=jr._escenario(job),
+    )
+    assert "WORLD LOCK" in prompt and "steel racking" in prompt
+    assert "SET ARC — TRANSFORMATION" in prompt
+
+
+def test_rehacer_un_slide_reusa_el_mismo_arco_y_el_mismo_mundo():
+    """Rehacer una imagen no puede cambiar la historia del carrusel ni su localización.
+
+    Los lectores salen de `params`, así que esto se sostiene solo mientras nadie vuelva
+    a elegir en el camino de la regeneración — que es justo el error que se evita
+    congelando.
+    """
+    job = jr.make_job(_Cfg(), {})
+    antes = (jr._arco(job), jr._escenario(job))
+    job["status"] = "review"
+    assert (jr._arco(job), jr._escenario(job)) == antes
+
+
+def test_un_job_sin_arco_ni_mundo_genera_como_antes():
+    """«Vacío significa lo de siempre»: un job creado antes de esta versión.
+
+    No es teórico: los jobs viven en memoria y un despliegue con jobs en vuelo deja
+    exactamente esto. Sin mundo no hay bloqueo, y sin arco vuelve la instrucción de
+    objeto distinto que era constante antes de los arcos.
+    """
+    prompt, _ = jr._prompt_imagen(
+        _Cfg(), prompt_base="A coiled cable.", posts={}, content={"title": "x"},
+        texto=_TEXTO, rol="desarrollo", aspect="4:5",
+    )
+    assert "WORLD LOCK" not in prompt
+    assert "DIFFERENT hero object" in prompt
+
+
+def test_cada_fila_del_lote_congela_su_propio_arco_y_su_propio_mundo(monkeypatch):
+    """El lote comparte identidad —eso se resolvió una vez al subir el sheet— pero cada
+    fila es un post distinto, así que cada una cuenta su propia historia."""
+    creados: list[dict] = []
+    real_make_job = jr.make_job
+
+    def _espia(cfg, params, **kw):
+        job = real_make_job(cfg, params, **kw)
+        creados.append(job["params"])
+        return job
+
+    monkeypatch.setattr(br, "make_job", _espia)
+
+    async def _run_pipeline(job):
+        job["status"] = "preview"
+
+    monkeypatch.setattr(br, "run_pipeline", _run_pipeline)
+    batch = {
+        "id": "b1", "_cfg": _Cfg(), "account_params": {}, "dry_run": True,
+        "identidad_params": {"identidad_visual": vi.normalizar(_IDENTIDAD)},
+        "rows": [{"_spec": {"params": {"source_type": "manual"},
+                            "upload_bytes": b"", "upload_filename": ""}, "status": "pending"}
+                 for _ in range(3)],
+        "status": "running",
+    }
+    asyncio.run(br.run_batch(batch, {}))
+    assert len(creados) == 3
+    assert all(p["arco_carrusel"] in pa.arcos_disponibles() for p in creados)
+    # La identidad de la prueba no trae `escenarios`, así que el mundo cae al de la casa.
+    assert all(p["escenario_visual"] in pa.escenarios_de() for p in creados)

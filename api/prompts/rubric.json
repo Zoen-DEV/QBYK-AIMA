@@ -1,6 +1,6 @@
 {
-  "_comment": "Rubric del pase de auto-crítica (paso 4): un segundo llamado al LLM puntúa el prompt final y, si algún criterio queda por debajo del umbral, lo reescribe. La lógica vive en api/prompt_architect.py.",
-  "version": "1",
+  "_comment": "Rubric del pase de auto-crítica (paso 4): un segundo llamado al LLM puntúa el prompt final y, si algún criterio queda por debajo del umbral, lo reescribe. La lógica vive en api/prompt_architect.py. REGLA GENERAL, aprendida dos veces: lo que el rubric premia gana a lo que el brief pide, porque la auto-crítica corre DESPUÉS y reescribe. Mientras el rubric premiaba las bandas planas, la corrección de las bandas planas se revertía sola; mientras premió «the subject is anchored in the central band», habría revertido la inversión de jerarquía del slide. Cualquier cambio en las secciones deterministas de architect.json tiene que revisar este archivo en la misma tanda.",
+  "version": "2",
 
   "umbral": 4,
   "escala_max": 5,
@@ -10,7 +10,7 @@
   "criterios": [
     {
       "clave": "especificidad_sujeto",
-      "descripcion": "The subject is nameable and material (specific objects, wear, era, place), not a category label."
+      "descripcion": "The subject is nameable and material (specific things, wear, era, place), not a category label. WHAT is in front of the camera across the set is already decided by the app: the WORLD LOCK names the one location every piece shares, and on a content slide a SET ARC clause says how this subject relates to the others — in a TRANSFORMATION or CHAIN arc the same object recurring is the POINT of the set, never a repetition to score down. Score how concretely the subject is described, never whether it should have been a different object or a different place."
     },
     {
       "clave": "claridad_composicion",
@@ -18,7 +18,7 @@
     },
     {
       "clave": "integracion_tipo_imagen",
-      "descripcion": "The piece reads as a designed poster, not a photo with a caption: the subject is anchored in the central band, lit so it separates from the type, and the photograph is full bleed to all four edges — the reserved clear zones are quiet regions of the photograph itself (shadow falloff, defocus, bare surface), never panels of flat colour, mattes or margins."
+      "descripcion": "The piece reads as a designed poster, not a photo with a caption: the subject is lit so it separates from the type, and the photograph is full bleed to all four edges — the reserved clear zones are quiet regions of the photograph itself (shadow falloff, defocus, bare surface), never panels of flat colour, mattes or margins. WHERE the subject sits is already decided by the app and is NOT yours to score or change: a carousel cover anchors it in the central band, a content slide holds it low and small under a headline that leads the frame. Both are correct — never rewrite one into the other."
     },
     {
       "clave": "coherencia_marca",
@@ -32,5 +32,5 @@
 
   "sistema": "You are a demanding art director reviewing another director's image prompt. You score strictly against the rubric and rewrite only what falls short. You answer with JSON only.",
 
-  "instruccion": "Score the prompt below from 0 to {escala_max} on each rubric criterion.\n\nRUBRIC:\n{criterios}\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"puntajes\": {\"{claves}\"}, \"diagnostico\": \"one short sentence per criterion scored below {umbral}\", \"secciones\": {\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}}\n\n`secciones` is the REWRITE: return it only when some criterion scores below {umbral} (otherwise return an empty object). Keep every section in English, 15-26 words, prose, and fix ONLY what the low scores point at — do not restyle what already works. Never write the text-to-render, the typography, the format line or the negatives: the app owns those four sections and will re-attach them verbatim."
+  "instruccion": "Score the prompt below from 0 to {escala_max} on each rubric criterion.\n\nRUBRIC:\n{criterios}\n\nReturn ONLY this JSON object, no markdown, no preamble:\n{\"puntajes\": {\"{claves}\"}, \"diagnostico\": \"one short sentence per criterion scored below {umbral}\", \"secciones\": {\"sujeto\": \"...\", \"composicion\": \"...\", \"luz\": \"...\", \"estilo\": \"...\", \"camara\": \"...\"}}\n\n`secciones` is the REWRITE: return it only when some criterion scores below {umbral} (otherwise return an empty object). Keep every section in English, 15-26 words, prose, and fix ONLY what the low scores point at — do not restyle what already works. Never write the text-to-render, the typography, the format line or the negatives: the app owns those four sections and will re-attach them verbatim. The app also prefixes a WORLD LOCK to `sujeto`, prefixes a LIGHT LOCK to `luz` and appends the lockup, the beat shot and the SET ARC to `composicion` — those clauses are re-attached too, so never restate them, never relocate the set, never change which object the arc says this piece shows, and never write a shot distance into `sujeto`."
 }

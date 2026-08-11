@@ -15,7 +15,27 @@ las claves que describen el ARCHIVO y no la identidad: `_comment*` (documentaci�
 `version` (revisión del archivo — que además hoy no la lee nadie; una identidad guardada
 tiene sus propios `created_at`/`updated_at`).
 
-Dos contratos que el validador hace explícitos porque hoy viven implícitos en el código
+**El esquema creció dos veces**, y las dos por lo mismo: la identidad podía elegir cómo se
+ve una pieza pero no qué pieza es.
+
+1. `ritmo_carrusel`: la lista ordenada de cómo esta marca fotografía cada beat del carrusel
+   (`tension`, `desarrollo`, `prueba`, `remate`). El beat —qué función cumple cada slide— es
+   estructura y vive en `architect.json`, pero recorrer esa escalera con macros de textura o
+   con naturalezas muertas abiertas produce dos carruseles que no se parecen en nada.
+2. `escenarios`: el repertorio de 2-4 mundos donde esta marca fotografía. Es el que faltaba,
+   y su ausencia era un defecto visible: `ritmo_carrusel` solo admite distancia, altura de
+   cámara y qué llena el cuadro, así que la identidad decidía CÓMO se fotografía pero nunca
+   DÓNDE — y el dónde lo acababa poniendo el vocabulario de la capa dura, que decía "apoyado
+   en una superficie" en seis sitios distintos. Resultado: identidades con paleta y
+   tipografía completamente distintas producían la misma foto, un objeto sobre una mesa. El
+   job elige UNO del repertorio al crearse y lo congela; se emite como bloqueo de mundo,
+   idéntico en todas las piezas (ver `prompt_architect.elegir_escenario`).
+
+Los dos son **opcionales**: vacío significa "lo de siempre" —el ritmo cae a su respaldo beat
+a beat y el repertorio al de `brand.json`—, así que una identidad guardada antes de estos
+campos genera exactamente igual.
+
+Tres contratos que el validador hace explícitos porque hoy viven implícitos en el código
 y romperlos **falla en silencio**:
 
 1. **`paleta` está ORDENADA: `[fondo, texto, acento]`.** `job_runner._lockup_plantilla`
@@ -26,10 +46,17 @@ y romperlos **falla en silencio**:
    `image_overlay._color` busca un `#RRGGBB` dentro de la frase y, si no lo encuentra,
    cae a un hueso por defecto: una identidad que diga "warm off-white" a secas se dibuja
    con el color de OTRA marca, otra vez sin avisar.
+3. **`ritmo_carrusel` está ORDENADO por `prompt_architect.ROLES_BEAT`.** La posición ES el
+   beat: la primera entrada es el plano de la tensión, la última el del remate. Una lista
+   en otro orden no da error en ningún sitio — le da a cada slide el plano de otro.
 
 Los topes de longitud tampoco son cosméticos: todo esto se inyecta en el brief de nueve
 secciones, que tiene un presupuesto duro de caracteres (`architect.json` →
 `validacion.max_caracteres`). Un `tono_visual` de dos párrafos se come el prompt.
+
+Aparte del esquema está el **criterio de diseño** (`revisar_diseno`): lo que separa una
+identidad que valida de una que produce piezas profesionales —el titular se lee sobre su
+fondo, el acento es un acento—. Son avisos, no errores, y por eso `validar` no los mira.
 
 Módulo **puro**: la única lectura es `brand.json` para la identidad system.
 """
@@ -39,6 +66,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import prompt_architect
 import prompt_config
 
 # Id de la identidad de la casa. No es una fila de la base: se sirve desde
@@ -47,22 +75,111 @@ SYSTEM_ID = "system"
 NOMBRE_SYSTEM = "QBYK — identidad de la casa"
 
 # Campos del esquema, en el orden de `brand.json` (que es también el de la UI).
-CAMPOS_LISTA: tuple[str, ...] = ("paleta", "paleta_nombres", "referencias")
+CAMPOS_LISTA: tuple[str, ...] = ("paleta", "paleta_nombres", "referencias", "escenarios",
+                                 "ritmo_carrusel", "sistemas_texto")
 CAMPOS_TEXTO: tuple[str, ...] = ("color_texto", "color_acento", "tipografia",
                                  "tipografia_secundaria", "tono_visual", "aspect_ratio")
 CAMPOS: tuple[str, ...] = ("paleta", "paleta_nombres", "color_texto", "color_acento",
                            "tipografia", "tipografia_secundaria", "tono_visual",
-                           "aspect_ratio", "referencias")
+                           "aspect_ratio", "referencias", "escenarios", "ritmo_carrusel",
+                           "sistemas_texto")
+
+# Los beats del carrusel se importan, no se copian: la POSICIÓN dentro de
+# `ritmo_carrusel` es el beat, así que las dos listas tienen que moverse juntas.
+ROLES_RITMO: tuple[str, ...] = prompt_architect.ROLES_BEAT
+# Y los sistemas de texto por el mismo motivo: un nombre que no esté en el catálogo de
+# `architect.json` no lo sabe imprimir nadie. Se lee, nunca se copia.
+SISTEMAS_TEXTO: tuple[str, ...] = prompt_architect.sistemas_disponibles()
 
 # Mínimo 3 colores porque `_lockup_plantilla` indexa hasta `paleta[2]`; el máximo evita
 # que una identidad meta una carta de color entera en el prompt.
 MIN_COLORES, MAX_COLORES = 3, 6
 MIN_REFERENCIAS, MAX_REFERENCIAS = 1, 6
+# Un plano por beat como mucho: más entradas no serían un ritmo más rico, serían
+# entradas que no le tocan a ningún slide.
+MAX_RITMO = len(ROLES_RITMO)
+# `escenarios`: DÓNDE fotografía esta marca. Un repertorio, no un mundo único, porque
+# el job elige uno y lo congela: con uno solo, todos los posts del perfil saldrían del
+# mismo sitio; con más de cuatro deja de ser una identidad reconocible y pasa a ser
+# "cualquier sitio". El mínimo es 2 por la misma razón — un repertorio de uno es un
+# campo de texto disfrazado de lista.
+MIN_ESCENARIOS, MAX_ESCENARIOS = 2, 4
+# `sistemas_texto`: cuántos NIVELES de texto imprimen los slides de esta marca. Mismo
+# patrón que `escenarios` —repertorio, el job congela uno— y por el mismo motivo: con
+# un sistema único, todos los carruseles del perfil salen con la misma estructura de
+# textos. Acá el mínimo SÍ es 1: a diferencia de un mundo, un sistema de texto es una
+# decisión de diseño que una marca puede tomar de una vez para siempre.
+MIN_SISTEMAS, MAX_SISTEMAS = 1, len(SISTEMAS_TEXTO)
+# Dos topes, y hacen falta los dos. `prompt_architect` recorta el mundo a
+# `validacion.mundo_palabras`, así que en PALABRAS ya está acotado; pero una palabra
+# puede tener treinta caracteres y el bloqueo de mundo se emite en TODAS las piezas del
+# job, portada incluida, así que lo que cueste se paga N veces contra un techo de
+# caracteres. Sin el tope en caracteres, 22 palabras largas se comen 330 y el peor caso
+# se pasa del techo — que no es cosmético: ahí el validador tira el prompt entero y la
+# imagen sale sin bloque de texto. El resto de campos del esquema se acotan igual
+# (`MAX_TEXTO`, `MAX_RITMO_ITEM`), así que esto es la regla de la casa, no una excepción.
+MAX_ESCENARIO_PALABRAS = 22
+MAX_ESCENARIO = 160
 # Topes de longitud: presupuesto del brief, no estética (ver docstring del módulo).
 MAX_TEXTO = 240
 MAX_REFERENCIA = 160
+# El ritmo se inyecta en la sección 3, que ya carga el lockup y la continuidad de set:
+# `prompt_architect` lo recorta a `validacion.ritmo_palabras` y este tope es el techo duro.
+MAX_RITMO_ITEM = 160
 MAX_NOMBRE_COLOR = 40
 NOMBRE_MIN, NOMBRE_MAX = 1, 60  # la única regla del mínimo es "no vacío"
+
+# ── Contratos que el brief de imagen impone a la identidad ────────────────────
+#
+# Los tres de arriba (orden de la paleta, hex de los colores, orden del ritmo) son
+# contratos con el CÓDIGO. Estos dos son contratos con el BRIEF: cosas que el prompt
+# de generación ya dice, y con las que una identidad puede contradecirse. Una
+# contradicción dentro del mismo brief no da error en ningún sitio — el modelo la
+# resuelve por su cuenta, y siempre en contra de lo que la identidad quería.
+
+# El arquitecto dice, en su instrucción y en sus negativos, `No people as the main
+# subject`. Un `ritmo_carrusel` que pide un personaje es esa contradicción: el modelo
+# la resuelve descartando el plano entero, así que el carrusel sale sin escalera de
+# planos y sin un solo error en el log. Es inoperante, no discutible: va en `validar`.
+PALABRAS_PERSONA: tuple[str, ...] = (
+    "character", "person", "people", "face", "portrait", "torso", "figure",
+    "model", "hands", "human",
+)
+
+# Una identidad tiene que sostener un titular a escala de póster (el elemento mayor del
+# cuadro; el porcentaje exacto es layout y lo fija `architect.json`). Una sans neutra de
+# UI a ese cuerpo devuelve el look de "caption pegado sobre una foto", que es justo lo
+# que el propio prompt de extracción advierte que no hay que devolver: que pasara era un
+# agujero del validador.
+FAMILIAS_UI_PROHIBIDAS: tuple[str, ...] = (
+    "inter", "helvetica", "arial", "roboto", "system ui", "ui sans", "neutral sans",
+)
+# Marcas de que la familia SÍ es de display. Su ausencia es un reparo (discutible),
+# no un error: hay familias de titular que se describen sin ninguna de estas palabras.
+#
+# La lista cubre a propósito varias FAMILIAS de clase, no una. Con solo el vocabulario
+# de la grotesca condensada ("condensed", "grotesque", "grotesk"), una didone, una
+# egipcia o una lettering de plantilla legítimas salían marcadas con reparo, y el
+# reparo empuja al usuario —y al modelo del extractor, que recibe esta misma lista en
+# `identity_extract._reglas_diseno`— a reescribirlas hacia la única clase que la lista
+# nombraba. El resultado era que todas las identidades acababan con la misma
+# tipografía: la distinción entre marcas se perdía en el validador, no en el generador.
+MARCAS_DISPLAY: tuple[str, ...] = (
+    "display", "condensed", "grotesque", "grotesk", "extended", "caps", "poster",
+    "didone", "fat face", "slab", "egyptian", "stencil", "gothic", "titling",
+    "headline", "wood type", "monospaced", "typewriter",
+)
+# En la secundaria (el kicker), la señal de amateur más fuerte del set auditado.
+SECUNDARIA_DEBIL: tuple[str, ...] = ("regular weight", "mixed case")
+
+# El bodegón de mesa. No está prohibido —es una pieza legítima y uno de los mundos de la
+# casa lo es— pero un repertorio en el que TODOS los mundos son una mesa reproduce
+# exactamente el defecto que `escenarios` existe para corregir: el job elige uno de los
+# cuatro y da igual cuál, siempre sale un objeto sobre una superficie. Reparo y no error
+# porque una marca de bodegón de estudio es una decisión defendible.
+PALABRAS_MESA: tuple[str, ...] = (
+    "table", "tabletop", "desk", "desktop", "worktop", "countertop", "counter", "bench",
+)
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 _HEX_EN_TEXTO = re.compile(r"#[0-9a-fA-F]{6}")
@@ -111,6 +228,20 @@ def _lista(v: Any) -> list[str]:
     return [x for x in items if x]
 
 
+def _ritmo(v: Any) -> list[str]:
+    """Como `_lista`, pero **conservando los huecos interiores**.
+
+    En `ritmo_carrusel` la posición es el beat, así que descartar una entrada vacía
+    correría el resto de sitio y le daría a la prueba el plano del desarrollo. Un
+    hueco es legítimo —"para este beat, el respaldo de la casa"— y solo se recortan
+    los vacíos del final, que no son una decisión sino una lista más corta.
+    """
+    items = [_texto(x) for x in v] if isinstance(v, (list, tuple)) else [_texto(v)]
+    while items and not items[-1]:
+        items.pop()
+    return items
+
+
 def normalizar(data: Any) -> dict:
     """Cualquier dict → una identidad con los nueve campos del esquema.
 
@@ -125,6 +256,14 @@ def normalizar(data: Any) -> dict:
         "paleta": [_color(c) for c in _lista(d.get("paleta"))],
         "paleta_nombres": _lista(d.get("paleta_nombres")),
         "referencias": _lista(d.get("referencias")),
+        # A diferencia de `ritmo_carrusel`, acá la posición NO significa nada: es un
+        # repertorio de alternativas y el job elige una, así que un hueco se descarta.
+        "escenarios": _lista(d.get("escenarios")),
+        "ritmo_carrusel": _ritmo(d.get("ritmo_carrusel")),
+        # Repertorio de sistemas de texto: como `escenarios`, la posición no significa
+        # nada y los duplicados sobran (el job elige uno, no los recorre).
+        "sistemas_texto": list(dict.fromkeys(
+            s.lower() for s in _lista(d.get("sistemas_texto")))),
     }
     for campo in CAMPOS_TEXTO:
         ident[campo] = _texto(d.get(campo))
@@ -211,7 +350,247 @@ def validar(identidad: Any) -> list[str]:
     if any(len(r) > MAX_REFERENCIA for r in referencias):
         errores.append(f"hay referencias de más de {MAX_REFERENCIA} caracteres")
 
+    # `ritmo_carrusel` es OPCIONAL: vacío = cada beat cae a su respaldo de
+    # `architect.json`, que es como se generaba antes del campo. Tampoco se exige
+    # completo — definir solo el remate y dejar el resto de la casa es una decisión
+    # válida, y rechazarla convertiría un ajuste fino en un error.
+    ritmo = ident.get("ritmo_carrusel") or []
+    if len(ritmo) > MAX_RITMO:
+        errores.append(
+            f"`ritmo_carrusel` admite como mucho {MAX_RITMO} planos, uno por beat del "
+            f"carrusel ({', '.join(ROLES_RITMO)}); llegaron {len(ritmo)}"
+        )
+    if any(len(r) > MAX_RITMO_ITEM for r in ritmo):
+        errores.append(f"hay planos de `ritmo_carrusel` de más de {MAX_RITMO_ITEM} caracteres")
+    for i, plano in enumerate(ritmo):
+        palabra = _palabra_en(plano, PALABRAS_PERSONA)
+        if palabra:
+            beat = ROLES_RITMO[i] if i < len(ROLES_RITMO) else f"posición {i + 1}"
+            errores.append(
+                f"el plano de `{beat}` habla de «{palabra}»: el héroe de cada pieza es un "
+                f"OBJETO, y el brief de imagen prohíbe a las personas como sujeto principal. "
+                f"El modelo resuelve esa contradicción descartando el plano entero, así que el "
+                f"carrusel saldría sin escalera de planos. Descríbelo por distancia, altura de "
+                f"cámara y qué llena el cuadro."
+            )
+
+    # `escenarios` es OPCIONAL —vacío = el repertorio de la casa, que es como se generaba
+    # antes del campo—, pero si la marca declara el suyo tiene que ser un repertorio de
+    # verdad: con uno solo, todos los posts del perfil salen del mismo sitio.
+    escenarios = ident.get("escenarios") or []
+    if escenarios and not MIN_ESCENARIOS <= len(escenarios) <= MAX_ESCENARIOS:
+        errores.append(
+            f"`escenarios` debe tener entre {MIN_ESCENARIOS} y {MAX_ESCENARIOS} mundos "
+            f"(tiene {len(escenarios)}), o ninguno para usar los de la casa: el job elige "
+            f"UNO y lo congela, así que con un solo mundo todos los posts salen del mismo sitio"
+        )
+    for i, escenario in enumerate(escenarios):
+        if len(escenario) > MAX_ESCENARIO:
+            errores.append(
+                f"el escenario {i + 1} supera los {MAX_ESCENARIO} caracteres "
+                f"(tiene {len(escenario)})"
+            )
+        if len(escenario.split()) > MAX_ESCENARIO_PALABRAS:
+            errores.append(
+                f"el escenario {i + 1} tiene {len(escenario.split())} palabras y el tope son "
+                f"{MAX_ESCENARIO_PALABRAS}: se emite en TODAS las piezas del job, así que lo "
+                f"que sobre se paga N veces. Nombra el sitio, sus superficies y su luz de "
+                f"fondo, no una escena entera"
+            )
+        palabra = _palabra_en(escenario, PALABRAS_PERSONA)
+        if palabra:
+            errores.append(
+                f"el escenario {i + 1} habla de «{palabra}»: un mundo es un LUGAR, y el brief "
+                f"de imagen prohíbe a las personas como sujeto principal. El modelo resuelve "
+                f"esa contradicción por su cuenta y siempre en contra de lo que la identidad "
+                f"quería. Descríbelo por lugar, superficies y materiales."
+            )
+
+    # `sistemas_texto` es OPCIONAL —vacío = el repertorio de la casa— pero un nombre que
+    # no esté en el catálogo no lo sabe imprimir nadie: caería al sistema base en
+    # silencio, y la marca creería estar publicando carruseles con cuerpo de texto.
+    sistemas = ident.get("sistemas_texto") or []
+    if sistemas and not MIN_SISTEMAS <= len(sistemas) <= MAX_SISTEMAS:
+        errores.append(
+            f"`sistemas_texto` debe tener entre {MIN_SISTEMAS} y {MAX_SISTEMAS} sistemas "
+            f"(tiene {len(sistemas)}), o ninguno para usar los de la casa"
+        )
+    for sistema in sistemas:
+        if sistema not in SISTEMAS_TEXTO:
+            errores.append(
+                f"`sistemas_texto` nombra «{sistema}», que no existe: los disponibles son "
+                f"{', '.join(SISTEMAS_TEXTO)}"
+            )
+
+    tipografia = ident.get("tipografia") or ""
+    familia = _palabra_en(tipografia, FAMILIAS_UI_PROHIBIDAS)
+    if familia:
+        errores.append(
+            f"`tipografia` nombra «{familia}», una sans neutra de interfaz: a escala de póster "
+            f"devuelve el look de «caption pegado sobre una foto». Describe una clase de "
+            f"display (peso, ancho, caja, tracking)."
+        )
+
     return errores
+
+
+def _palabra_en(texto: str, palabras: tuple[str, ...]) -> str:
+    """La primera de `palabras` presente en `texto`, o `""`.
+
+    Por palabra completa: `"figure"` no puede saltar dentro de `"figurative"`, y
+    `"bar"`-tipo de falso positivo es exactamente lo que volvería inservible un aviso.
+    """
+    bajo = (texto or "").lower()
+    for p in palabras:
+        if re.search(rf"\b{re.escape(p)}\b", bajo):
+            return p
+    return ""
+
+
+# ── Criterio de diseño ────────────────────────────────────────────────────────
+#
+# `validar` comprueba que la identidad es del TIPO correcto; esto comprueba que
+# **sirve**. Una identidad puede validar entera y aun así producir piezas de
+# aficionado: un texto que no se lee sobre su fondo, un "acento" que es otro gris.
+# Son defectos de diseño, no de esquema, así que viven aparte y `validar` NO los mira:
+# rechazar por ellos convertiría una identidad discutible en una imposible de guardar.
+# Quien extrae los usa como feedback del reintento y, si sobreviven, como aviso al
+# lado del editor.
+
+# El titular va sobre una FOTOGRAFÍA, no sobre un plano de color. Aunque el tipo es
+# enorme (9-16% del alto) y el mínimo de WCAG para texto grande sería 3:1, el grano, el
+# falloff y la textura de la base se comen parte del contraste: 4.5:1 es lo que aguanta.
+CONTRASTE_MIN = 4.5
+# Saturación HSV por debajo de la cual el tercer color no es un acento: es un neutro.
+SATURACION_ACENTO_MIN = 0.25
+# Distancia euclídea en RGB a partir de la cual dos colores se leen como distintos.
+DISTANCIA_MIN = 60.0
+
+
+def _rgb(color: str) -> tuple[int, int, int] | None:
+    c = _color(color)
+    if not _HEX.match(c):
+        return None
+    return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+
+
+def _luminancia(rgb: tuple[int, int, int]) -> float:
+    """Luminancia relativa WCAG (0 = negro, 1 = blanco)."""
+    canales = []
+    for v in rgb:
+        s = v / 255
+        canales.append(s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * canales[0] + 0.7152 * canales[1] + 0.0722 * canales[2]
+
+
+def contraste(a: str, b: str) -> float:
+    """Ratio de contraste WCAG entre dos colores (1 = el mismo, 21 = negro sobre blanco).
+
+    0.0 si alguno no es un hex válido: de eso ya se queja `validar`, y devolver 0 deja
+    que quien llame ignore el caso sin duplicar el error.
+    """
+    ra, rb = _rgb(a), _rgb(b)
+    if ra is None or rb is None:
+        return 0.0
+    la, lb = _luminancia(ra), _luminancia(rb)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def saturacion(color: str) -> float:
+    """Saturación HSV del color (0 = gris, 1 = color puro)."""
+    rgb = _rgb(color)
+    if rgb is None:
+        return 0.0
+    alto, bajo = max(rgb), min(rgb)
+    return (alto - bajo) / alto if alto else 0.0
+
+
+def distancia(a: str, b: str) -> float:
+    """Distancia euclídea en RGB: "¿se ven como dos colores distintos?".
+
+    Para esto NO se usa el contraste, a propósito: dos colores pueden tener casi la
+    misma luminancia y ser inconfundibles —hueso `#EDEAE0` y lima ácido `#C9F227`
+    contrastan 1.03:1 y nadie los mezcla—, porque lo que hace visible a un acento es el
+    croma, no el brillo.
+    """
+    ra, rb = _rgb(a), _rgb(b)
+    if ra is None or rb is None:
+        return 0.0
+    return sum((x - y) ** 2 for x, y in zip(ra, rb)) ** 0.5
+
+
+def revisar_diseno(identidad: Any) -> list[str]:
+    """Reparos de diseño de una identidad ([] si la pieza se va a sostener).
+
+    Espera una identidad ya pasada por `normalizar`. Los mensajes dicen el defecto **y
+    con qué valores**, porque son a la vez el feedback del reintento del extractor y lo
+    que lee el usuario en el editor.
+    """
+    ident = identidad if isinstance(identidad, dict) else {}
+    reparos: list[str] = []
+
+    # Tipografía: el reparo es que la familia no se declare de display, y que la
+    # secundaria pida peso regular o caja mixta — el kicker en regular y caja mixta es
+    # la señal de amateur más fuerte del set auditado. Reparo y no error a propósito:
+    # una secundaria en caja mixta puede ser una decisión legítima, y el usuario tiene
+    # que poder verla sin quedarse sin poder guardar.
+    tipografia = ident.get("tipografia") or ""
+    if tipografia and not _palabra_en(tipografia, MARCAS_DISPLAY):
+        reparos.append(
+            f"`tipografia` («{tipografia}») no se declara de display: sin peso, ancho o caja "
+            f"declarados, el modelo compone el titular a cuerpo de pie de foto. Nombra la "
+            f"clase ({', '.join(MARCAS_DISPLAY[:4])}...)"
+        )
+    secundaria = ident.get("tipografia_secundaria") or ""
+    debil = _palabra_en(secundaria, SECUNDARIA_DEBIL)
+    if debil:
+        reparos.append(
+            f"`tipografia_secundaria` pide «{debil}»: el kicker en peso regular y caja mixta "
+            f"es lo que hace que la pieza se lea como una foto con caption. Usa la misma "
+            f"familia en un peso que aguante."
+        )
+
+    # El repertorio de mundos existe para que dos identidades distintas no produzcan la
+    # misma foto. Si los cuatro mundos son una mesa, el campo está puesto y el defecto
+    # sigue: da igual cuál elija el job.
+    escenarios = ident.get("escenarios") or []
+    if len(escenarios) >= MIN_ESCENARIOS and all(
+            _palabra_en(e, PALABRAS_MESA) for e in escenarios):
+        reparos.append(
+            f"los {len(escenarios)} escenarios son variantes de una mesa: el job elige uno y "
+            f"lo congela, así que todas las piezas de esta identidad saldrían siendo un objeto "
+            f"sobre una superficie. El bodegón es una pieza legítima, pero como uno de los "
+            f"mundos y no como todos — añade un sitio con suelo, pared, exterior o profundidad"
+        )
+
+    paleta = ident.get("paleta") or []
+    if len(paleta) < 3:
+        return reparos  # del resto ya se queja el esquema: no se duplica el ruido
+    fondo, texto, acento = paleta[0], paleta[1], paleta[2]
+
+    ratio = contraste(texto, fondo)
+    if ratio and ratio < CONTRASTE_MIN:
+        reparos.append(
+            f"el texto ({texto}) sobre el fondo ({fondo}) contrasta {ratio:.1f}:1 y un "
+            f"titular necesita {CONTRASTE_MIN}:1 — el segundo color tiene que ser mucho "
+            f"más claro o mucho más oscuro que el primero"
+        )
+
+    sat = saturacion(acento)
+    if sat < SATURACION_ACENTO_MIN:
+        reparos.append(
+            f"el acento ({acento}) es prácticamente un neutro (saturación "
+            f"{sat * 100:.0f}%): el acento es el color que aparece UNA vez en la pieza y "
+            f"tiene que leerse como una decisión, no como un tercer gris"
+        )
+
+    for otro, rol in ((texto, "el texto"), (fondo, "el fondo")):
+        if distancia(acento, otro) < DISTANCIA_MIN:
+            reparos.append(
+                f"el acento ({acento}) es casi el mismo color que {rol} ({otro}): la "
+                f"palabra acentuada no se distinguiría en el titular"
+            )
+    return reparos
 
 
 def exigir_valida(identidad: Any) -> dict:

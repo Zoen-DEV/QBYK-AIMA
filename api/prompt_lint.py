@@ -17,6 +17,9 @@ Cada aviso es `{"campo", "nivel", "mensaje"}` con `nivel` ∈ {"alto", "medio"}.
 import re
 from difflib import SequenceMatcher
 
+import prompt_architect as parch
+import visual_identity as vi
+
 # Escenas prohibidas por la regla de GROUNDING del prompt del sistema. Es un espejo
 # de la lista que vive en `post_writer._system_prompt`; `test_prompt_lint` comprueba
 # que sigan diciendo lo mismo, para que no se separen con el tiempo.
@@ -97,7 +100,17 @@ def _de(nombre: str) -> str:
     return f"del {nombre[3:]}" if nombre.startswith("el ") else f"de {nombre}"
 
 
-def _revisar_escenas(escenas: list[str], nombres, campo: str, avisos: list[dict]) -> None:
+# Con un arco de sujeto recurrente (transformación, cadena) DOS ESCENAS PARECIDAS SON EL
+# OBJETIVO: el mismo objeto vuelve y lo que cambia es su estado. Avisar ahí sería avisar
+# de que el carrusel hace lo que se le pidió, y un aviso que se dispara siempre se acaba
+# ignorando —incluidos los que sí importan—. Pero «parecidas» no es «idénticas»: si dos
+# escenas son literalmente la misma frase, no hay cambio de estado que mostrar y el slide
+# sale repetido de verdad. Por eso el umbral sube en vez de apagarse.
+_UMBRAL_PARECIDO_RECURRENTE = 0.95
+
+
+def _revisar_escenas(escenas: list[str], nombres, campo: str, avisos: list[dict],
+                     *, sujeto_vuelve: bool = False) -> None:
     """Clichés, manos como sujeto y escenas repetidas dentro de un juego."""
     for i, escena in enumerate(escenas):
         if not (escena or "").strip():
@@ -119,9 +132,21 @@ def _revisar_escenas(escenas: list[str], nombres, campo: str, avisos: list[dict]
                            "(un hombro, una silueta) o quítala.",
             })
 
+    umbral = _UMBRAL_PARECIDO_RECURRENTE if sujeto_vuelve else _UMBRAL_PARECIDO
     for i in range(len(escenas)):
         for j in range(i + 1, len(escenas)):
-            if _parecido(escenas[i], escenas[j]) >= _UMBRAL_PARECIDO:
+            if _parecido(escenas[i], escenas[j]) < umbral:
+                continue
+            if sujeto_vuelve:
+                avisos.append({
+                    "campo": campo, "nivel": "alto",
+                    "mensaje": f"La escena {_de(nombres(j))} es palabra por palabra la "
+                               f"{_de(nombres(i))}. El arco de este carrusel pide que el mismo "
+                               "objeto vuelva, pero con su ESTADO cambiado: si las dos escenas "
+                               "dicen lo mismo no hay nada que mostrar y el slide sale repetido. "
+                               "Nombra qué cambió (lleno→vacío, entero→partido, dónde acabó).",
+                })
+            else:
                 avisos.append({
                     "campo": campo, "nivel": "alto",
                     "mensaje": f"La escena {_de(nombres(j))} es casi la misma que la "
@@ -202,18 +227,107 @@ def _revisar_copy(posts: dict, *, avisos: list[dict]) -> None:
                 })
 
 
+# ── Red de seguridad: la identidad activa y la continuidad del set ────────────
+#
+# Los dos avisos de abajo no miran lo que escribió el LLM sino lo que va a HACER la
+# app con ello. Son la última compuerta antes de gastar créditos, y existen porque los
+# dos defectos que cubren son silenciosos por naturaleza: la continuidad de set se cayó
+# entera durante meses sin un solo error en el log, y una identidad guardada sigue
+# generando mal para siempre porque `validar` no corre al leerla.
+
+
+def _revisar_continuidad(posts: dict, *, n_info: int, avisos: list[dict],
+                         arco: str = "", escenario: str = "") -> None:
+    """¿Lo que mantiene unido al carrusel va a llegar al prompt de los slides?
+
+    Es el canario de la regresión que originó todo esto: `_clausula_set` comparaba el
+    rol contra el literal `"contenido"` y los slides llegan con el nombre de su beat,
+    así que la cláusula dejó de emitirse en TODOS los slides de carrusel. Se comprueba
+    construyendo las cláusulas de verdad —son deterministas y no llaman a nadie—, no
+    leyendo el código: un test protege el módulo, esto protege al usuario.
+
+    Cubre las tres, porque las tres se caen igual de calladas: la continuidad, el
+    ENLACE DEL ARCO (que va dentro de ella y es lo que hace que las piezas se cuenten
+    algo entre sí) y el BLOQUEO DE MUNDO (que es lo que hace que compartan sitio).
+    """
+    if n_info < 1:
+        return
+    roles = parch.roles_carrusel(n_info)
+    base = {"marca": {}, "referencias": [], "ritmo_carrusel": [],
+            "arco_carrusel": arco, "escenario": escenario}
+    sin_clausula = [r for r in roles if not parch._clausula_set(
+        {**base, "contenido": {"rol_slide": r,
+                               "escena_portada": (posts.get("image_prompt") or "").strip()}})]
+    if sin_clausula:
+        avisos.append({
+            "campo": "image_slide_prompts", "nivel": "alto",
+            "mensaje": "Los slides van a generarse SIN la cláusula de continuidad de set "
+                       f"({', '.join(sorted(set(sin_clausula)))}): cada uno inventaría su "
+                       "propia localización y su propia luz, y el carrusel saldría con "
+                       "tantos mundos como piezas. Es un fallo del código, no de lo que "
+                       "escribiste — avisa antes de gastar créditos.",
+        })
+    # El mundo se declara en TODAS las piezas, portada incluida: se comprueba sobre la
+    # portada porque si ahí no sale, no sale en ninguna.
+    if escenario and not parch._clausula_mundo({**base, "contenido": {"rol_slide": "portada"}}):
+        avisos.append({
+            "campo": "image_prompt", "nivel": "alto",
+            "mensaje": "El bloqueo de mundo no se va a emitir: las piezas de este post no van "
+                       "a compartir localización y cada imagen elegirá la suya. Es un fallo "
+                       "del código, no de lo que escribiste.",
+        })
+
+
+def _revisar_identidad(identidad: dict, *, avisos: list[dict]) -> None:
+    """Reparos de la identidad activa, con las reglas de `visual_identity`.
+
+    Las identidades guardadas NO se revalidan al leerlas (a propósito: una identidad
+    guardada nunca puede tumbar una generación en curso), así que una anterior a las
+    puertas del esquema sigue generando mal hasta que alguien la abra en `/cuenta`.
+    Este es el sitio donde se entera quien está a punto de generar.
+
+    Las reglas se REUSAN, no se reimplementan: si se escribieran otra vez aquí, el
+    lint y el validador se separarían en cuanto alguien tocara una constante.
+    """
+    if not identidad:
+        return
+    ident = vi.normalizar(identidad)
+    for error in vi.validar(ident) + vi.revisar_diseno(ident):
+        # Solo lo que afecta a la IMAGEN: de una paleta corta o un hex ausente ya se
+        # queja el editor de identidades, y repetirlo acá sería ruido en otra pantalla.
+        if not any(c in error for c in ("ritmo_carrusel", "tipografia", "escenario",
+                                        "`desarrollo`", "`tension`", "`prueba`", "`remate`")):
+            continue
+        avisos.append({
+            "campo": "identidad", "nivel": "medio",
+            "mensaje": f"La identidad visual activa tiene un reparo que afecta a estas "
+                       f"imágenes: {error} Corrígela en /cuenta — se guardó antes de que "
+                       "existiera esta comprobación y no se revalida al generar.",
+        })
+
+
 def revisar(posts: dict, *, n_info: int = 0, is_carousel: bool = False,
-            quiere_imagenes: bool = True, quiere_video: bool = False) -> list[dict]:
+            quiere_imagenes: bool = True, quiere_video: bool = False,
+            identidad: dict | None = None, arco: str = "", escenario: str = "",
+            sistema: str = "") -> list[dict]:
     """Avisos sobre los prompts y el copy de ESTE job. Nunca lanza: sin datos, [].
 
     `n_info` es la cantidad de slides de info del carrusel (los que siguen a la
     portada) — es contra ese número que se comprueba si el modelo entregó de menos.
+    `identidad` es la identidad congelada en el job (`{}` = la de la casa), y `arco` /
+    `escenario` son los otros dos ejes congelados: el arco cambia qué cuenta como
+    escena repetida y los dos entran en el canario de continuidad.
     """
     avisos: list[dict] = []
     try:
         _revisar_copy(posts, avisos=avisos)
         if quiere_imagenes:
-            _revisar_imagenes(posts, n_info=n_info, is_carousel=is_carousel, avisos=avisos)
+            _revisar_imagenes(posts, n_info=n_info, is_carousel=is_carousel,
+                              avisos=avisos, arco=arco, sistema=sistema)
+            if is_carousel:
+                _revisar_continuidad(posts, n_info=n_info, avisos=avisos,
+                                     arco=arco, escenario=escenario)
+            _revisar_identidad(identidad or {}, avisos=avisos)
         if quiere_video:
             _revisar_video(posts, avisos=avisos)
     except Exception as e:  # noqa: BLE001 - un lint roto no puede tapar la pantalla
@@ -221,7 +335,8 @@ def revisar(posts: dict, *, n_info: int = 0, is_carousel: bool = False,
     return avisos
 
 
-def _revisar_imagenes(posts: dict, *, n_info: int, is_carousel: bool, avisos: list[dict]) -> None:
+def _revisar_imagenes(posts: dict, *, n_info: int, is_carousel: bool, avisos: list[dict],
+                      arco: str = "", sistema: str = "") -> None:
     portada = (posts.get("image_prompt") or "").strip()
     slides = [s.strip() for s in (posts.get("image_slide_prompts") or [])
               if isinstance(s, str) and s.strip()]
@@ -244,7 +359,11 @@ def _revisar_imagenes(posts: dict, *, n_info: int, is_carousel: bool, avisos: li
                        "transcripción. Escríbelas o baja la cantidad de slides.",
         })
 
-    _revisar_escenas([portada] + slides, _nombre, "image_slide_prompts", avisos)
+    # El arco decide qué es una repetición y qué es la historia: con transformación o
+    # cadena, que el slide 2 se parezca a la portada es lo que se pidió.
+    vuelve = parch.sujeto_arco(arco) in ("recurrente", "encadenado") if arco else False
+    _revisar_escenas([portada] + slides, _nombre, "image_slide_prompts", avisos,
+                     sujeto_vuelve=vuelve)
 
     estilo = (posts.get("image_style") or "").strip()
     if not estilo:
@@ -267,7 +386,6 @@ def _revisar_imagenes(posts: dict, *, n_info: int, is_carousel: bool, avisos: li
     # Copy de las piezas: es lo que el modelo va a IMPRIMIR en la imagen.
     texto = posts.get("image_text") if isinstance(posts.get("image_text"), dict) else {}
     hook = (texto.get("hook") or "").strip()
-    frases = [s.strip() for s in (texto.get("slides") or []) if isinstance(s, str) and s.strip()]
     if not hook:
         avisos.append({
             "campo": "image_hook", "nivel": "alto",
@@ -280,11 +398,40 @@ def _revisar_imagenes(posts: dict, *, n_info: int, is_carousel: bool, avisos: li
             "mensaje": f"El texto de portada tiene {len(hook.split())} palabras: a ese largo el "
                        "titular entra pequeño y se lee mal en el feed (apunta a 10 o menos).",
         })
-    if is_carousel and len(frases) < n_info:
+    if is_carousel:
+        _revisar_bloques_slide(texto.get("slides"), n_info=n_info, sistema=sistema,
+                               avisos=avisos)
+
+
+def _revisar_bloques_slide(slides, *, n_info: int, sistema: str, avisos: list[dict]) -> None:
+    """¿Cada slide trae los bloques que su sistema de texto va a IMPRIMIR?
+
+    Antes esto era `len(frases) < n_info`, que solo veía el slide entero vacío. Con un
+    sistema de dos o tres niveles ese recuento pasa de largo el defecto que importa: N
+    slides con titular y sin cuerpo son N piezas que se generan, se publican y salen
+    medio vacías, y ni un solo error en el camino. Se cuenta lo que la pieza imprime.
+
+    El detalle se nombra por bloque a propósito: «faltan frases» no dice dónde escribir,
+    y la compuerta previa tiene un campo por bloque justo al lado del aviso.
+    """
+    lista = slides if isinstance(slides, (list, tuple)) else []
+    requeridos = parch.bloques_requeridos(sistema)
+    huecos: dict[str, list[int]] = {}
+    for i in range(n_info):
+        bloques = parch.bloques_de_slide(lista[i] if i < len(lista) else "", sistema)
+        for clave in requeridos:
+            if not bloques.get(clave):
+                huecos.setdefault(clave, []).append(i + 2)   # el slide 1 es la portada
+    for clave, posiciones in huecos.items():
+        cuantos = len(posiciones)
+        donde = ", ".join(str(p) for p in posiciones)
         avisos.append({
             "campo": "image_slides", "nivel": "alto",
-            "mensaje": f"Hay {len(frases)} frase(s) para {n_info} slide(s): las que falten salen "
-                       "de las líneas del caption, o directamente sin texto.",
+            "mensaje": (f"Falta el {clave} en {cuantos} de {n_info} slide(s) (el {donde}): "
+                        f"esa parte de la pieza se genera vacía."
+                        if cuantos < n_info else
+                        f"Ningún slide trae su {clave}: esa parte de la pieza se genera "
+                        "vacía en todo el carrusel."),
         })
 
 

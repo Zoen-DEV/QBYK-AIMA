@@ -4,6 +4,7 @@
   "display_currency": "USD",
   "fx_rate": 1.0,
 
+  "_comment_anthropic": "Las llamadas de visión (image_text_qa por imagen, image_set_qa una por carrusel, identity_extract al crear una identidad) se cobran con la MISMA tarifa por token que el texto: las imágenes entran como input_tokens ya contados por el proveedor, así que no necesitan una entrada aparte. El operation del evento distingue de dónde vino.",
   "anthropic": {
     "claude-sonnet-4-6": {
       "input_per_1m": 3.00,
