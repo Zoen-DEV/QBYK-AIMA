@@ -133,6 +133,23 @@ export function VisualIdentities() {
                     {ident.identity_json.tipografia || "sin tipografía definida"}
                     {ident.identity_json.tono_visual ? ` · ${ident.identity_json.tono_visual}` : ""}
                   </p>
+
+                  {/* El ritmo es opcional y no se ve en la paleta ni en la tipografía:
+                      sin esta línea no habría forma de saber, desde la lista, si un
+                      carrusel de esta identidad sale con sus planos o con los de la casa. */}
+                  <p className="mt-1 text-[11px] text-gray-600">
+                    {ident.identity_json.escenarios?.length
+                      ? `${ident.identity_json.escenarios.length} mundos propios`
+                      : "Mundos de la casa"}
+                    {" · "}
+                    {ident.identity_json.sistemas_texto?.length
+                      ? `${ident.identity_json.sistemas_texto.length} estructura(s) de texto`
+                      : "texto de la casa"}
+                    {" · "}
+                    {ident.identity_json.ritmo_carrusel?.length
+                      ? "ritmo propio"
+                      : "ritmo de la casa"}
+                  </p>
                 </div>
 
                 <div className="flex shrink-0 flex-wrap items-center gap-2">

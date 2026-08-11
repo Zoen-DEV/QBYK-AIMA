@@ -41,13 +41,67 @@ const faltan: string[] = Array.isArray(needs.faltan) ? needs.faltan : [];
 const imageText =
   posts.image_text && typeof posts.image_text === "object" ? posts.image_text : null;
 const imgHook = imageText?.hook || "";
-const imgSlides: string[] = Array.isArray(imageText?.slides) ? imageText.slides : [];
+const imgSlides: unknown[] = Array.isArray(imageText?.slides) ? imageText.slides : [];
+
+// El sistema de texto que la app congeló al crear el job: qué bloques imprime cada
+// slide y con qué presupuesto de palabras. Viene del backend (`needs`) y NO se deduce
+// acá — si esta pantalla y el prompt contaran bloques distintos, el usuario editaría
+// dos campos donde la pieza imprime tres y el tercero saldría vacío.
+const sistemaTexto = needs.sistema_texto || null;
+const bloquesSistema: { clave: string; palabras: number[] }[] = Array.isArray(
+  sistemaTexto?.bloques,
+)
+  ? sistemaTexto.bloques
+  : [{ clave: "titular", palabras: [3, 8] }];
+
+const BLOQUE_ETIQUETA: Record<string, string> = {
+  etiqueta: "Etiqueta",
+  titular: "Titular",
+  cuerpo: "Cuerpo",
+  apoyo: "Apoyo",
+};
+const BLOQUE_AYUDA: Record<string, string> = {
+  etiqueta: "un rótulo corto para escanear: «01», «El coste», «Paso 2»",
+  titular: "la afirmación, y lo único a tamaño de póster",
+  cuerpo: "lo que la fuente explica de verdad: un dato, un paso, un mecanismo",
+  apoyo: "una línea que matiza al titular, impresa pequeña al pie",
+};
+
+/** Los bloques de un slide, acepte el contrato viejo (string) o el nuevo (objeto). */
+function bloquesDe(slide: unknown): Record<string, string> {
+  if (slide && typeof slide === "object") return slide as Record<string, string>;
+  return { titular: typeof slide === "string" ? slide : "" };
+}
 
 // Cuántos campos de texto de slide pintar. Sale de los slides del carrusel (portada +
 // n-1 de info), no de lo que el modelo haya entregado: si entregó de menos, el usuario
 // tiene que ver los huecos vacíos para poder llenarlos — que es justo lo que avisa el
 // lint de arriba. Fuera del carrusel no hay slides.
 const nInfoSlides: number = Number(needs.n_info) || 0;
+
+// El beat de cada slide, tal como lo calculó el backend (misma secuencia que usan el
+// prompt de la imagen y el redactor). Quien edita el texto a mano tiene que ver qué
+// función cumple ese slide: la imagen ya se va a generar para ese beat.
+const beats: string[] = Array.isArray(needs.beats) ? needs.beats : [];
+const BEAT_AYUDA: Record<string, string> = {
+  tension: "el problema que el lector reconoce",
+  desarrollo: "la explicación que hace avanzar la idea",
+  prueba: "el dato o ejemplo concreto que lo demuestra",
+  remate: "el cierre — la frase que se captura en pantalla",
+};
+
+// El arco y el mundo que la app eligió para este post y congeló al crearlo. Se muestran
+// y NO se editan: son una decisión ya tomada, y verla es lo que explica por qué las
+// escenas dicen lo que dicen —por qué el mismo objeto vuelve, por qué todo pasa en el
+// mismo sitio— antes de gastar créditos.
+const arco: string = needs.arco || "";
+const escenario: string = needs.escenario || "";
+const ARCO_AYUDA: Record<string, string> = {
+  transformacion: "el mismo objeto vuelve en cada slide con su estado cambiado",
+  cadena: "cada slide arranca en lo que dejó el anterior",
+  recorrido: "un mismo lugar recorrido por partes, un rincón por slide",
+  escala: "piezas del mismo sistema: la pieza, el conjunto, el sitio donde vive",
+};
 
 // Prompts visuales de las imágenes (la escena que genera el modelo, en inglés).
 const imgPrompt: string = posts.image_prompt || "";
@@ -157,6 +211,29 @@ const inputCls =
               </p>
             )}
           </div>
+
+          {/* Lo que la app decidió por su cuenta para este post. No se edita: se muestra
+              para que quien revisa entienda por qué las escenas dicen lo que dicen. */}
+          {(arco || escenario) && (
+            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-3 space-y-1.5">
+              {arco && (
+                <p class="text-[11px] text-gray-500">
+                  <span class="text-gray-400">Arco del carrusel:</span>{" "}
+                  <span class="font-mono text-gray-300">{arco}</span>
+                  {ARCO_AYUDA[arco] && <span> — {ARCO_AYUDA[arco]}</span>}
+                </p>
+              )}
+              {escenario && (
+                <p class="text-[11px] text-gray-500">
+                  <span class="text-gray-400">Mundo:</span> {escenario}
+                </p>
+              )}
+              <p class="text-[11px] text-gray-600">
+                Los elige la app y son iguales en todas las imágenes de este post. El mundo sale
+                de la identidad visual — cámbialo desde /cuenta.
+              </p>
+            </div>
+          )}
           <label class="block">
             <span class="text-xs text-gray-400 mb-1 block">Portada (hook)</span>
             <textarea name="image_hook" rows="2" class={inputCls}>{imgHook}</textarea>
@@ -165,20 +242,62 @@ const inputCls =
               texto va en qué imagen, y el índice del campo conserva la posición: vaciar
               el slide 2 lo deja vacío en vez de correr el 3 a su lugar. */}
           {nInfoSlides > 0 && (
-            <div class="space-y-3">
+            <div class="space-y-4">
               <span class="text-xs text-gray-400 block">Texto de cada slide</span>
               <p class="text-[11px] text-gray-500 -mt-2">
-                Una idea por slide, en secuencia: cada una avanza sobre la anterior y la última
-                remata. Si la idea tiene dos tiempos, sepáralos con una raya espaciada
-                (<code class="text-gray-400">Titular — apoyo</code>): lo de antes va grande arriba y
-                lo de después, pequeño, al pie. La raya no se imprime.
+                El carrusel tiene que CONTAR el contenido: quien no vio el video termina el último
+                slide sabiendo la cosa. Cada slide tiene su función —la etiqueta de la izquierda— y
+                su imagen ya se está generando para ese momento: el plano, el tamaño del titular y
+                el color de acento salen de ahí.
+                {bloquesSistema.length > 1 ? (
+                  <span>
+                    {" "}Los campos de cada slide son los niveles de texto que imprime esta
+                    identidad{sistemaTexto?.nombre ? ` (${sistemaTexto.nombre})` : ""}.
+                  </span>
+                ) : (
+                  <span>
+                    {" "}Si la idea tiene dos tiempos, sepáralos con una raya espaciada
+                    (<code class="text-gray-400">Titular — apoyo</code>): lo de antes va grande
+                    arriba y lo de después, pequeño, al pie. La raya no se imprime.
+                  </span>
+                )}
               </p>
-              {Array.from({ length: nInfoSlides }).map((_, i) => (
-                <label class="flex items-start gap-3">
-                  <span class="text-[11px] text-gray-500 font-mono mt-2.5 w-14 flex-shrink-0">Slide {i + 2}</span>
-                  <textarea name={`image_slide_text_${i}`} rows="2" class={inputCls}>{imgSlides[i] || ""}</textarea>
-                </label>
-              ))}
+              {Array.from({ length: nInfoSlides }).map((_, i) => {
+                const bloques = bloquesDe(imgSlides[i]);
+                return (
+                  <div class="flex items-start gap-3">
+                    <span class="mt-2.5 w-24 flex-shrink-0 text-[11px] text-gray-500">
+                      <span class="font-mono block">Slide {i + 2}</span>
+                      {beats[i] && <span class="block text-gray-600">{beats[i]}</span>}
+                      {beats[i] && BEAT_AYUDA[beats[i]] && (
+                        <span class="block text-gray-700 mt-1 leading-snug">{BEAT_AYUDA[beats[i]]}</span>
+                      )}
+                    </span>
+                    <div class="flex-1 space-y-2">
+                      {bloquesSistema.map((b) => (
+                        <label class="block">
+                          {bloquesSistema.length > 1 && (
+                            <span class="text-[11px] text-gray-500 mb-0.5 block">
+                              {BLOQUE_ETIQUETA[b.clave] || b.clave}
+                              {b.palabras?.[1] ? (
+                                <span class="text-gray-700"> · hasta {b.palabras[1]} palabras</span>
+                              ) : null}
+                              {BLOQUE_AYUDA[b.clave] && (
+                                <span class="text-gray-700"> — {BLOQUE_AYUDA[b.clave]}</span>
+                              )}
+                            </span>
+                          )}
+                          <textarea
+                            name={`image_slide_${b.clave}_${i}`}
+                            rows={b.clave === "cuerpo" ? 3 : 2}
+                            class={inputCls}
+                          >{bloques[b.clave] || ""}</textarea>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

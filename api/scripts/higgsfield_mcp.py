@@ -95,7 +95,37 @@ DEFAULT_IMAGE_ASPECT = "1:1"
 # `prompts/architect.json` → `validacion.max_caracteres`: si truncara, lo que se pierde
 # es la última sección, que son justo los negativos. Si Higgsfield rechazara un prompt
 # largo, el submit falla visible (RuntimeError → aviso en el job) y se baja este número.
-_MAX_PROMPT_CHARS = 3200
+# Subió de 3200 a 3600 con la escalera de beats del carrusel: el brief de un slide
+# incorporó la cláusula de plano del beat, y con el techo anterior la poda de
+# `_ajustar_longitud` se comía el anclaje concreto de las secciones creativas —justo
+# lo que evita que la imagen salga genérica— en TODOS los slides.
+# Sube a 4300 al reponerse la cláusula de continuidad de set, que llevaba desde la
+# escalera de beats sin emitirse en ningún slide: medido con `scripts/medir_prompt.py`,
+# con el techo anterior TODOS los slides quedaban podados a 10 palabras por sección
+# creativa (el mínimo de la escalera de poda). Son ~1070 tokens de prompt, que sigue
+# siendo poco para un modelo de esta clase. Y a 4350 con el bloqueo de luz de la
+# sección 6, que son otros ~180 caracteres fijos en todos los prompts. Y a 4700 con el
+# sangrado declarado en positivo en la sección 1, los cortes de línea de la sección 4 y
+# el negativo de atrezzo estadounidense. Son ~1180 tokens: sigue siendo poco para un
+# modelo de esta clase, pero es el techo donde el plan de calidad de carrusel se paró —
+# la barra es el escalón de poda de 18 palabras, no un techo cada vez más alto.
+# Y a 5100 con el bloqueo de MUNDO de la sección 2 (~180 caracteres fijos en todas las
+# piezas) y el enlace del arco en los slides: son ~1275 tokens. La barra no se movió —
+# 5050 es exactamente el primer techo que le devuelve el escalón de 18 a los cuatro
+# beats, medido con `scripts/medir_prompt.py`—; lo que se movió es lo que hay que meter
+# dentro. Este número sigue siendo una cota NUESTRA: el catálogo no declara `maxLength`
+# para `prompt`, y los 50 caracteres de margen sobre `validacion.max_caracteres` son lo
+# que garantiza que un prompt válido nunca llegue a truncarse acá (truncarlo se lleva
+# justo el final: la sección de negativos).
+# Y a 5200 con el bloqueo de PALETA de la sección 6 (~130 caracteres fijos), que es lo
+# que impide que cada slide del carrusel salga con el acento de otro color. Barrido con
+# `scripts/medir_prompt.py`: 5150 es el primer techo que devuelve el escalón de 18 y
+# 5200/5250 no compran nada más, así que la barra tampoco se movió esta vez.
+# Y a 5300 con los SISTEMAS DE TEXTO, donde lo que ocupa no es brief sino el CONTENIDO
+# que se imprime: el cuerpo de un slide son ~200 caracteres de texto de la pieza. Se pagó
+# antes con el `detalle` compartido de la sección 4 y apagando los cortes de línea en los
+# sistemas con cuerpo; 5250 es el primer techo que sostiene el escalón de 18 en los tres.
+_MAX_PROMPT_CHARS = 5300
 # Aspecto de los posts de feed: 4:5 es el formato vertical que aceptan Instagram
 # (imagen única y carrusel), LinkedIn y Facebook, y el que más pantalla ocupa en el
 # scroll. Antes se generaba TODO en 1:1 y el 4:5 se fabricaba escalando el cuadrado
@@ -953,10 +983,22 @@ class _FreshStorage(TokenStorage):
     Oculta al SDK los tokens/client_info guardados —así hace DCR + authorize sí
     o sí, incluso con un store muerto en disco— y escribe lo nuevo en el store
     real, de donde lo levanta el provider del runtime.
+
+    El client_info va **en memoria hasta que llegan los tokens**, y recién ahí se
+    escriben los dos juntos. No es prolijidad: el DCR ocurre al principio del
+    flujo y el consentimiento humano puede no volver nunca (la pestaña se cierra,
+    el login de Higgsfield se cuelga, vence `_WEB_FLOW_DEADLINE`). Escribiendo el
+    client_info en cuanto se registra, un flujo abandonado dejaba el store con
+    **client_id nuevo + tokens viejos** — y un refresh token solo lo puede canjear
+    el client_id al que se emitió, así que el refresh silencioso quedaba muerto
+    para siempre (`Token refresh failed: 400`) y el único camino era re-consentir.
+    Que un intento fallido de reconectar rompa la conexión que TODAVÍA funcionaba
+    es lo que este buffer evita: si el flujo no cierra, el store queda intacto.
     """
 
     def __init__(self, real: FileTokenStorage):
         self._real = real
+        self._pendiente: OAuthClientInformationFull | None = None
 
     async def get_tokens(self) -> OAuthToken | None:
         return None
@@ -965,10 +1007,15 @@ class _FreshStorage(TokenStorage):
         return None
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
+        # El client_info primero: los dos writes son read-modify-write atómicos
+        # sobre el mismo archivo, y así el último deja el par completo y coherente.
+        if self._pendiente is not None:
+            await self._real.set_client_info(self._pendiente)
+            self._pendiente = None
         await self._real.set_tokens(tokens)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        await self._real.set_client_info(client_info)
+        self._pendiente = client_info
 
 
 def _reload_runtime_oauth() -> None:

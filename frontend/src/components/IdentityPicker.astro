@@ -1,0 +1,84 @@
+---
+// Selector de la identidad visual con la que se genera el post (paleta, tipografía y
+// referencias de las imágenes). Se alimenta de GET /api/identities con la cabecera del
+// perfil activo, así que lista la identidad de la casa + las que creó el usuario.
+//
+// Vacío = la identidad activa del perfil, que es exactamente como se generaba antes de
+// que el campo existiera; por eso la opción "activa" siempre existe aunque la lista no
+// se pueda cargar. Reutilizable en los forms de individual / reel / historia / bulk.
+interface Props {
+  /** "lote" cambia el texto para dejar claro que la elección aplica a todas las filas. */
+  alcance?: "post" | "lote";
+}
+const { alcance = "post" } = Astro.props;
+const destino = alcance === "lote" ? "todos los posts del lote" : "este post";
+---
+
+<label class="block" id="identidad-picker">
+  <span class="text-xs text-gray-400 mb-1 block">Identidad visual</span>
+  <select
+    name="identidad_visual_id"
+    id="identidad-select"
+    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+  >
+    <option value="">Cargando identidades...</option>
+  </select>
+  <span class="text-[11px] text-gray-500 mt-1.5 block leading-relaxed" id="identidad-hint">
+    Paleta, tipografía y referencias de las imágenes de {destino}. Se crean y se
+    administran en <a href="/cuenta" class="text-brand-400 hover:text-brand-300 underline">Cuenta</a>.
+  </span>
+</label>
+
+<script>
+  type Identidad = { id: string; name: string; is_default: boolean; is_system: boolean };
+
+  const sel = document.getElementById("identidad-select") as HTMLSelectElement | null;
+  const hint = document.getElementById("identidad-hint") as HTMLElement | null;
+
+  if (sel) {
+    // Mismo criterio que el resto de llamadas de cuenta (ver src/lib/identidades.ts):
+    // sin cabecera, el backend usa el perfil por defecto.
+    const cabecera = () => {
+      try {
+        const uid = localStorage.getItem("aima_user") || "";
+        return uid ? { "X-User-Id": uid } : {};
+      } catch {
+        return {};
+      }
+    };
+
+    // La opción vacía no es un placeholder: es "la que tenga activa el perfil", que es
+    // el comportamiento por defecto del backend cuando no se manda ningún id.
+    const opcionActiva = (nombre: string) => {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = nombre;
+      return opt;
+    };
+
+    (async () => {
+      try {
+        const res = await fetch("/api/identities", { headers: cabecera() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const identidades: Identidad[] = data.identities ?? [];
+        const activa = identidades.find((i) => i.is_default);
+        sel.innerHTML = "";
+        sel.appendChild(
+          opcionActiva(activa ? `Identidad activa (${activa.name})` : "Identidad activa del perfil"),
+        );
+        for (const ident of identidades) {
+          const opt = document.createElement("option");
+          opt.value = ident.id;
+          opt.textContent = ident.is_default ? `${ident.name} · activa` : ident.name;
+          sel.appendChild(opt);
+        }
+      } catch (e) {
+        // Sin lista no se puede elegir, pero sí generar: el backend resuelve la activa.
+        sel.innerHTML = "";
+        sel.appendChild(opcionActiva("Identidad activa del perfil"));
+        if (hint) hint.textContent = `No se pudieron cargar las identidades (${e}). Se usa la que tengas activa.`;
+      }
+    })();
+  }
+</script>

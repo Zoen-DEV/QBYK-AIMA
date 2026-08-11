@@ -5,7 +5,10 @@ import asyncio
 import copy
 import json
 
+import pytest
+
 import post_writer as pw
+import prompt_architect as parch
 
 _CONTENT = {
     "title": "Cómo ahorrar",
@@ -760,10 +763,25 @@ def test_el_checklist_revisa_la_forma_del_post_terminado():
 
 def test_los_slides_se_piden_como_secuencia_con_remate():
     sp = pw._system_prompt()
-    assert "ONE SEQUENCE, NOT N INDEPENDENT PHRASES" in sp
+    assert "ONE SEQUENCE, NOT N INDEPENDENT SLIDES" in sp
     assert "lands the payoff" in sp
     # El último slide sigue siendo informativo: nunca créditos ni despedida.
     assert "never credits" in sp
+
+
+def test_el_carrusel_tiene_que_ENSEÑAR_la_fuente():
+    """El encargo que faltaba: los slides salían siendo N titulares sobre el tema.
+
+    Con ~14 palabras por slide no había presupuesto para otra cosa, pero el prompt
+    tampoco lo pedía: decía "self-contained idea", que es literalmente pedir frases
+    sueltas. Ahora el cuerpo tiene que llevar algo concreto de la fuente.
+    """
+    sp = pw._system_prompt()
+    assert "THE CAROUSEL TEACHES THE SOURCE" in sp
+    assert "must finish the last slide KNOWING the thing" in sp
+    # Y el anti-patrón, nombrado: sin él «concreto» es una palabra sin criterio.
+    assert "still be true of any other video on the same subject has failed" in sp
+    assert "self-contained idea" not in sp
 
 
 def test_el_prompt_documenta_el_corte_titular_apoyo():
@@ -776,7 +794,11 @@ def test_la_reparacion_repite_las_reglas_del_carrusel():
     # Si la reparación pidiera las frases sin las reglas nuevas, el reintento
     # devolvería el formato viejo y el arreglo duraría hasta el primer fallo.
     spec = pw._SPEC_REPARACION["image_text.slides"]
-    assert "ONE sequence" in spec and "Headline — support" in spec
+    assert "ONE sequence" in spec
+    # Y la forma: la reparación tiene que pedir los MISMOS bloques que el primer
+    # intento, o devuelve un slide que la pieza no sabe imprimir.
+    assert "{bloques}" in spec
+    assert "not a rewording of its own headline" in spec
 
 
 def test_el_user_message_pide_la_secuencia_en_el_carrusel():
@@ -784,6 +806,65 @@ def test_el_user_message_pide_la_secuencia_en_el_carrusel():
         _CONTENT, {"redes": ["instagram"], "formato_instagram": "carrusel",
                    "carrusel_slides": 4}, "")
     assert "read as one sequence" in msg
+
+
+# ── Sistemas de texto: qué bloques lleva cada slide ──────────────────────────
+
+_PARAMS_CARRUSEL = {"redes": ["instagram"], "formato_instagram": "carrusel",
+                    "carrusel_slides": 4}
+
+
+def test_el_briefing_declara_los_bloques_del_sistema_congelado():
+    """Sin esta línea el redactor entrega dos bloques donde la pieza imprime tres.
+
+    Y el tercero sale en blanco sin un solo error, que es la clase de fallo que este
+    proyecto persigue: se genera y se publica igual, solo que medio vacío.
+    """
+    msg = pw._user_message(
+        _CONTENT, dict(_PARAMS_CARRUSEL, sistema_texto="etiqueta_titular_cuerpo"), "")
+    assert "SLIDE TEXT SYSTEM: etiqueta_titular_cuerpo" in msg
+    for clave in ("`etiqueta`", "`titular`", "`cuerpo`"):
+        assert clave in msg
+    # El presupuesto de palabras es el que cabe a esa escala, no una preferencia.
+    assert "words" in msg
+
+
+def test_sin_sistema_congelado_se_pide_el_de_siempre():
+    # «Vacío = lo de siempre»: un job anterior a los sistemas pide titular + apoyo.
+    msg = pw._user_message(_CONTENT, dict(_PARAMS_CARRUSEL), "")
+    assert "SLIDE TEXT SYSTEM: titular" in msg
+    assert "`cuerpo`" not in msg
+
+
+def test_un_slide_sin_cuerpo_cuenta_como_incompleto():
+    """La comprobación miraba `len(slides) < n_info`, así que N slides con solo el
+    titular pasaban enteros y la mitad de cada pieza salía vacía."""
+    params = dict(_PARAMS_CARRUSEL, sistema_texto="titular_cuerpo")
+    solo_titular = [{"titular": f"Idea {i}"} for i in range(3)]
+    assert pw.slides_incompletos(solo_titular, params) == [0, 1, 2]
+    completos = [{"titular": f"Idea {i}", "cuerpo": "Lo que dice la fuente."} for i in range(3)]
+    assert pw.slides_incompletos(completos, params) == []
+    # Y el `apoyo` es opcional a propósito: una pieza sin segunda línea es legítima.
+    assert pw.slides_incompletos(["Una idea"] * 3, dict(_PARAMS_CARRUSEL)) == []
+
+
+def test_los_slides_se_funden_bloque_a_bloque_entre_intentos():
+    """Misma regla que el resto del merge: si un intento trajo los titulares y el otro
+    los cuerpos, quedarse con «el que tenga menos faltantes» tira media respuesta."""
+    params = dict(_PARAMS_CARRUSEL, sistema_texto="titular_cuerpo")
+    base = {"image_text": {"hook": "Hook", "slides": [{"titular": "Uno"}, {"titular": "Dos"}]}}
+    extra = {"image_text": {"slides": [{"cuerpo": "Cuerpo uno."}, {"cuerpo": "Cuerpo dos."}]}}
+    fundido = pw._merge_posts(base, extra, params)["image_text"]["slides"]
+    assert fundido == [{"titular": "Uno", "cuerpo": "Cuerpo uno."},
+                       {"titular": "Dos", "cuerpo": "Cuerpo dos."}]
+
+
+def test_el_parser_conserva_los_slides_como_objeto():
+    # Coercer a string destruiría los bloques; el contrato viejo (string) sigue valiendo.
+    img = pw._normalize_image_text({
+        "hook": "Hook", "slides": [{"titular": "Uno", "cuerpo": "Dos.", "inventado": "x"},
+                                   "Una frase suelta"]})
+    assert img["slides"] == [{"titular": "Uno", "cuerpo": "Dos."}, "Una frase suelta"]
 
 
 # ── Los captions son parte del contrato ──────────────────────────────────────
@@ -873,3 +954,114 @@ async def test_sin_url_la_reparacion_no_inventa_un_cta(monkeypatch):
     reparaciones = _fake_repair(monkeypatch, {"linkedin_text": "x"})
     await pw.write_posts({}, _CARRUSEL, "", asyncio.Queue(), _Cfg())
     assert "There is NO source URL" in reparaciones[0]["mensaje"]
+
+
+# ── Beats del carrusel: el texto y la imagen se encargan desde el mismo sitio ──
+#
+# La app le da a cada slide su plano, su escala de titular y su acento según el beat
+# que le toca. Si el redactor no supiera cuál es, los dos lados escribirían una
+# secuencia sin conocer la del otro: la app pide el plano más cerrado del set para el
+# slide 2 y el modelo le escribe encima una conclusión.
+
+def _msg_carrusel(slides: int = 4) -> str:
+    return pw._user_message(_CONTENT, {"tipo_post": "post", "redes": ["instagram"],
+                                       "formato_instagram": "carrusel",
+                                       "carrusel_slides": slides}, "")
+
+
+def test_el_user_message_nombra_el_beat_de_cada_slide():
+    import prompt_architect as pa
+
+    msg = _msg_carrusel(5)          # 5 slides = 4 de info
+    assert "SLIDE BEATS" in msg
+    for i, rol in enumerate(pa.roles_carrusel(4), 1):
+        assert f"slide {i} — {rol}" in msg
+
+
+def test_los_beats_del_redactor_son_los_mismos_que_los_de_la_imagen():
+    # Fuente única: `roles_carrusel`. Si el briefing contara otra secuencia, el texto
+    # del slide 2 se escribiría para un beat y su imagen se generaría para otro.
+    import prompt_architect as pa
+
+    for slides in (3, 4, 5, 6):
+        msg = _msg_carrusel(slides)
+        roles = pa.roles_carrusel(slides - 1)
+        assert msg.count("slide 1 — ") == 1
+        assert f"slide {len(roles)} — {roles[-1]}" in msg
+
+
+def test_una_imagen_unica_no_trae_beats():
+    msg = pw._user_message(_CONTENT, {"tipo_post": "post", "redes": ["instagram"],
+                                      "formato_instagram": "imagen-unica"}, "")
+    assert "SLIDE BEATS" not in msg
+
+
+# ── El arco y el mundo llegan al redactor ────────────────────────────────────
+#
+# Son el otro extremo de las cláusulas que la app emite en el prompt de imagen: quien
+# elige el OBJETO de cada escena es este modelo, así que si no sabe dónde estamos ni qué
+# encadena las piezas, escribe N objetos sueltos y las imágenes llegan con una
+# instrucción de continuidad que su propio contenido no sostiene.
+
+_MUNDO_TEST = "A workshop after hours: concrete floor, steel racking, tools left out."
+
+
+def _msg_con_arco(**params_extra) -> str:
+    params = {"formato_instagram": "carrusel", "carrusel_slides": 5, "lang": "es",
+              "redes": "linkedin,instagram", "tipo_medio": "imagen", **params_extra}
+    return pw._user_message({"title": "Pi-hole", "transcript": "x" * 200}, params, "")
+
+
+def test_el_briefing_lleva_el_mundo_del_job():
+    assert "SCENE WORLD" in _msg_con_arco(escenario_visual=_MUNDO_TEST)
+    assert _MUNDO_TEST in _msg_con_arco(escenario_visual=_MUNDO_TEST)
+
+
+def test_el_mundo_llega_tambien_en_imagen_unica():
+    # No es cosa del carrusel: es dónde ocurre TODO lo que este post fotografíe, y es lo
+    # que hace que dos posts seguidos de la misma marca no salgan del mismo sitio.
+    msg = pw._user_message({"title": "Pi-hole", "transcript": "x" * 200},
+                           {"formato_instagram": "imagen-unica", "lang": "es",
+                            "redes": "linkedin", "tipo_medio": "imagen",
+                            "escenario_visual": _MUNDO_TEST}, "")
+    assert "SCENE WORLD" in msg and _MUNDO_TEST in msg
+
+
+@pytest.mark.parametrize("arco", parch.ARCOS)
+def test_el_briefing_lleva_el_arco_y_su_regla_de_sujeto(arco):
+    msg = _msg_con_arco(arco_carrusel=arco)
+    assert f"CAROUSEL ARC: {arco}" in msg
+    vuelve = parch.sujeto_arco(arco) in ("recurrente", "encadenado")
+    assert ("hero object RECURS" in msg) is vuelve
+    assert ("DIFFERENT hero object" in msg) is not vuelve
+
+
+def test_sin_arco_no_se_menciona_ninguno():
+    # «Vacío = lo de siempre»: el briefing no puede inventar una historia que la app no
+    # va a emitir en el prompt de imagen.
+    assert "CAROUSEL ARC" not in _msg_con_arco()
+
+
+def test_el_sistema_delega_la_regla_del_sujeto_en_el_arco():
+    """La regla que este cambio invierte, y por eso vale fijarla.
+
+    El prompt del sistema prohibía repetir el sujeto («the same device seen closer…
+    does NOT count as different»). Eso es una regla de catálogo: en un arco de
+    transformación el objeto que vuelve ES la historia, así que la decisión tiene que
+    quedar en manos del arco y no de una constante.
+    """
+    sistema = pw._system_prompt(text_overlay=True)
+    assert "CAROUSEL ARC" in sistema
+    assert "TRANSFORMATION or CHAIN" in sistema
+
+
+def test_el_sistema_ya_no_pone_una_mesa_de_ejemplo():
+    """El ejemplo era «the closed laptop sits on a worn oak desk».
+
+    Un ejemplo único es una instrucción: era una de las seis fuentes del carrusel de
+    mesas, y la más difícil de ver porque estaba dentro de una regla correcta (anclar
+    los objetos, que sigue vigente).
+    """
+    sistema = pw._system_prompt(text_overlay=True).lower()
+    assert "oak desk" not in sistema
+    assert "anchor every object" in sistema

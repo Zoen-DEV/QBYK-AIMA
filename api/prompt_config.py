@@ -71,6 +71,11 @@ def qa_vision() -> dict:
     return load("qa_vision")
 
 
+def qa_set() -> dict:
+    """Config del QA de conjunto del carrusel (ve las N piezas juntas)."""
+    return load("qa_set")
+
+
 def identity_extract() -> dict:
     """Config del extractor de identidad visual a partir de fotos de referencia."""
     return load("identity_extract")

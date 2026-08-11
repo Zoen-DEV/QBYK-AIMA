@@ -5,6 +5,7 @@ import re
 import urllib.request
 import urllib.error
 
+import prompt_architect as parch
 from networks import active_networks
 
 PERPLEXITY_MODEL = "sonar-pro"
@@ -40,8 +41,13 @@ def _system_prompt(text_overlay: bool = True) -> str:
         "dead space waiting for text."
     )
     space_slides = (
-        "- carries poster type too: same skeleton as the cover — subject in the central band, top "
-        "and bottom bands calm."
+        # Un slide de contenido invierte la jerarquía de la portada: ahí el titular es el
+        # elemento mayor del cuadro y el objeto lo soporta. Hay que decirlo acá además de
+        # en el brief de imagen porque quien elige el objeto es este modelo: si escoge una
+        # escena que solo funciona llenando el cuadro, el slide sale peleado consigo mismo.
+        "- carries poster type too, and there the TYPE LEADS: the headline owns the upper two "
+        "thirds and the object sits low and small underneath it, so pick something that still "
+        "reads at that size — one clear silhouette, not a scene that needs the whole frame."
         if text_overlay else
         "- carries no text either: compose the full frame, no reserved empty area."
     )
@@ -60,9 +66,12 @@ The user message ends its briefing with a line "REQUIRED VISUAL FIELDS: ..." tha
 === IMAGE TEXT (overlay copy for the visuals) ===
 The `image_text` object is the text that gets printed ON the images/carousel — it is NOT the caption. Write it as standalone, designed-poster copy:
 - `hook`: ONE short, complete, punchy phrase for the cover image (max ~10 words). It must read as a finished statement, not a truncated sentence. No hashtags, no emojis, no URL, no trailing "…". Capitalize naturally (sentence case, not ALL CAPS).
-- `slides`: an array of short idea-statements, ONE per info slide. When the piece is a carousel the user message says "INFO SLIDES NEEDED: N" — output EXACTLY that many strings; when that line is absent the piece is a single image and `slides` is an empty array. Each string is a single self-contained idea (max ~14 words), the kind of line that fills a whole slide on its own. Do NOT split one idea across slides, do NOT number them, no bullets, no emojis, no hashtags. Each must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
-- THE SLIDES ARE ONE SEQUENCE, NOT N INDEPENDENT PHRASES. The cover states the promise or the tension; every info slide moves it ONE step forward (slide i+1 must say something slide i did not, and reordering them should break the reading); the LAST one lands the payoff — the line the reader would screenshot. That last slide is still an informative idea taken from the source: never a sign-off, never credits, never "sígueme"/"follow me", never a summary of the slides before it.
-- TWO-BEAT LINES: when a slide idea has a headline and a qualifier, write it as `Headline — support` with a spaced em dash. The app prints what comes before the dash as the big headline and what comes after it smaller, anchored at the foot of the frame; the dash itself is never printed. Keep the headline at 6 words or fewer and the support at 8 or fewer. When one beat already says it, write a single phrase with NO dash — never force the split.
+- `slides`: an array of OBJECTS, ONE per info slide. When the piece is a carousel the user message says "INFO SLIDES NEEDED: N" — output EXACTLY that many; when that line is absent the piece is a single image and `slides` is an empty array. The user message also names a "SLIDE TEXT SYSTEM" and lists the exact keys each object must carry, with a word budget for each: those are the text blocks the app will print on that slide, at different sizes, and a key that comes back empty prints nothing. Never invent a key that is not on that list, never number the slides, no bullets, no emojis, no hashtags. Everything must be drawn faithfully from the transcript/title (same no-fabrication rule as the posts).
+- THE CAROUSEL TEACHES THE SOURCE. This is the point of the whole set: someone who never watched the video must finish the last slide KNOWING the thing. So the slides are not N headlines about the topic — the topic is already on the cover. Every `cuerpo` (when the system has one) carries something concrete the source actually says: a number, a name, a mechanism, a step, a consequence, a comparison the speaker made. A slide that would still be true of any other video on the same subject has failed, and so has one that only re-states its own headline in more words.
+- THE SLIDES ARE ONE SEQUENCE, NOT N INDEPENDENT SLIDES. The cover states the promise or the tension; every info slide moves it ONE step forward (slide i+1 must say something slide i did not, and reordering them should break the reading); the LAST one lands the payoff — the line the reader would screenshot. That last slide is still an informative idea taken from the source: never a sign-off, never credits, never "sígueme"/"follow me", never a summary of the slides before it.
+- EACH SLIDE HAS A NAMED BEAT. When the piece is a carousel the user message lists "SLIDE BEATS": one job per info slide (tension → development → evidence → payoff). Write slide i to do the job of beat i — that beat is not a suggestion, the app is already building slide i's image for it (its shot distance, its type size and whether the accent colour appears there all come from that beat). A slide whose line ignores its beat gets a picture that argues with its own text.
+- WHAT EACH BLOCK IS FOR. `titular` is the claim, and it is the only block set at poster size: short, finished, no trailing colon. `cuerpo` is what the source explains — one or two full sentences of real prose, not a caption and not a list. `etiqueta` is a bare marker for scanning ("01", "El coste", "Paso 2"): never a sentence, never punctuation-heavy. `apoyo` is a single qualifying line printed small at the foot.
+- WHEN THE SYSTEM HAS NO `cuerpo`, a `titular` that carries a headline AND a qualifier can be written as `Headline — support` with a spaced em dash: the app prints what comes before the dash big and what comes after it small at the foot, and the dash itself is never printed. Keep the headline at 6 words or fewer. When one beat already says it, write a single phrase with NO dash — never force the split. Systems that already have their own second block do not need this and must not use the dash.
 - If only one platform is requested or Instagram is a single image, still provide `hook`; `slides` may be an empty array when no carousel is needed.
 Write `image_text` in the same language as the posts.
 
@@ -78,19 +87,19 @@ GROUNDING (this is what makes the visual specific instead of generic — the #1 
 - The no-fabrication rule does not apply to the scene itself (it is a description, not a claim), but the scene MUST clearly evoke THIS specific content — a viewer who knows the source should recognize why this scene was chosen.
 
 PHYSICAL PLAUSIBILITY (what separates a professional visual from an obviously AI-generated one — treat this as hard as the grounding rule):
-- ANCHOR EVERY OBJECT. Each scene names what the subject rests on, hangs from or is held by, AND says it casts a contact shadow there ("the closed laptop sits on a worn oak desk, casting a soft contact shadow"). An object whose support is never named comes out floating in mid-air.
+- ANCHOR EVERY OBJECT. Each scene names what holds the subject up, AND says it casts a contact shadow there. An object whose support is never named comes out floating in mid-air. "Held" is not the same as "on a table": the user message names a SCENE WORLD for this post, and the anchor is whatever THAT place would use — a concrete floor, a wall bracket, a hook, a shelf, the ground, the water it sits in, another object it leans against ("the coiled cable lies on the concrete floor beside the rack, a hard shadow pooling under it"; "the enamel jug hangs from a nail in the plaster, its shadow cast sideways"). Defaulting every scene to an object on a table is the single most common way this set comes out looking generic.
 - HANDS ARE NEVER THE SUBJECT. Never write a scene whose subject is hands doing fine work — typing, playing an instrument, counting, writing, gesturing, assembling. That is exactly where the model renders six fingers. If a human presence helps the story, keep it partial and still: a shoulder, a silhouette against a window, a forearm at rest entering the frame — always medium framing or wider, never an extreme close-up of a hand mid-action.
 - ASYMMETRIC OBJECTS ARE A LAST RESORT. Things with a known handedness or a fixed layout — guitars and other instruments, keyboards, clocks, scissors, printed text, logos, dashboards, control panels — come out mirrored or scrambled. Prefer an object that is symmetric or has no "correct" orientation. If one is genuinely unavoidable, state its orientation explicitly ("acoustic guitar resting right-handed, strings facing camera") and frame it so the asymmetric part is partly out of frame or thrown out of focus.
 - PREFER MATTER OVER MECHANISM. Objects, textures, liquids, paper, fabric, plants, light, weather and landscape hold up far better than anatomy and articulated machinery. When a scene could be built either way, choose the object over the person.
 
 === IMAGE PROMPT, STYLE & SLIDE PROMPTS (text-to-image generation) ===
 This section applies when `image_prompt`, `image_style` and `image_slide_prompts` appear in REQUIRED VISUAL FIELDS — then all three are mandatory.
-`image_prompt`: 30–60 words describing ONE still photograph — the strongest concrete image of this content, obeying the shared rules above. {space_cover} State the subject and what it rests on, the framing, the light with its source and quality, and the color palette. No people as the main subject, no text in the image.
+`image_prompt`: 30–60 words describing ONE still photograph — the strongest concrete image of this content, obeying the shared rules above. {space_cover} State the subject and what holds it up in the SCENE WORLD the user message names, the framing, the light with its source and quality, and the color palette. No people as the main subject, no text in the image.
 `image_style`: 20–40 words of ART DIRECTION for this post — NOT a scene. The app appends it, WORD FOR WORD AND UNCHANGED, to the cover and to every carousel slide: it is the only thing that makes separately generated images read as one designed set, exactly like `video_style` does for video. It must be concrete and specific to THIS post, never a generic label like "editorial, professional, muted". Name, in prose: the light (source, direction, hour and quality — "single hard overhead key, deep falloff into black"), the dominant material or surface, the optics (focal length and depth of field), and the finish (grain, contrast, saturation level). It describes HOW everything is photographed; it never mentions the subject. Do NOT name a palette or invent colors: the palette is fixed brand identity and the app supplies it — a per-post palette here fights the brand one and the set loses its identity.
 `image_slide_prompts`: an array of prompts for the remaining carousel slides. The user message says "IMAGE SLIDE PROMPTS NEEDED: N" — output EXACTLY N. (When that line is absent the piece is a single image: `image_prompt` and `image_style` are still mandatory and `image_slide_prompts` is an empty array.) Each is 20–40 words and:
-- has its own HERO OBJECT: a physically different thing from the cover's and from every other slide's. Before writing them, list N+1 distinct objects the source actually mentions and assign one per image. "The same device seen closer", "another view of it" or the same object with a different part in focus do NOT count as different — that produces a carousel that reads as one photo repeated, which is the failure mode here;
-- stays in the SAME visual world as `image_prompt` — same room, same surfaces, same materials — so the set holds together through the setting, never through the subject (the palette and light come from `image_style`; do not restate them);
-- describes only its own subject: the app assigns each slide its framing and angle, so do not open with a camera instruction;
+- OBEYS THE CAROUSEL ARC. The user message names a "CAROUSEL ARC" and it decides how the slides relate to each other — the images are a sequence, not a catalogue of props. When the arc is TRANSFORMATION or CHAIN the hero object RECURS on purpose: carry the cover's object (or what it left behind) forward and name what has CHANGED about it in this slide — its state, its condition, its quantity, where it ended up. That change is the whole content of the image, so state it explicitly, and never re-describe the same object in the same condition twice. When the arc is WALKTHROUGH or SYSTEM each slide takes a DIFFERENT thing: before writing them, list N+1 distinct objects the source actually mentions and assign one per image — "the same device seen closer", "another view of it" or the same object with a different part in focus do NOT count as different, and that is what produces a carousel reading as one photo repeated;
+- stays in the SCENE WORLD the user message names — the app locks that location into every image of the set, so the slides hold together through the PLACE and never through repeating the subject. Put your object where that place would really keep it; do not restate the location itself, and do not restate the palette or the light (they come from `image_style` and from brand identity);
+- describes only its own subject: the app assigns each slide its framing and angle from its BEAT (see "SLIDE BEATS" in the user message), so do not open with a camera instruction and never state a shot distance — pick an object that works at the distance that beat is shot from (the tension is the tightest shot of the set, the payoff the widest);
 {space_slides}
 
 === VIDEO PROMPT, STYLE & STORYBOARD (text-to-video generation) ===
@@ -340,23 +349,113 @@ def _voiceover_word_budget(params: dict) -> tuple[int, int]:
 # campos los rellena `_parse_raw` con el vacío, no el modelo.
 
 
+def _linea_beats(n_info_slides: int) -> str:
+    """La escalera de beats del carrusel, para el redactor.
+
+    Es el otro extremo de `prompt_architect.roles_carrusel`: la app le da a cada slide
+    un plano, una escala de titular y un acento según su beat, y acá se le pide al
+    modelo el TEXTO de ese mismo beat. Sin esto los dos lados escriben una secuencia
+    y ninguno conoce la del otro: la app pide el plano más cerrado del set para el
+    slide 2 y el modelo le escribe encima una conclusión.
+    """
+    lineas = ["SLIDE BEATS (each info slide has a job in the sequence — its printed idea AND "
+              "its scene are written for it):"]
+    for i, rol in enumerate(parch.roles_carrusel(n_info_slides), 1):
+        funcion = parch.funcion_beat(rol)
+        lineas.append(f"  slide {i} — {rol}: {funcion}" if funcion else f"  slide {i} — {rol}")
+    return "\n".join(lineas)
+
+
+def _linea_sistema_texto(params: dict) -> str:
+    """El sistema de texto congelado del job: qué bloques lleva cada slide.
+
+    Es el contrato de forma de `image_text.slides[i]`, y sale del MISMO sitio que lo
+    construye (`prompt_architect.datos_sistema`). Que se genere y no se escriba a mano
+    es lo que impide el fallo silencioso obvio: el redactor entregando dos bloques donde
+    la pieza imprime tres, y el tercero saliendo en blanco sin un solo error.
+
+    Los topes de palabras no son estilo: son las que caben a la escala de ese bloque.
+    """
+    sistema = parch.sistema_valido(params.get("sistema_texto")) or ""
+    datos = parch.datos_sistema(sistema)
+    claves = ", ".join(f"`{b['clave']}`" for b in datos["bloques"])
+    lineas = [f"SLIDE TEXT SYSTEM: {datos['sistema']} — {datos['encargo']}. "
+              f"Every object in `image_text.slides` carries EXACTLY these keys: {claves}."]
+    for b in datos["bloques"]:
+        lo, hi = b["palabras"]
+        rango = (f"{lo}-{hi} words" if lo else f"up to {hi} words")
+        lineas.append(f"  `{b['clave']}`: {rango}")
+    return "\n".join(lineas)
+
+
+def _linea_mundo(params: dict) -> str:
+    """El mundo congelado del job, para el redactor. `""` si el job no trae ninguno.
+
+    El mismo string que `prompt_architect` emite como bloqueo de mundo en cada imagen.
+    Tiene que llegar también acá porque quien elige el OBJETO de cada escena es este
+    modelo: si escribe un objeto para un sitio que no conoce, el bloqueo —que se
+    prefija a la misma sección del prompt final— acaba contradiciéndolo.
+    """
+    escenario = str(params.get("escenario_visual") or "").strip()
+    if not escenario:
+        return ""
+    return (f"SCENE WORLD (fixed for every image of this post; the app states it verbatim, "
+            f"so put your objects where this place would keep them and never restate the "
+            f"place itself): {escenario}")
+
+
+def _linea_arco(params: dict) -> str:
+    """El arco del carrusel, para el redactor. `""` si el job no trae ninguno.
+
+    Es el otro extremo de `prompt_architect._clausula_arco`, igual que `_linea_beats`
+    lo es de la cláusula de plano: la app le da a cada slide su enlace con los demás y
+    acá se le pide al modelo la ESCENA que ese enlace necesita. Sin esto el redactor
+    escribiría N objetos sueltos —era la regla explícita hasta ahora— y las imágenes
+    llegarían con una instrucción de continuidad que su propio contenido no sostiene.
+    """
+    arco = str(params.get("arco_carrusel") or "").strip()
+    funcion = parch.funcion_arco(arco) if arco else ""
+    if not funcion:
+        return ""
+    vuelve = parch.sujeto_arco(arco) in ("recurrente", "encadenado")
+    regla = ("The hero object RECURS across the slides: carry it forward and name what has "
+             "CHANGED about it in each one."
+             if vuelve else
+             "Each slide takes a DIFFERENT hero object; what they share is the place, not the "
+             "thing.")
+    return f"CAROUSEL ARC: {arco} — {funcion}. {regla}"
+
+
 def _briefing_visual(*, lang: str, wants_images: bool, wants_video: bool,
                      n_info_slides: int, n_image_slide_prompts: int,
-                     n_video_segments: int, vo_lo: int, vo_hi: int) -> tuple[str, list[str]]:
+                     n_video_segments: int, vo_lo: int, vo_hi: int,
+                     params: dict | None = None) -> tuple[str, list[str]]:
     """`(briefing, campos_requeridos)` para este job — sin mencionar el otro medio."""
     lineas: list[str] = []
     requeridos: list[str] = ["image_text.hook"]
+    params = params if isinstance(params, dict) else {}
 
     if wants_images:
+        # El mundo va antes que la pieza y vale también para la imagen única: es dónde
+        # ocurre TODO lo que este post fotografíe, carrusel o no.
+        mundo = _linea_mundo(params)
+        if mundo:
+            lineas.append(mundo)
         if n_image_slide_prompts:
             lineas.append(f"PIECE: carousel — 1 cover + {n_info_slides} info slides.")
-            lineas.append(f"INFO SLIDES NEEDED: {n_info_slides}  (EXACTLY this many strings in "
-                          "image_text.slides, one printed idea per info slide, read as one "
-                          "sequence: each slide advances the previous one, the last lands the "
-                          "payoff)")
+            lineas.append(f"INFO SLIDES NEEDED: {n_info_slides}  (EXACTLY this many objects in "
+                          "image_text.slides, one per info slide, read as one sequence: each "
+                          "slide advances the previous one, the last lands the payoff)")
             lineas.append(f"IMAGE SLIDE PROMPTS NEEDED: {n_image_slide_prompts}  (EXACTLY this "
-                          "many scenes in image_slide_prompts, one per info slide, each built "
-                          "on a DIFFERENT concrete detail of the source)")
+                          "many scenes in image_slide_prompts, one per info slide, each "
+                          "carrying the carousel arc one step forward)")
+            # El sistema de texto va antes que el arco y los beats: dice la FORMA de cada
+            # slide, y los otros dos dicen qué se escribe dentro de ella.
+            lineas.append(_linea_sistema_texto(params))
+            arco = _linea_arco(params)
+            if arco:
+                lineas.append(arco)
+            lineas.append(_linea_beats(n_info_slides))
             requeridos += ["image_text.slides", "image_prompt", "image_style",
                            f"image_slide_prompts (x{n_image_slide_prompts})"]
         else:
@@ -378,21 +477,27 @@ def _briefing_visual(*, lang: str, wants_images: bool, wants_video: bool,
 
 def _recordatorio_visual(*, lang: str, wants_images: bool, wants_video: bool,
                          n_info_slides: int, n_image_slide_prompts: int,
-                         n_video_segments: int, vo_lo: int, vo_hi: int) -> str:
+                         n_video_segments: int, vo_lo: int, vo_hi: int,
+                         hay_arco: bool = False) -> str:
     """Recordatorio final: solo el medio que este job genera."""
     lineas: list[str] = []
     if wants_images:
+        # Solo se nombra el arco si el job trae uno: recordarle al modelo que siga una
+        # historia que nadie le contó es la misma clase de defecto que mencionar el
+        # medio que este job no genera.
+        avance = ("each moving the CAROUSEL ARC one step forward" if hay_arco
+                  else "each built on a DIFFERENT concrete detail of the source")
         detalle = (f"image_text.slides must have EXACTLY {n_info_slides} item(s) and "
-                   f"image_slide_prompts EXACTLY {n_image_slide_prompts} scene(s), each on a "
-                   "DIFFERENT concrete detail of the source"
+                   f"image_slide_prompts EXACTLY {n_image_slide_prompts} scene(s), {avance}"
                    if n_image_slide_prompts else
                    "image_text.slides is an empty array (single image, no carousel slides)")
         lineas.append(
             "- Images: image_text.hook is a short complete cover phrase; " + detalle + ". "
             "Write image_prompt (the single most concrete image of THIS content), image_style "
             "(the shared art direction — light, material, optics and finish, appended unchanged "
-            "to every image; no palette) and the slide scenes in English, in the transcript's "
-            "own world. Never a generic stock scene, never text inside the image."
+            "to every image; no palette) and the slide scenes in English, grounded in the "
+            "transcript and set where the briefing above puts them. Never a generic stock scene, "
+            "never an object on a table by default, never text inside the image."
         )
     if wants_video:
         lineas.append(
@@ -483,7 +588,7 @@ def _user_message(content: dict, params: dict, clean_url: str) -> str:
     briefing, requeridos = _briefing_visual(
         lang=lang, wants_images=wants_images, wants_video=wants_video,
         n_info_slides=n_info_slides, n_image_slide_prompts=n_image_slide_prompts,
-        n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi,
+        n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi, params=params,
     )
 
     return f"""Write posts for these platforms:
@@ -518,7 +623,8 @@ Important reminders:
 {_recordatorio_visual(lang=lang, wants_images=wants_images, wants_video=wants_video,
                       n_info_slides=n_info_slides,
                       n_image_slide_prompts=n_image_slide_prompts,
-                      n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi)}
+                      n_video_segments=n_video_segments, vo_lo=vo_lo, vo_hi=vo_hi,
+                      hay_arco=bool(_linea_arco(params)))}
 REQUIRED VISUAL FIELDS (all of them mandatory, none may come back empty): {", ".join(requeridos)}
 """
 
@@ -634,8 +740,23 @@ def _extract_texts_fallback(raw: str) -> dict:
     return result
 
 
+def _normalize_slide(valor):
+    """Un slide del LLM → `str` (contrato de siempre) o `dict` de bloques conocidos.
+
+    Los dos contratos conviven a propósito: el sistema `titular` sigue pidiendo una
+    frase y los que llevan cuerpo piden un objeto. Del dict se conservan SOLO las
+    claves de bloque del catálogo —una clave inventada por el modelo no puede llegar
+    al prompt— y se descartan las vacías, para que `separar_bloques` vea el hueco.
+    """
+    if isinstance(valor, dict):
+        return {c: " ".join(str(valor[c]).split())
+                for c in parch.CLAVES_BLOQUE
+                if c in valor and str(valor[c] or "").strip()}
+    return str(valor or "").strip()
+
+
 def _normalize_image_text(value) -> dict | None:
-    """Coerce a parsed `image_text` into {"hook": str, "slides": [str, ...]}.
+    """Coerce a parsed `image_text` into {"hook": str, "slides": [str | dict, ...]}.
 
     Returns None when the value is unusable (missing/wrong shape) so the caller
     can fall back to the heuristic overlay copy. Tolerates a bare string hook and
@@ -648,11 +769,11 @@ def _normalize_image_text(value) -> dict | None:
         hook = str(hook) if hook is not None else ""
     hook = hook.strip()
     raw_slides = value.get("slides", [])
-    if isinstance(raw_slides, str):
+    if isinstance(raw_slides, (str, dict)):
         raw_slides = [raw_slides]
     if not isinstance(raw_slides, (list, tuple)):
         raw_slides = []
-    slides = [str(s).strip() for s in raw_slides if str(s).strip()]
+    slides = [s for s in (_normalize_slide(x) for x in raw_slides) if s]
     if not hook and not slides:
         return None
     return {"hook": hook, "slides": slides}
@@ -1092,6 +1213,33 @@ def captions_needed(params: dict) -> list[str]:
     return campos
 
 
+def sistema_texto(params: dict) -> str:
+    """El sistema de texto congelado del job. Fuente única para el redactor y el lint."""
+    return parch.sistema_valido((params or {}).get("sistema_texto")) or ""
+
+
+def slides_incompletos(slides, params: dict, n_info: int = -1) -> list[int]:
+    """Los índices de slide a los que les falta algún bloque OBLIGATORIO de su sistema.
+
+    Cuenta lo que la pieza va a imprimir, no cuántas entradas trajo el modelo: con un
+    sistema de tres bloques, N slides con solo el titular son N slides que salen medio
+    vacíos —y eso pasaba entero mientras la comprobación era `len(slides) < n_info`—.
+    La usan `_faltantes` (para pedir la reparación) y el lint (para avisar).
+    """
+    n = _info_slides_needed(params) if n_info < 0 else n_info
+    if not n:
+        return []
+    sistema = sistema_texto(params)
+    requeridos = parch.bloques_requeridos(sistema)
+    lista = slides if isinstance(slides, (list, tuple)) else []
+    malos = []
+    for i in range(n):
+        bloques = parch.bloques_de_slide(lista[i] if i < len(lista) else "", sistema)
+        if any(not bloques.get(c) for c in requeridos):
+            malos.append(i)
+    return malos
+
+
 def _faltantes(posts: dict, params: dict) -> list[str]:
     """Campos que este job necesita y el LLM no entregó (captions y visuales).
 
@@ -1113,7 +1261,7 @@ def _faltantes(posts: dict, params: dict) -> list[str]:
         if n_info:
             if len(posts.get("image_slide_prompts") or []) < n_info:
                 faltan.append("image_slide_prompts")
-            if len([s for s in (img.get("slides") or []) if str(s).strip()]) < n_info:
+            if slides_incompletos(img.get("slides"), params, n_info):
                 faltan.append("image_text.slides")
     if _wants_video(params):
         for key in ("video_prompt", "video_style"):
@@ -1169,11 +1317,41 @@ def _merge_posts(base: dict, extra: dict, params: dict) -> dict:
         img = dict(base["image_text"]) if isinstance(base.get("image_text"), dict) else {}
         if _completa(img.get("hook"), img_extra.get("hook")):
             img["hook"] = img_extra["hook"]
-        if _completa(img.get("slides"), img_extra.get("slides"), n_info):
-            img["slides"] = img_extra["slides"]
+        slides = _merge_slides(img.get("slides"), img_extra.get("slides"), params, n_info)
+        if slides is not None:
+            img["slides"] = slides
         if img:
             base["image_text"] = img
     return base
+
+
+def _merge_slides(base, extra, params: dict, n_info: int):
+    """Funde los slides POSICIÓN a posición y, dentro de cada uno, BLOQUE a bloque.
+
+    Misma regla que el resto del merge y por el mismo motivo: si el primer intento trajo
+    los titulares y el segundo los cuerpos, quedarse con el que tenga «menos faltantes»
+    tira media respuesta pagada. Con un solo bloque por slide se comporta igual que la
+    comparación de listas que había, así que el sistema `titular` no cambia.
+    """
+    if not isinstance(extra, (list, tuple)) or not extra:
+        return None
+    lista_base = list(base) if isinstance(base, (list, tuple)) else []
+    if not lista_base:
+        return list(extra)
+    sistema = sistema_texto(params)
+    claves = parch.claves_sistema(sistema)
+    fundidos = []
+    for i in range(max(n_info, len(lista_base), len(extra))):
+        b = parch.bloques_de_slide(lista_base[i] if i < len(lista_base) else "", sistema)
+        e = parch.bloques_de_slide(extra[i] if i < len(extra) else "", sistema)
+        unido = {c: (b.get(c) or e.get(c) or "") for c in claves}
+        unido = {c: t for c, t in unido.items() if t}
+        if not unido:
+            continue
+        # Con un solo bloque se devuelve el string de siempre: el contrato viejo sigue
+        # siendo válido y no hay motivo para convertirlo en objeto por el camino.
+        fundidos.append(unido[claves[0]] if list(unido) == claves[:1] else unido)
+    return fundidos or None
 
 
 # ── Reparación dirigida de los campos que faltaron ────────────────────────────
@@ -1205,12 +1383,13 @@ _SPEC_REPARACION = {
                            'materials). Slide i must match the printed idea listed below.',
     "image_text.hook": '"image_text": {{"hook": "..."}} — ONE short complete cover phrase in '
                        '{lang}, max ~10 words, sentence case, no emojis or hashtags.',
-    "image_text.slides": '"image_text": {{"slides": [...]}} — EXACTLY {n_info} printed ideas in '
-                         '{lang}, one per info slide, max ~14 words each, each a self-contained '
-                         'idea drawn faithfully from the source. They read as ONE sequence: each '
-                         'slide advances the one before it and the last lands the payoff (never a '
-                         'sign-off or a summary). A two-beat idea goes as "Headline — support" '
-                         'with a spaced em dash.',
+    "image_text.slides": '"image_text": {{"slides": [...]}} — EXACTLY {n_info} objects in {lang}, '
+                         'one per info slide, each carrying these keys and nothing else: '
+                         '{bloques}. Everything is drawn faithfully from the source. They read as '
+                         'ONE sequence: each slide advances the one before it and the last lands '
+                         'the payoff (never a sign-off or a summary), and every body block says '
+                         'something concrete the source actually states — a number, a name, a '
+                         'mechanism, a step — not a rewording of its own headline.',
     "video_prompt": '"video_prompt": 40-80 words describing ONE continuous filmable scene — the '
                     'strongest single beat of the content.',
     "video_style": '"video_style": the 10-18 word look-lock (lens/film character, lighting '
@@ -1264,8 +1443,14 @@ def _repair_user_message(content: dict, params: dict, posts: dict, faltan: list[
     url_li = (f'Include the raw source URL on its own line before the hashtags, with the exact '
               f'CTA prefix of the system prompt: {clean_url}' if (clean_url or "").strip()
               else 'There is NO source URL: do not add a URL line or a "watch the video" CTA.')
+    # Los bloques que pide el sistema congelado, con su presupuesto: la reparación tiene
+    # que pedir la MISMA forma que el primer intento o devolvería un slide que la pieza
+    # no sabe imprimir.
+    datos_sistema = parch.datos_sistema(sistema_texto(params))
+    bloques = ", ".join(f"`{b['clave']}` ({b['palabras'][0]}-{b['palabras'][1]} words)"
+                        for b in datos_sistema["bloques"])
     fmt = {"n_info": n_info, "n_shots": n_shots, "lang": lang, "vo_lo": vo_lo, "vo_hi": vo_hi,
-           "url_li": url_li}
+           "url_li": url_li, "bloques": bloques}
 
     specs, claves = [], []
     for campo in faltan:

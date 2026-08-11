@@ -20,6 +20,434 @@ otro traje.
 | 9 · Retirar el overlay de Pillow (decisión tomada) | **Hecho** — ver más abajo |
 | 10 · El passe-partout: unos slides a sangre y otros con banda de color | **Hecho** — ver más abajo |
 | 11 · La plantilla de respaldo salía muda | **Hecho** — ver más abajo |
+| 12 · Los slides del carrusel eran versiones de la misma imagen | **Hecho** — ver más abajo |
+| 13 · Calidad profesional del carrusel (continuidad, luz, bandas, QA de conjunto) | **Hecho** en código — falta el recorrido manual y el A/B de los cortes; ver más abajo |
+| 14 · El slide de contenido lo lidera el TEXTO, y la tipografía distingue identidades | **Hecho** en código — falta el recorrido manual; ver más abajo |
+| 15 · El carrusel cuenta una historia, y las piezas dejan de ser siempre una mesa | **Hecho** en código — falta el recorrido manual; ver más abajo |
+| 16 · Los slides ENSEÑAN el contenido: sistemas de texto y el acento a la deriva | **Hecho** en código — falta el recorrido manual; ver más abajo |
+
+## Paso 16 · Los slides cuentan el video, y el acento deja de cambiar (ago 2026)
+
+Reportado mirando una tanda: **(a)** cada slide llevaba «un titular sobre el tema del video» en vez
+de contar lo que el video dice, y **(b)** dentro de un mismo carrusel, cada slide salía con el
+acento de un color distinto.
+
+### (a) Un slide solo sabía imprimir un titular
+
+El lockup tenía exactamente dos bloques —titular y apoyo al pie, partidos por la raya espaciada— y
+al redactor se le pedía «a single **self-contained** idea (max ~14 words)» por slide. Con cuatro
+slides eso son ~56 palabras para contar un video entero: **con ese presupuesto no se narra, solo se
+titula**, y «self-contained» es literalmente pedir frases sueltas. No había dónde poner la
+explicación aunque el redactor la escribiera.
+
+Los **sistemas de texto** son el arreglo, y salen de donde la «Lección» de este mismo documento
+decía que saldrían: *«los arquetipos de composición — hoy `zonas_texto` es un único lockup con dos
+jerarquías»*, parametrizados por job igual que la identidad. Tres sistemas en
+`architect.json → sistemas_texto`:
+
+| sistema | bloques | lectura |
+|---|---|---|
+| `titular` | titular + apoyo | el de siempre |
+| `titular_cuerpo` | titular + cuerpo debajo | explicativo |
+| `etiqueta_titular_cuerpo` | etiqueta + titular + cuerpo al pie | ficha / paso a paso |
+
+**El reparto es el de `ritmo_carrusel`, que es la frontera que este proyecto ya validó**: qué
+bloques existen y dónde van es LAYOUT (`architect.json`, igual para todas las marcas); cuál usa esta
+marca es IDENTIDAD (`sistemas_texto`, repertorio de 1-3). El job congela uno en
+`params.sistema_texto` al crearse —con el arco y el mundo, en `make_job`, así que los dos flujos lo
+heredan— y **la portada lo ignora siempre**: es la pieza que ya funcionaba y la que funda el set.
+
+Lo que hace que el cuerpo sirva para algo es el encargo, no el hueco: el prompt del sistema pasó a
+pedir que **el carrusel ENSEÑE la fuente** (quien no vio el video termina el último slide sabiendo
+la cosa; cada cuerpo lleva un dato, un nombre, un paso o un mecanismo concretos) con su anti-patrón
+nombrado — *un slide que seguiría siendo cierto de cualquier otro video sobre el tema ha fallado*.
+
+### (b) El acento a la deriva: tres causas, y arreglar una no bastaba
+
+| # | Causa | Arreglo |
+|---|---|---|
+| 1 | `acento_omitido: ["tension"]` **no emitía nada**. El silencio no es una prohibición: el modelo pintaba una palabra igual y elegía el color por su cuenta | `acento_ninguno`, que lo prohíbe y nombra el color único |
+| 2 | La rama de acento **explícito** (`**palabra**`) pegaba el color crudo; la automática lo reducía a nombre + hex. Dos formulaciones del mismo color son dos colores | `tinta()` en las dos |
+| 3 | La sección 6 la escribe el LLM **por imagen**, y su instrucción decía «Name the brand hex values for the palette»: la paleta se redactaba N veces | `PALETTE LOCK` determinista, hermano de `luz_bloqueada`, + prohibición explícita al LLM de nombrar colores |
+
+La 3 es la lección de siempre en este proyecto —**lo invariante dentro de un job no puede decidirse
+una vez por imagen**— y es la tercera vez que aparece con otro traje (luz, mundo, paleta).
+
+### Qué se hizo
+
+| # | Cambio | Dónde |
+|---|---|---|
+| G-1 | Catálogo `sistemas_texto` (bloques, bandas, escalas, presupuesto de palabras, caja) | `prompts/architect.json` |
+| G-2 | `separar_bloques` — punto ÚNICO que convierte `str \| dict` en los bloques del sistema | `prompt_architect.py` |
+| G-3 | Secciones 4 y 5 por bloque, con el `detalle` **compartido** | `prompt_architect._seccion_texto`, `_seccion_tipografia` |
+| G-4 | `image_text.slides[i]` acepta un OBJETO; el string sigue valiendo | `post_writer`, `app._aplicar_edicion` |
+| G-5 | QA de texto **por nivel**: display exacto, cuerpo por similitud | `image_text_qa`, `prompts/qa_vision.json` |
+| G-6 | La plantilla de respaldo imprime los mismos bloques | `prompt_architect.lockup_bloques`, `image_overlay._dibujar_texto` |
+| G-7 | El lint nombra el BLOQUE que falta, no «faltan frases» | `prompt_lint._revisar_bloques_slide` |
+| G-8 | Un campo por bloque en las dos compuertas previas | `preview.astro`, `BulkProgress.tsx` |
+| G-9 | Las tres correcciones del acento + veredicto `mismo_acento` en el QA de conjunto | `prompt_architect`, `image_set_qa`, `prompts/qa_set.json` |
+
+**El cuerpo NO se pasa a caja alta** aunque la identidad sea de caja alta: `pide_caja_alta` mira la
+familia de DISPLAY, y un párrafo de 30 palabras al 5% del alto en mayúsculas es ilegible. Es el
+corolario de F-4 aplicado a un campo nuevo, y lo tienen que respetar los dos renderizadores.
+
+**El QA del cuerpo es por similitud a propósito** (`similitud_cuerpo`, 0.90). Un titular son 3-6
+palabras a tamaño de póster y una letra mal se ve desde el otro lado de la sala; un cuerpo son 30
+palabras al 5% del alto y ningún generador las clava carácter a carácter. Exigirle lo mismo
+convertiría cada errata en una **regeneración pagada de la imagen entera**.
+
+### Presupuesto
+
+El techo subió dos veces y las dos se pagó antes lo que se podía pagar, que sigue siendo la regla:
+
+- **5050 → 5150** por el `PALETTE LOCK` (~130 caracteres fijos). Se pagó escribiéndolo en su forma
+  mínima y quitando la paleta de `respaldos.luz`.
+- **5150 → 5250** por los sistemas de texto. Acá lo que ocupa no es prosa de brief sino
+  **contenido**: un cuerpo son ~200 caracteres que se imprimen en la pieza. Se pagó con (1) el
+  `detalle` compartido de la sección 4 —emitirlo por bloque triplicaba la parte cara—, (2) los
+  cortes de línea dictados apagados en los sistemas con cuerpo (`cortes: false`, ~140 caracteres: la
+  viuda que corrigen es un defecto de titular largo a tamaño de póster) y (3) las escalas de la
+  sección 5 en telegrama.
+
+`medir_prompt.py` se extendió para recorrer los tres sistemas, y con **contenido realista** en cada
+bloque: a un titular se le piden 6 palabras de texto impreso, y medirlo con tecnicismos de dirección
+de arte de 15 caracteres infla el techo por un caso que el redactor no puede producir. 5250 es
+exactamente el primer techo que sostiene el escalón de 18 palabras en los tres sistemas y los cuatro
+beats; a 5200 caía a 14.
+
+### Qué falta
+
+- **Recorrido manual**, la única verificación que vale: un carrusel con cada uno de los tres
+  sistemas, mirando si el cuerpo se lee de verdad a esa escala sobre la foto y si el modelo lo
+  renderiza sin erratas gruesas.
+- **Comprobar el coste real del QA por nivel**: si el cuerpo dispara más regeneraciones de las
+  previstas, el umbral (`similitud_cuerpo`) es la palanca, no el número de reintentos.
+
+## Paso 15 · El arco del carrusel y el mundo de la marca (ago 2026)
+
+Dos defectos que se veían de un vistazo en las últimas tandas: **(a)** las N imágenes de un
+carrusel no contaban nada juntas —props sin relación sobre la misma madera— y **(b)** casi todas
+eran *un objeto sobre una mesa*, con **identidades visuales distintas** produciendo el mismo tipo
+de foto.
+
+### 15.a — Por qué siempre había una mesa
+
+No lo elegía el LLM. Estaba escrito en la **capa dura**, en seis sitios a la vez, y por eso ninguna
+identidad podía moverlo:
+
+| dónde | qué decía |
+|---|---|
+| `architect.json` → `llm.instruccion` → `sujeto` | "ONE concrete hero object… **what it rests on**" |
+| `architect.json` → HARD RULE de plausibilidad | "every object **rests on or is supported by a named surface**" |
+| `architect.json` → `roles.*.ritmo` (respaldo por beat) | "**still life on a bare surface**", "**flat overhead of one object** on an empty field" |
+| `brand.json` → `ritmo_carrusel` | "Mid-distance still life **on a bare table**" |
+| `post_writer` → ANCHOR EVERY OBJECT | el único ejemplo era "**the closed laptop sits on a worn oak desk**" |
+| `rubric.json` → `especificidad_sujeto` | premiaba "specific **objects**" — y el rubric corre **después** y reescribe |
+
+Y `visual_identity` cerraba el círculo: `ritmo_carrusel` solo admite **distancia, altura de cámara
+y qué llena el cuadro**. La identidad decidía CÓMO se fotografía y nunca DÓNDE, así que el dónde lo
+ponía el vocabulario compartido — el mismo para todas las marcas.
+
+La corrección tiene dos mitades, y hacen falta las dos:
+
+- **`escenarios`**, campo nuevo y opcional de la identidad: un repertorio de 2-4 mundos (lugar,
+  superficies, materiales). El job elige UNO al crearse y lo congela en `params.escenario_visual`;
+  `prompt_architect._clausula_mundo` lo emite como **`WORLD LOCK` prefijado a la sección 2**, byte a
+  byte idéntico en la portada y en todos los slides. Prefijado y no dentro de las creativas para que
+  la poda no lo toque — la misma decisión que el bloqueo de luz, por la misma razón.
+- **Desmontar el vocabulario de mesa** en la capa compartida. "Anclado" no significa "sobre una
+  mesa": un cable en el suelo de un taller, algo colgado de un gancho, apoyado contra un muro o medio
+  hundido en agua es igual de plausible y tiene su sombra de contacto. Las reglas que evitan los
+  defectos reales (manos, pseudo-texto en rótulos, objetos flotando) se conservan enteras; lo que se
+  cambió es la palabra que colapsaba "sostenido" en "apoyado en una superficie".
+
+**El bodegón de mesa sigue existiendo**, y eso es deliberado: es uno de los seis mundos del
+repertorio compartido y uno de los cuatro de la casa. Lo que se quitó no es la mesa, es que fuera el
+default invisible que nadie eligió. `visual_identity.revisar_diseno` avisa —reparo, no error— cuando
+el repertorio ENTERO de una identidad son variantes de una mesa: ahí el campo está puesto y el
+defecto sigue.
+
+### 15.b — Por qué no contaba una historia
+
+`continuidad_set` pedía *"mismo cuarto, objeto protagonista **DISTINTO**"* y el prompt del sistema
+prohibía explícitamente repetir el sujeto (*"the same device seen closer… do NOT count as
+different"*). Es una regla de **catálogo**, no de relato: garantiza que las piezas no se repitan y a
+la vez impide que se relacionen. Los beats ya daban función narrativa al TEXTO y al plano, pero las
+imágenes no tenían hilo entre sí.
+
+Dato que lo deja claro: el camino de **video** del mismo archivo ya lo hacía bien —*"keep a recurring
+anchor across all beats… chain the beats… name that carried-over element explicitly"*—. El de imagen
+se escribió con la regla contraria.
+
+Ahora hay un **arco** por job (`architect.json` → `arcos`), elegido por la app, congelado en
+`params.arco_carrusel` y declarado en las **dos puntas** —cláusula determinista en la sección 3 y
+línea `CAROUSEL ARC` en el briefing del redactor—, exactamente como los beats:
+
+| arco | qué encadena | sujeto |
+|---|---|---|
+| `transformacion` | el mismo objeto vuelve con el **estado** cambiado | recurrente |
+| `cadena` | cada slide abre en lo que dejó el anterior | encadenado |
+| `recorrido` | un mismo lugar recorrido por partes | distinto |
+| `escala` | piezas del mismo sistema: la pieza, el conjunto, la instalación | distinto |
+
+**La frontera con el beat es dura y no se puede cruzar: el arco elige QUÉ hay delante de la cámara,
+el beat elige CÓMO se fotografía.** Un `enlace` que hablara de distancia o encuadre chocaría con la
+cláusula de plano del beat, que va pegada a él en la misma sección, y ante dos instrucciones de
+cámara contradictorias el modelo elige una. Es la lección del paso 12 aplicada a la capa nueva; un
+test lo blinda (`test_ningun_arco_habla_de_distancia_ni_de_encuadre`).
+
+**No hay arco de progresión temporal a propósito.** "El mismo sitio a otra hora" exige cambiar la luz
+entre piezas, y eso contradice el `LIGHT LOCK`, que es byte a byte idéntico. Lo que se quería de él
+lo cubre `transformacion`, que cambia el estado y no la luz.
+
+En **imagen única** no hay arco (solo hay una pieza); el `WORLD LOCK` sí aplica, y es lo que da
+variedad entre posts.
+
+### 15.c — El presupuesto, y lo que se pagó antes de subir el techo
+
+`max_caracteres` sube de 4750 a **5050** (y `higgsfield_mcp._MAX_PROMPT_CHARS` de 4800 a 5100,
+manteniendo los 50 de margen). Antes de subirlo se pagó todo lo que se podía pagar, que es la regla:
+
+- `continuidad_set` **dejó de citar `{escena_portada}`**. Citarla era re-derivar el mundo compartido
+  a partir de UNA pieza —una copia, no un ancla— y era su única parte variable, con su propio tope de
+  palabras. Con el mundo declarado idéntico en todas las piezas, la cita solo gastaba presupuesto.
+- La cláusula quedó reducida a su única afirmación propia: "misma localización, luz y paleta" pasó a
+  estar dicho, idéntico y antes, por los bloqueos de mundo y de luz.
+- El `enlace` del arco **reemplaza** la segunda mitad de esa cláusula, no se le suma.
+
+Aun así el peor caso quedaba en el escalón de poda de **14 palabras**, por debajo de la barra de 18
+que fijó la v6. 5050 es el primer techo que devuelve el 18 a los cuatro beats de la identidad de la
+casa (a 5000 se quedaba fuera `desarrollo`; a 4900, también `prueba` y `remate`). Medido con
+[`api/scripts/medir_prompt.py`](../api/scripts/medir_prompt.py).
+
+**Ojo con el indicador.** `medir_prompt._poda` se medía sobre `sujeto` porque era la única creativa
+sin decorar — y el bloqueo de mundo se prefija justo ahí. Pasó a medirse sobre `camara`; sin ese
+cambio informaba 61 "palabras" de un tope de 26 y el número con el que se decide el presupuesto se
+habría vuelto ruido sin que nada fallara.
+
+### Lección
+
+La del paso 14 decía que el proyecto mató la varianza *dentro* de un set con constantes, y que con
+ella murió la varianza *entre* posts; y que el camino no era aflojar la capa dura sino
+**parametrizarla por job**. Esto es exactamente eso, aplicado a los dos ejes que esa nota señalaba
+como pendientes. El patrón completo, por si hay un tercero: **elegir una vez en `make_job`, congelar
+en `params`, emitir byte-idéntico y fuera de la poda, y declararlo en las dos puntas** (el prompt de
+imagen y el briefing del redactor). Lo que se declara en una sola punta lo contradice la otra.
+
+Y una advertencia que ya costó dos veces: **el rubric corre después y reescribe**, así que hubo que
+decirle en la misma tanda que el mundo, el arco y la recurrencia del sujeto son de la app y no son
+suyos ni para puntuar ni para reescribir. Sin eso, la auto-crítica habría revertido el arco.
+
+### Qué falta
+
+- **Recorrido manual**: un carrusel individual y un lote, mirando las imágenes. Con **dos identidades
+  distintas** —una con `escenarios` propios y otra sin el campo— para comprobar que las dos tandas se
+  ven de mundos distintos, y **dos posts seguidos con la misma identidad** para ver que el arco y el
+  mundo cambian.
+
+
+### Paso 13 — calidad profesional del carrusel
+
+Auditoría de un carrusel real de 5 piezas (agosto 2026): la estructura de la pieza cambiaba tres
+veces dentro del mismo carrusel, había cinco localizaciones y cinco luces distintas, el mismo
+chasis se repetía en 3 de 5 piezas, tres familias tipográficas y ninguna escalera de planos. El
+plan de ejecución completo, con las nueve causas raíz verificadas en el código, vive en
+[`plan-calidad-carrusel.md`](plan-calidad-carrusel.md). Acá se anota lo que hay que recordar
+después, no el plan.
+
+#### La lección transversal, que es lo que evita la próxima regresión
+
+Las nueve causas raíz son distintas, pero seis de ellas son la misma frase con otro traje:
+
+> **Una variación —o una restricción— declarada en la capa BLANDA pierde siempre contra lo
+> declarado en la dura.**
+
+La capa dura son las secciones que escribe la app con plantillas deterministas (1, 4, 5 y 9, más
+las cláusulas que se pegan a la 3 y a la 6). La blanda es todo lo que solo el LLM puede decidir:
+el `prompt_base`, que el arquitecto le enseña literalmente como *"BASE PROMPT (weak, to
+rewrite)"*, y las cinco secciones creativas. Lo que vive en la blanda llega al prompt final si el
+modelo tiene a bien repetirlo; lo que vive en la dura llega siempre. Por eso la escalera de
+planos se perdía, por eso la luz cambiaba en cada pieza, y por eso las correcciones de este paso
+mueven cosas de una capa a la otra en vez de pedirlas mejor.
+
+Y su **corolario nuevo**, que es el que nadie había visto:
+
+> **Una identidad puede escribir layout sin querer si sus campos entran verbatim en una sección
+> determinista.**
+
+`tipografia` = *"…set inside a headline **band**"* y `color_texto` = *"…over the **dark field**"*
+no son descripciones de tipo: son instrucciones de layout, y la sección 5 las pegaba tal cual. El
+modelo hizo lo que le pedían y pintó el rectángulo. La corrección no es prohibirle al usuario que
+escriba así —lo escribió el extractor, no el usuario— sino **sanear en la frontera**: los colores
+se reducen a su tinta (`prompt_architect.tinta`) y las familias pasan por `sin_layout`. Vale para
+cualquier campo que se añada mañana.
+
+#### Presupuesto de caracteres — línea base (05/08/2026)
+
+Varias correcciones añaden texto **fijo** a todos los prompts, y ese presupuesto es finito. Se
+mide con [`api/scripts/medir_prompt.py`](../api/scripts/medir_prompt.py) (diagnóstico por
+terminal, sin red y sin modelo), sobre el peor caso: slide de info con beat, texto largo que se
+parte en titular + kicker, y `escena_portada` larga.
+
+| identidad | peor caso | largo | techo | margen |
+|---|---|---|---|---|
+| casa (`brand.json`) | `desarrollo` | 3469 | 3550 | **81** |
+| esquema (campos al tope) | `desarrollo` | 3818 | 3550 | **−268 · rechazado** |
+
+Dos cosas que la medición dejó claras y no eran obvias:
+
+1. **El presupuesto ya estaba agotado antes de empezar.** El peor caso de la casa entra pero
+   entra **podado**: `_ajustar_longitud` recorta las secciones creativas a 14 palabras, que es
+   justo el anclaje concreto del sujeto. Cualquier fase que añada texto fijo tiene que pagar el
+   techo, no el margen.
+2. **Una identidad de usuario válida puede tirar el prompt entero.** Con todos los campos de texto
+   en su tope de esquema (240 caracteres), la sección 5 sola pesa ~960 caracteres —`tipografia`,
+   `tipografia_secundaria`, `color_texto` y `color_acento` se pegan verbatim— y la poda **no toca
+   las secciones fijas**. El validador rechaza, y esa imagen se genera con el prompt base: **sin
+   bloque de texto**. No es hipotético: `visual_identity.validar` acepta exactamente esa identidad.
+
+#### Cómo quedó el presupuesto tras las fases
+
+Cada fase que añade texto fijo se midió y pagó su techo. La barra que se fijó —y donde se para—
+es el **escalón de poda de 18 palabras** por sección creativa: por debajo, la sección deja de
+describir un objeto concreto y la imagen sale genérica; por encima, cada escalón cuesta ~250
+caracteres de prompt sin que nadie haya demostrado que se noten.
+
+| tras la fase | qué añadió | techo | peor caso | poda |
+|---|---|---|---|---|
+| 0 · línea base | — | 3550 | 3469 | 14/26 |
+| 1 · continuidad del set | `SET CONTINUITY` en todos los slides (~200) | 4250 | 4215 | 22/26 |
+| 2 · bloqueo de luz | `LIGHT LOCK` en todas las piezas (~180) | 4300 | 4288 | 18/26 |
+| 3 · bandas | sangrado en positivo en la sección 1 (~110) | 4400 | 4398 | 18/26 |
+| 5 · cortes de línea | cortes dictados en la sección 4 (~140) | 4650 | 4623 | 18/26 |
+| 7 · atrezzo y cultura | contexto cultural + negativo de moneda | 4800 | 4744 | 18/26 |
+
+`higgsfield_mcp._MAX_PROMPT_CHARS` va siempre 50 por encima, para que un prompt válido nunca
+llegue a truncarse. **Si una fase futura vuelve a necesitar techo, el sitio donde mirar no es
+este número sino las secciones fijas**: el brief fijo ya ronda los 3400 caracteres y la poda está
+activa incluso en un caso realista, no solo en el peor.
+
+#### Pendiente: el A/B de los cortes de línea (fase 5)
+
+Los cortes de línea dictados van tras `IMAGE_LINE_BREAKS` (encendido) porque tocan la sección 4,
+que es la que sostiene el QA de texto. **La validación A/B no se ha corrido**: necesita
+generaciones reales contra Higgsfield (créditos y sesión OAuth). Cómo hacerla:
+
+1. Genera un carrusel de 5 slides con `IMAGE_LINE_BREAKS=1`, y otro del **mismo contenido** con
+   `IMAGE_LINE_BREAKS=0`.
+2. Compara `job["images"]["qa"]` de los dos: cuántas imágenes pasaron el QA de texto en el primer
+   intento, y cuántas necesitaron reintento.
+3. **Si el flag empeora la precisión del texto, se apaga por defecto** (`image_line_breaks: bool =
+   False` en `config.py`) y se anota aquí por qué. La exactitud del texto vale más que la
+   elegancia del corte: un titular bien partido que dice otra cosa no sirve de nada.
+
+Lo que sí está comprobado sin generar: `image_text_qa.coincide` normaliza mayúsculas y
+puntuación, así que ni la caja alta ni el reparto en líneas pueden hacer fallar la comparación
+por sí mismos. El riesgo que queda es de **render**, no de comparación.
+
+#### Qué se corrigió, causa por causa
+
+| # | Causa | Corrección | Dónde |
+|---|---|---|---|
+| C1 | `SET CONTINUITY` no se emitía en ningún slide: se comparaba el rol contra el literal `"contenido"` y los slides llegan con el nombre de su beat | Comparar contra `rol_base()` en las dos comparaciones (la cláusula y el briefing), con test parametrizado sobre `ROLES_BEAT` completo | `prompt_architect._clausula_set`, `_mensaje_arquitecto` |
+| C2 | La luz la escribía el LLM una vez por imagen, sin conocer a sus hermanas; ninguna temperatura de color en todo el pipeline | `LIGHT LOCK` prefijado a la sección 6, byte a byte idéntico en todas las piezas, con temperatura fija y app-owned. La luz pasa a ser propiedad de la identidad (`luz_identidad`), separada del tratamiento fotográfico | `architect.json`, `prompt_architect._clausula_luz`, `job_runner._marca_post` |
+| C3 | Bandas y marco: la identidad los fabricaba desde la capa dura, y el negativo por sí solo nunca bastó | Tres frentes: saneo de lo que entra en la sección 5 (`tinta`, `sin_layout`), sangrado en positivo en la sección 1, y **detector de bandas** sobre el píxel con un reintento | `prompt_architect`, `architect.json`, `image_overlay.bordes_planos`, `job_runner._verificar_bandas` |
+| C4 | Un `ritmo_carrusel` con personas contradice `No people as the main subject`: el modelo descarta el plano entero y se pierde la escalera | `PALABRAS_PERSONA` como **error** de `validar` (es inoperante, no discutible), la misma lista al extractor y al lint | `visual_identity`, `identity_extract`, `prompt_lint` |
+| C5 | Ninguna puerta comprobaba que la tipografía sirviera a escala de póster | `FAMILIAS_UI_PROHIBIDAS` como error; falta de `MARCAS_DISPLAY` y secundaria débil como reparos | `visual_identity` |
+| C6 | Nada dictaba la caja ni los cortes: la sección 5 pedía caja alta y la 4 citaba la contraria; las líneas las repartía el modelo | Caja alta en la cita cuando la identidad la declara, y cortes dictados con partición equilibrada y regla de viuda (tras `IMAGE_LINE_BREAKS`) | `prompt_architect.pide_caja_alta`, `lineas_titular` |
+| C7 | No existía QA de conjunto: cada imagen se validaba aislada | `image_set_qa`: una llamada de visión que ve las N piezas juntas, cuatro veredictos binarios con motivo, una sola ronda de regeneración | `image_set_qa`, `job_runner._verificar_conjunto` |
+| C8 | El sujeto pedía desorden y cada objeto secundario era una superficie más donde escribir pseudo-texto | Máximo 2 secundarios y ninguno rotulable; HARD RULE de plausibilidad física | `architect.json` (`llm.instruccion`) |
+| C9 | El idioma llegaba solo a la sección de texto: props por defecto estadounidenses | `CULTURAL CONTEXT` en el briefing + negativo de moneda cuando el contenido no es inglés | `prompt_architect._mensaje_arquitecto`, `_seccion_negativos` |
+
+#### Verificación — qué está comprobado y qué no
+
+Comprobado sin gastar créditos (batería completa en verde, 829 tests, y una construcción
+determinista del brief de un carrusel de 5 con identidad de usuario):
+
+- [x] Las 5 piezas declaran el **mismo** `LIGHT LOCK`, byte a byte.
+- [x] Los 4 slides llevan `SET CONTINUITY` con la escena de la portada.
+- [x] La sección 5 no arrastra el vocabulario de layout de la identidad.
+- [x] Las 5 declaran el sangrado en la sección 1.
+- [x] Escalera de planos real: `TENSION`, `DEVELOPMENT`, `EVIDENCE`, `PAYOFF`.
+- [x] Ningún titular con línea huérfana; una sola familia y una sola caja en las 5.
+- [x] Negativo de moneda estadounidense presente con contenido en español.
+- [x] **Regresión sin identidad**: un job sin identidad produce el prompt *idéntico* al de la
+      identidad de la casa (`test_sin_identidad_el_prompt_es_el_mismo_que_con_la_identidad_de_la_casa`).
+
+Pendiente, porque necesita generaciones reales (créditos y sesión OAuth):
+
+- [ ] Recorrido manual del flujo **individual** (carrusel de 5, las dos compuertas) y del
+      **bulk** (`.xlsx` de 3 filas con una `fecha_hora`), con `dry_run`.
+- [ ] Lo que solo se ve en el píxel: cero pseudo-texto legible, props concordes con el idioma,
+      y que los avisos nuevos (bandas, conjunto, lint) se vean en el editor del lote.
+- [ ] El **A/B de los cortes de línea** descrito arriba.
+
+#### Los tres controles automáticos, y por qué son tres
+
+Se acumulan a propósito, porque miran cosas distintas y ninguno ve lo del otro:
+
+1. **`prompt_lint`** — antes de generar, gratis. Mira lo que el LLM escribió y lo que la app va a
+   hacer con ello. Es el único que puede evitar el gasto.
+2. **`image_text_qa` + `bordes_planos`** — por imagen, después de generar. Ortografía, recorte y
+   passe-partout. El de bandas es Pillow (gratis); el de texto es una llamada de visión.
+3. **`image_set_qa`** — por carrusel, con todas las piezas juntas. Es el único capaz de ver que
+   cinco imágenes no se parecen entre sí, y por tanto **el único que evita que todo esto vuelva a
+   degradarse sin que nadie se entere**.
+
+### Paso 12 — cada slide con su función: la escalera de beats
+
+Síntoma reportado (05/08/2026): en imagen única la identidad visual funciona bien, pero **en el
+carrusel todos los slides se ven iguales**. Está bien que compartan estética; lo que falta es que
+cada uno tenga una función y que la imagen acompañe al texto que lleva impreso.
+
+**Diagnóstico.** La variación entre slides existía en el código, pero declarada en la única capa
+que el modelo puede pisar:
+
+1. `prompt_architect` solo conocía dos roles, `portada` y `contenido`. Los 2-5 slides de info
+   compartían la misma entrada de `piezas`, `zonas_texto` y `tipografia.escala`: el brief de nueve
+   secciones del slide 1 y el del slide 4 eran **idénticos salvo la sección 2**.
+2. La cláusula de lockup (`composicion_zona`) es una sola para todos: sujeto en la banda central,
+   tipo arriba y abajo. Cambiara o no el objeto, **el cuadro era el mismo cuadro**.
+3. `continuidad_set` pide *"same room, surfaces, light and palette"* — correcto para la cohesión,
+   pero sumado a 1 y 2 lo único que variaba era el objeto.
+4. La única variación estructural, la escalera `_SLIDE_FRAMINGS` de `job_runner`, entraba en el
+   **`prompt_base`**… que el arquitecto solo le enseña al modelo como *"BASE PROMPT (weak, to
+   rewrite)"*. Con el LLM disponible —el camino normal— el encuadre llegaba al prompt final solo si
+   el modelo lo repetía por su cuenta, mientras se le pedía a la vez *"do not open with a camera
+   instruction"* y se le pegaba encima el lockup. **La variación vivía en la capa blanda y la
+   uniformidad en la dura.**
+5. Nada relacionaba el encuadre con lo que el slide **dice**. `_SLIDE_FRAMINGS[i % 4]` era
+   posicional puro; el texto sí tenía secuencia narrativa (`post_writer`: la portada promete, i+1
+   avanza, el último remata) pero esa función no viajaba a la imagen. Los dos lados escribían una
+   secuencia y ninguno conocía la del otro.
+
+**Qué se hizo.** Tres capas:
+
+- **La escalera de beats** (`architect.json` → `roles` y `secuencia_roles`,
+  `prompt_architect.roles_carrusel`). Cada posición tiene una función —`tension` → `desarrollo` →
+  `prueba` → `remate`— y de ella dependen las tres cosas que escribe la app y el modelo no puede
+  pisar: la **escala del titular** (11-13% / 9-11% / 12-15%), la **presencia del acento** (la
+  tensión lo calla: un acento que sale en todos los slides deja de ser un acento) y el **plano**,
+  que pasa a ser cláusula determinista de la sección 3, junto al lockup y a la continuidad de set.
+  Lo que **no** cambia entre beats es el esqueleto —titular en la banda alta, apoyo al pie, sujeto
+  en la central—: unificarlo fue la corrección del paso 6 y es lo que hace que el set se lea como
+  un sistema.
+- **El ritmo, en la identidad visual** (`ritmo_carrusel`). El beat es estructura y es igual para
+  todas las marcas; **cómo se fotografía** ese beat es identidad: la misma escalera recorrida con
+  macros de textura o con naturalezas muertas abiertas da dos carruseles que no se parecen. Es una
+  lista ordenada por beat y opcional — vacío = el respaldo de `architect.json`, beat a beat.
+- **El beat le llega al redactor** (`post_writer._linea_beats` → `SLIDE BEATS` en el user message,
+  y `needs.beats` a las dos compuertas previas). El texto impreso del slide *i* y su escena se
+  encargan desde el mismo sitio, y quien reescribe a mano en la compuerta ve qué función cumple
+  cada slide.
+
+Costo de presupuesto: la cláusula de plano se paga con `composicion_zona_slide` (la versión corta
+del lockup, que ya no repite en genérico de qué está hecho el aire porque cada beat lo nombra en
+concreto) y con subir el techo a 3550 caracteres —y `higgsfield_mcp._MAX_PROMPT_CHARS` a 3600—,
+que es exactamente lo que la nota de la v3 de `architect.json` dejaba anticipado: con 3150 la poda
+recortaba el anclaje concreto del sujeto en **todos** los slides.
+
+Esto cierra **F6** (no había plan de encuadres) y completa **F2** por el lado estructural.
 
 ### Paso 11 — la plantilla de respaldo salía muda
 
@@ -515,7 +943,12 @@ encuadre de la escalera y lleva impresa su propia idea. Con eso desaparecieron l
 (`_texto_creditos`, `cierre_creditos` de `architect.json`), el rol `cierre` del arquitecto y el
 renderer `render_credits` de Pillow.
 
-### F6 · No hay plan de encuadres: la jerarquía visual queda al azar — **medio**
+### F6 · No hay plan de encuadres: la jerarquía visual queda al azar — **resuelto (ago 2026, paso 12)**
+
+> Lo que sigue describe el estado anterior. Hoy el encuadre lo fija el **beat** del slide
+> (`prompt_architect.roles_carrusel`) y se declara en la sección 3 del brief, que es determinista.
+> El intento intermedio —la escalera `_SLIDE_FRAMINGS`— fallaba por vivir en el `prompt_base`, que
+> el modelo puede ignorar; ver el paso 12.
 
 Al LLM se le *sugiere* variar el encuadre (*"close-up texture → wider still life → detail on a different
 object"*, [post_writer.py:62](../api/post_writer.py)), pero nada lo impone ni lo verifica, y el número de
@@ -768,3 +1201,106 @@ Un parámetro verificado como *existente* no es un parámetro verificado como *l
 hace*. `_IMAGE_MODEL_CAPS` se comprobó contra el catálogo —el rol `image` existe y el submit no
 rebota— pero nadie comprobó el **efecto**, y el aviso estaba a la vista en los `tags` del propio
 modelo. Cuando un cambio busca un efecto visual, la verificación es mirar las imágenes.
+
+## Paso 14 · El slide lo lidera el texto; la tipografía distingue identidades (ago 2026)
+
+Dos observaciones sobre posts reales, con la misma raíz: **todo lo que el proyecto quiso volver
+invariante se declaró como una constante de archivo, así que dejó de variar también entre posts.**
+
+### 14.a — En el slide de contenido manda el texto, no el objeto
+
+El síntoma: cada pieza era un objeto centrado sobre una superficie, y el titular lo acompañaba.
+En la portada eso está bien —una portada engancha con una imagen—, pero un slide de contenido no
+vende una idea con una foto: la **escribe**. La jerarquía estaba invertida y estaba escrita así en
+cuatro sitios, todos deterministas:
+
+| Dónde | Qué decía |
+|---|---|
+| `piezas.contenido` (sección 1) | `one type tier smaller` que la portada |
+| `tipografia.escala` (sección 5) | portada 13-16%, `desarrollo`/`prueba` **9-11%** — el slide tenía el titular más pequeño del set |
+| `zonas_texto.contenido` | banda alta hasta el 38%, contra el 42% de la portada |
+| `composicion_zona_slide` + `roles[*].composicion` (sección 3) | el sujeto anclado o llenando la banda central |
+
+Qué se hizo:
+
+| # | Cambio | Dónde |
+|---|---|---|
+| T-1 | La pieza del slide se declara `TYPE-LED, not image-led` | `prompts/architect.json` (`piezas.contenido`) |
+| T-2 | La escala del slide pasa **por encima** de la portada (15-20% contra 13-16%) y la banda alta al 68% | `prompts/architect.json` (`tipografia.escala`, `zonas_texto`) |
+| T-3 | El lockup del slide deja de ser el de la portada acortado y pasa a ser su **inversa**: el titular se lleva los dos tercios altos y el sujeto queda `subordinate`, bajo | `prompts/architect.json` (`composicion_zona_slide`), `prompt_architect._clausula_aire` |
+| T-4 | Los cuatro planos de beat mueven el sujeto a la parte baja **conservando su escalera de distancias** (macro → media → cenital → wide) | `prompts/architect.json` (`roles[*].composicion`), `prompt_architect._COMPOSICION_BEAT_FALLBACK` |
+| T-5 | El rubric deja de premiar `the subject is anchored in the central band` y declara que la posición del sujeto no es suya | `prompts/rubric.json` |
+| T-6 | La plantilla de respaldo (Pillow) sube el cuerpo del slide por encima del de la portada | `image_overlay._CUERPO`, `_BANDA_ALTA` |
+| T-7 | El `prompt_base` y el briefing del redactor dejan de pedir un objeto protagonista en los slides | `job_runner._IMAGE_SPACE_SLIDE`, `post_writer` (`space_slides`), `prompt_architect._linea_beat` |
+| T-8 | El respaldo creativo de la sección 3 deja de decir dónde se apoya el sujeto | `prompts/architect.json` (`respaldos.composicion`) |
+
+**T-5 y T-8 son las dos que se olvidan.** T-5 es la lección de las bandas planas repetida: el rubric
+corre *después* y reescribe, así que **lo que el rubric premia gana a lo que el brief pide** — con el
+criterio viejo, la auto-crítica habría revertido la inversión sola. T-8 es más sutil: el respaldo
+creativo abría la sección 3 con «the subject centred in the middle band» dos frases antes de que la
+cláusula determinista lo subordinara, así que el brief se contradecía a sí mismo dentro de la misma
+sección.
+
+Lo que **no** cambió, a propósito: el esqueleto (titular arriba, apoyo al pie, sangrado a los cuatro
+bordes) es el mismo en portada y slide. La inversión se declara como jerarquía de **tamaño**, no
+moviendo las bandas de sitio — son las bandas compartidas lo que hace que el set se lea como un
+sistema. Y el sujeto sigue siendo un objeto real y fotografiado: subordinarlo sin conservar la
+escalera de planos dejaría a los cuatro slides sin nada que los distinga salvo el texto.
+
+Coste medido con [`scripts/medir_prompt.py`](../api/scripts/medir_prompt.py): el primer intento
+bajó los slides al escalón de poda de **14** palabras (el baseline era 18, que es la barra fijada en
+la v6). No se subió el techo — se quitó la redundancia: la inversión se declaraba entera en las
+secciones 1, 3 y 5, y basta con que la 1 la **anuncie** (`TYPE-LED`), la 3 diga cómo y la 5 cuánto.
+Con eso los cinco roles vuelven a 18/26 con la identidad de la casa.
+
+### 14.b — Todas las identidades salían con la misma tipografía
+
+El síntoma: las fuentes se repetían entre posts aunque cambiara la identidad visual. La causa **no
+estaba en el generador** —que respeta la identidad desde la v2— sino en las dos puertas de entrada:
+
+- El encuadre del extractor le describía la pieza al modelo como «headline in the upper band at
+  **9-16% of the frame height, all caps**». La caja y la escala estaban hardcodeadas ahí, así que
+  toda identidad extraída nacía en caja alta y la diferencia entre marcas se reducía al adjetivo.
+- `MARCAS_DISPLAY` solo contenía el vocabulario de la grotesca condensada, así que una didone, una
+  egipcia o una lettering de plantilla legítimas salían con reparo — y el reparo empuja al usuario
+  **y al modelo** (recibe esa misma lista) a reescribirlas hacia la única clase que la lista nombraba.
+  La distinción entre marcas se perdía en el **validador**, no en el generador.
+- El criterio pedía «elige la clase que el registro fotográfico pide» sin ofrecer opciones, que es
+  el mismo defecto que tenía el copy antes de las ocho estructuras: sin abanico nombrado, un modelo
+  devuelve siempre la respuesta segura.
+
+Qué se hizo:
+
+| # | Cambio | Dónde |
+|---|---|---|
+| F-1 | Fuera la caja y la escala del encuadre; se pide explícitamente **no** caer en caps por defecto. La escala es layout y su fuente única es `architect.json` | `prompts/identity_extract.json`, `identity_extract._CRITERIO_POR_DEFECTO`, `_reglas_esquema` |
+| F-2 | Abanico **nombrado** de ocho clases de titular (condensada, extendida, didone, slab, geométrica, serif de texto, stencil, monoespaciada) con su caja | `prompts/identity_extract.json` (`criterio.tipografia`) |
+| F-3 | `MARCAS_DISPLAY` cubre varias familias de clase, no una | `visual_identity.py` |
+| F-4 | La caja deja de ser una constante del renderizador de respaldo: la decide la identidad, con la **misma** función que cita el texto en el prompt (`pide_caja_alta`) | `job_runner._lockup_plantilla`, `image_overlay._dibujar_texto` |
+
+**F-4 es el acoplamiento que se descubre al soltar la caja.** Mientras todas las identidades eran
+caja alta, que `image_overlay` llamara a `.upper()` sin preguntar daba igual. En cuanto una identidad
+puede declararse en caja mixta, esa llamada hace que la pieza de respaldo contradiga a la generada —
+justo lo que ese módulo existe para evitar. Regla general: **al convertir una constante en una
+decisión, hay que buscar todos los sitios que la daban por supuesta**, y suelen estar en el camino
+degradado, que es el que nadie mira.
+
+### Lección
+
+El proyecto mató la varianza *dentro* de un set a propósito —era el defecto— pero la mató con
+constantes, así que murió también la varianza *entre* posts. No son lo mismo, y hoy el sistema no
+tiene ningún concepto de "esto es fijo dentro del job y distinto entre jobs" salvo la identidad
+visual, que sí se congela en `params`. Si en el futuro se quiere más variación entre posts sin
+reabrir los defectos de coherencia, el camino no es aflojar la capa dura sino **parametrizarla por
+job** —elegir una vez, congelar en `params` como la identidad, aplicar byte-idéntico a las N piezas—.
+Los dos ejes más rentables que quedan sin tocar son el **registro fotográfico** (hoy `luz_temperatura`
+es una constante app-owned de 5400K y `tono_visual` una sola receta) y los **arquetipos de
+composición** (hoy `zonas_texto` es un único lockup con dos jerarquías).
+
+### Qué falta
+
+- **Recorrido manual**, que es la única verificación que vale acá: un carrusel individual y un lote
+  de varias filas, mirando las imágenes. Ni los tests ni `medir_prompt.py` ven si el titular al 18%
+  del alto se lee bien sobre la foto o si la aprieta contra el sujeto.
+- **Extraer dos identidades de moodboards distintos** y comprobar que las tipografías salen de clases
+  distintas — es el único modo de saber si F-1/F-2 funcionaron.

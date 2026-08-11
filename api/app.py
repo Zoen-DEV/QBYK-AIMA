@@ -23,12 +23,14 @@ import cost_tracker
 import db
 import identity_extract
 import identity_store
+import prompt_architect
 import prompt_lint
 import users
 import visual_identity
 from config import load_config
 from job_runner import (run_pipeline, resume_media, make_job, publish_job_posts, _media_mime,
-                        regenerate_image, subkeys_regenerables, _n_slides, rewrite_job_posts)
+                        regenerate_image, subkeys_regenerables, _n_slides, rewrite_job_posts,
+                        _identidad as job_identidad)
 from post_writer import (_wants_images, _wants_video, _faltantes, _segments_needed,
                          captions_needed)
 from networks import active_networks, networks_for_format, FORMATS
@@ -315,6 +317,13 @@ async def list_identities(request: Request):
             "min_colores": visual_identity.MIN_COLORES,
             "max_colores": visual_identity.MAX_COLORES,
             "max_referencias": visual_identity.MAX_REFERENCIAS,
+            "min_escenarios": visual_identity.MIN_ESCENARIOS,
+            "max_escenarios": visual_identity.MAX_ESCENARIOS,
+            # El catálogo de sistemas de texto con su nombre legible: el editor pinta
+            # una casilla por sistema desde acá y no desde una lista propia, porque
+            # los nombres válidos los decide `architect.json` y no esta pantalla.
+            "sistemas_texto": [prompt_architect.datos_sistema(s)
+                               for s in visual_identity.SISTEMAS_TEXTO],
             "nombre_max": visual_identity.NOMBRE_MAX,
         },
     }
@@ -488,6 +497,9 @@ async def create_job(
     solo: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     publicar: Annotated[str, Form()] = "",
+    # Identidad visual elegida para ESTE post (id de GET /identities). Vacío = la
+    # activa del perfil, que es como se generaba antes de que el campo existiera.
+    identidad_visual_id: Annotated[str, Form()] = "",
 ):
     try:
         cfg = load_config()
@@ -639,10 +651,12 @@ async def create_job(
         "solo": solo,
         "dry_run": dry_run,
         "publicar": publicar,
-        # Identidad visual activa del usuario, CONGELADA en el job: cambiarla mientras
-        # esto genera no puede alterar un job en vuelo. `activa` nunca falla — sin base
-        # devuelve la de la casa y el post sale con el look de siempre.
-        **_params_identidad(await identity_store.activa(users.current_user_id(request))),
+        # Identidad visual elegida en el form (vacío = la activa del perfil), CONGELADA
+        # en el job: cambiarla mientras esto genera no puede alterar un job en vuelo.
+        # `elegida` nunca falla — sin base, o con un id que ya no existe, devuelve la
+        # activa y el post sale con el look de siempre.
+        **_params_identidad(await identity_store.elegida(
+            users.current_user_id(request), identidad_visual_id)),
     }
     job = make_job(cfg, params, upload_bytes=upload_bytes, upload_filename=upload_filename,
                    final_media_bytes=final_media_bytes, final_media_filename=final_media_filename,
@@ -738,6 +752,17 @@ def _lint_job(job: dict, posts: dict | None = None) -> list[dict]:
         is_carousel=is_carousel,
         quiere_imagenes=_wants_images(params),
         quiere_video=_wants_video(params),
+        # La identidad CONGELADA en el job, no la activa del perfil: es la que va a
+        # generar estas imágenes, aunque el usuario haya cambiado de identidad después.
+        identidad=job_identidad(job),
+        # Y los otros dos ejes que el job congeló: el arco decide qué cuenta como escena
+        # repetida (con uno de sujeto recurrente, parecerse es el objetivo) y los dos
+        # entran en el canario que comprueba que las cláusulas se van a emitir.
+        arco=params.get("arco_carrusel", ""),
+        escenario=params.get("escenario_visual", ""),
+        # Y el sistema de texto congelado: decide qué bloques tiene que traer cada
+        # slide, así que es contra él que se mide si alguno va a salir medio vacío.
+        sistema=params.get("sistema_texto", ""),
     )
     origen = [a for a in job.get("avisos", []) if a.get("campo") != "escritura" or avisos]
     return origen + avisos
@@ -753,19 +778,49 @@ _CAMPOS_EDICION = ("linkedin_text", "instagram_text", "facebook_text", "image_ho
 # un textarea con una frase por línea: con un campo por slide se ve qué texto va en
 # qué imagen. Van indexados —no unidos por saltos de línea— justamente para conservar
 # la POSICIÓN: vaciar el slide 2 tiene que dejar el 2 vacío, no correr el 3 a su sitio.
-_RE_SLIDE_TEXT = re.compile(r"^image_slide_text_(\d+)$")
+#
+# Desde los sistemas de texto un slide puede tener varios BLOQUES, así que el nombre
+# lleva también cuál: `image_slide_{bloque}_{i}`. Se conserva `image_slide_text_{i}`
+# como alias del titular porque es lo que manda cualquier pantalla que no se haya
+# actualizado, y porque un job del sistema `titular` no tiene otro bloque que editar.
+_RE_SLIDE_BLOQUE = re.compile(r"^image_slide_([a-z]+)_(\d+)$")
 
 
 def _campos_indexados(form) -> dict:
-    """`image_slide_text_{i}` del form → `{"image_slide_text": [por posición]}`."""
-    por_indice: dict[int, str] = {}
+    """`image_slide_{bloque}_{i}` del form → `{"image_slide_bloques": [por posición]}`.
+
+    Cada posición es un dict de bloques. Un slide sin ningún campo enviado queda como
+    `{}` —su hueco, no su desaparición—, que es la misma regla de siempre.
+    """
+    por_indice: dict[int, dict] = {}
     for clave in form:
-        m = _RE_SLIDE_TEXT.match(str(clave))
-        if m:
-            por_indice[int(m.group(1))] = str(form[clave])
+        m = _RE_SLIDE_BLOQUE.match(str(clave))
+        if not m:
+            continue
+        bloque, i = m.group(1), int(m.group(2))
+        # `image_slide_text_{i}` es el alias histórico del titular.
+        bloque = "titular" if bloque == "text" else bloque
+        if bloque not in prompt_architect.CLAVES_BLOQUE:
+            continue
+        por_indice.setdefault(i, {})[bloque] = str(form[clave])
     if not por_indice:
         return {}
-    return {"image_slide_text": [por_indice.get(i, "") for i in range(max(por_indice) + 1)]}
+    return {"image_slide_bloques": [por_indice.get(i, {}) for i in range(max(por_indice) + 1)]}
+
+
+def _slide_editado(bloques: dict):
+    """Un slide del form → `str` si solo trae titular, `dict` de bloques si trae más.
+
+    Devolver el string cuando alcanza no es cosmético: es lo que mantiene el contrato
+    de siempre para el sistema `titular`, así que una pantalla vieja y una nueva
+    guardan exactamente lo mismo.
+    """
+    limpio = {c: str(t).strip() for c, t in (bloques or {}).items() if str(t).strip()}
+    if not limpio:
+        return ""
+    if list(limpio) == ["titular"]:
+        return limpio["titular"]
+    return limpio
 
 
 def _aplicar_edicion(posts: dict, campos: dict) -> dict:
@@ -774,19 +829,20 @@ def _aplicar_edicion(posts: dict, campos: dict) -> dict:
         if campos.get(campo):
             posts[campo] = campos[campo]
 
-    # image_text (copy de los visuales): hook + frases de slides. Los slides llegan de
-    # dos formas: un campo por slide (`image_slide_text`, la revisión previa de hoy) o
-    # el textarea histórico con una frase por línea (`image_slides`). El primero manda
-    # cuando están los dos, y conserva los huecos vacíos; el segundo los descarta,
-    # porque en un textarea una línea en blanco es un tecleo, no un slide sin texto.
-    slides_pos = campos.get("image_slide_text")
+    # image_text (copy de los visuales): hook + bloques de cada slide. Los slides llegan
+    # de dos formas: un campo por bloque y slide (`image_slide_bloques`, la revisión
+    # previa de hoy) o el textarea histórico con una frase por línea (`image_slides`). El
+    # primero manda cuando están los dos, y conserva los huecos vacíos; el segundo los
+    # descarta, porque en un textarea una línea en blanco es un tecleo, no un slide sin
+    # texto.
+    slides_pos = campos.get("image_slide_bloques")
     if (campos.get("image_hook") is not None or campos.get("image_slides") is not None
             or slides_pos is not None):
         img = dict(posts["image_text"]) if isinstance(posts.get("image_text"), dict) else {}
         if campos.get("image_hook") is not None:
             img["hook"] = campos["image_hook"].strip()
         if slides_pos is not None:
-            img["slides"] = [str(s).strip() for s in slides_pos]
+            img["slides"] = [_slide_editado(b) for b in slides_pos]
         elif campos.get("image_slides") is not None:
             img["slides"] = [l.strip() for l in campos["image_slides"].splitlines() if l.strip()]
         posts["image_text"] = img
@@ -834,6 +890,24 @@ def _needs_job(job: dict, posts: dict | None = None) -> dict:
         # ya se había corregido para los prompts visuales).
         "captions": captions_needed(params),
         "n_info": (_n_slides(params) - 1) if is_carousel else 0,
+        # El beat de cada slide, en orden. Va acá y no en cada UI porque la secuencia
+        # tiene que ser la MISMA que la del prompt y la del redactor: quien edita a
+        # mano el texto del slide 2 necesita saber que ahí va el desarrollo, o
+        # reescribirá una conclusión sobre una imagen generada para desarrollar.
+        "beats": prompt_architect.roles_carrusel((_n_slides(params) - 1) if is_carousel else 0),
+        # El sistema de texto congelado y sus bloques. Va acá por lo mismo que los
+        # beats: es lo que decide QUÉ campos dibuja cada compuerta, y si cada UI lo
+        # dedujera por su cuenta una pintaría dos campos donde la pieza imprime tres.
+        "sistema_texto": (prompt_architect.datos_sistema(params.get("sistema_texto", ""))
+                          if is_carousel else None),
+        # Los dos ejes que el job congeló al crearse. Van aquí y no los deduce cada UI
+        # porque son una ELECCIÓN ya tomada: mostrarlos es lo que explica por qué las
+        # escenas dicen lo que dicen (por qué el objeto vuelve, por qué todo pasa en un
+        # taller) antes de gastar créditos. No son editables — la app los elige.
+        "arco": params.get("arco_carrusel", "") if is_carousel else "",
+        "arco_funcion": prompt_architect.funcion_arco(params.get("arco_carrusel", ""))
+                        if is_carousel else "",
+        "escenario": params.get("escenario_visual", "") if _wants_images(params) else "",
         "n_shots": _segments_needed(params) if quiere_video else 0,
         "faltan": _faltantes(posts if posts is not None else job["posts"], params),
     }
@@ -868,9 +942,13 @@ def _job_snapshot(job: dict) -> dict:
             # modelo desde el prompt (hoy) o Pillow por encima (respaldo).
             "text_overlay": job["images"].get("text_overlay", True),
             "text_in_prompt": job["images"].get("text_in_prompt", True),
-            # Traza de la generación: prompt final y QA del texto por imagen.
+            # Traza de la generación: prompt final, QA del texto y QA de bandas por
+            # imagen. `bandas` es el veredicto del detector de passe-partout/letterbox
+            # sobre la imagen cruda del proveedor; lo pintan las DOS revisiones.
             "prompts": job["images"].get("prompts", {}),
             "qa": job["images"].get("qa", {}),
+            "bandas": job["images"].get("bandas", {}),
+            "qa_set": job["images"].get("qa_set", []),
             # Imágenes que la revisión puede rehacer de a una (POST /jobs/{id}/regenerate).
             # Lo decide el backend para que las dos revisiones —individual y lote— no
             # tengan que repetir las reglas de formato en el frontend.
@@ -1060,6 +1138,8 @@ async def regenerate_job_image(job_id: str, subkey: Annotated[str, Form()] = "")
         "aviso": res["aviso"],
         "prompts": job["images"].get("prompts", {}),
         "qa": job["images"].get("qa", {}),
+        "bandas": job["images"].get("bandas", {}),
+        "qa_set": job["images"].get("qa_set", []),
     }
 
 
@@ -1159,12 +1239,17 @@ async def create_sheet_batch(
     facebook_page_id: Annotated[str, Form()] = "",
     dry_run: Annotated[bool, Form()] = False,
     tz_offset: Annotated[int, Form()] = 0,
+    identidad_visual_id: Annotated[str, Form()] = "",
 ):
     """Parsea el sheet, crea un batch y lanza la generación + programación por fila.
 
-    Las cuentas y el dry-run son globales (de la UI) y se inyectan en cada fila.
-    `tz_offset` (minutos, de Date.getTimezoneOffset()) convierte cada fecha/hora
-    local del sheet a UTC para programar en Blotato.
+    Las cuentas, el dry-run y la identidad visual son globales (de la UI) y se
+    inyectan en cada fila. `tz_offset` (minutos, de Date.getTimezoneOffset())
+    convierte cada fecha/hora local del sheet a UTC para programar en Blotato.
+
+    La identidad va en la UI y no en una columna del sheet a propósito: un lote es un
+    envío de un usuario en un momento, y las filas comparten estética por diseño (ver
+    `batch_runner.run_batch`).
     """
     try:
         cfg = load_config()
@@ -1217,10 +1302,11 @@ async def create_sheet_batch(
         "dry_run": dry_run,
         "tz_offset": tz_offset,
         "account_params": account_params,
-        # Igual que en el individual, la identidad se congela al crear: UNA vez para
-        # todo el lote, para que no salgan dos filas con estéticas distintas.
-        "identidad_params": _params_identidad(
-            await identity_store.activa(users.current_user_id(request))),
+        # Igual que en el individual, la identidad se congela al crear: la elegida en
+        # la UI (vacío = la activa del perfil) UNA vez para todo el lote, para que no
+        # salgan dos filas con estéticas distintas.
+        "identidad_params": _params_identidad(await identity_store.elegida(
+            users.current_user_id(request), identidad_visual_id)),
         "rows": rows,
         "_cfg": cfg,
     }

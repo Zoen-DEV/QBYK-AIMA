@@ -20,6 +20,11 @@ from config import Config
 _CARRUSEL = {
     "redes": ["instagram"], "tipo_post": "post",
     "formato_instagram": "carrusel", "carrusel_slides": 3,   # portada + 2 de info
+    # Sistema de texto fijado a mano: `make_job` elige uno del repertorio de la casa y
+    # con uno que lleve cuerpo estos slides de una frase contarían como incompletos —
+    # que es correcto, pero es otro test (ver `test_prompt_lint`). Acá lo que se prueba
+    # es la reparación de los PROMPTS que faltan.
+    "sistema_texto": "titular",
 }
 
 
